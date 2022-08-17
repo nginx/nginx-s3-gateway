@@ -34,6 +34,8 @@ server {
     # of an object.
     # add_header X-Cache-Status $upstream_cache_status;
 
+    add_header Access-Control-Allow-Origin *;
+
     # Proxy caching configuration. Customize this for your needs.
     proxy_cache s3_cache;
     proxy_cache_valid 200 302 ${PROXY_CACHE_VALID_OK};
