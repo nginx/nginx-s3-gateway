@@ -36,6 +36,12 @@ server {
 
     add_header Access-Control-Allow-Origin *;
 
+    keepalive_timeout 120s;
+    proxy_read_timeout 120s;
+    proxy_connect_timeout 120s;
+    proxy_send_timeout 120s;
+    send_timeout 120s;
+
     # Proxy caching configuration. Customize this for your needs.
     proxy_cache s3_cache;
     proxy_cache_valid 200 302 ${PROXY_CACHE_VALID_OK};

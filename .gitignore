@@ -110,3 +110,7 @@ modules.xml
 test-settings.*
 s3-requests.http
 httpRequests/
+
+
+#local docs
+local-docs/
