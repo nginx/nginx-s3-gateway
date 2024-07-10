@@ -1,0 +1,25 @@
+---
+name: Release Drafter
+on:
+  push:
+    branches: [main]
+  # pull_request_target event is required for autolabeler to support PRs from forks
+  pull_request_target:
+    # Only following types are handled by the action, but one can default to all as well
+    types: [opened, reopened, synchronize]
+
+permissions: read-all
+jobs:
+  update_release_draft:
+    permissions:
+      # write permission is required to create a github release
+      contents: write
+      # write permission is required for autolabeler
+      # otherwise, read permission is required at least
+      pull-requests: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run Release Drafter
+        uses: release-drafter/release-drafter@3f0f87098bd6b5c5b9a36d49c41d998ea58f9348 # v6.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
