@@ -2,7 +2,6 @@
 name-template: $RESOLVED_VERSION
 tag-template: $RESOLVED_VERSION
 include-pre-releases: true
-# prerelease-identifier: beta # Maybe?
 categories:
   - title: 💣 Breaking Changes
     labels:
