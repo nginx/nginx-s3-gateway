@@ -99,19 +99,12 @@ replacers: #todo review
   - search: "/(feat|fix|docs|chore|cleanup|style|refactor|perf|test)(\(\w+\))?: /g"
     replace: ""
 template: |
-    ## What's new in the NGINX S3 Gateway v$RESOLVED_VERSION!
+    ## What's new in the NGINX S3 Gateway $RESOLVED_VERSION!
 
     $CHANGES
 
-    ## Install & Upgrade ## TODO Update or remove
+    ## Install & Upgrade 
 
-    - To install the Ansible NGINX role on a fresh environment, run `ansible-galaxy install nginxinc.nginx`.
-    - To upgrade the Ansible NGINX role to the latest release, run `ansible-galaxy install -f nginxinc.nginx`.
-    - To install or upgrade to this specific Ansible NGINX role release ($RESOLVED_VERSION), run `ansible-galaxy install -f nginxinc.nginx,v$RESOLVED_VERSION`.
+    - The easiest way to use the most recent version is to find it in the [docker images](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway) are which contains installation instructions
+    - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
 
-    ## Resources  ## TODO Update or remove
-
-    - Functional configuration examples (check `converge.yml` under each `molecule` scenario) -- [github.com/nginxinc/ansible-role-nginx/tree/$RESOLVED_VERSION/molecule](https://github.com/nginxinc/ansible-role-nginx/tree/$RESOLVED_VERSION/molecule).
-    - Ansible Galaxy repository -- [galaxy.ansible.com/nginxinc/nginx](https://galaxy.ansible.com/nginxinc/nginx).
-    - NGINX Ansible role & collection introductory blog -- [nginx.com/blog/announcing-nginx-core-collection-ansible](https://www.nginx.com/blog/announcing-nginx-core-collection-ansible).
-    - NGINX: Better with Ansible demo -- [github.com/alessfg/nginx-ansible-demo](https://github.com/alessfg/nginx-ansible-demo).
