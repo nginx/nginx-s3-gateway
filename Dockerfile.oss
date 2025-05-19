@@ -1,7 +1,7 @@
 FROM nginx:1.27.5@sha256:5ed8fcc66f4ed123c1b2560ed708dc148755b6e4cbd8b943fab094f2c6bfa91e
 
 # NJS env vars
-ENV NJS_VERSION=0.8.7
+ENV NJS_VERSION=0.9.0
 ENV NJS_RELEASE=1~bookworm
 
 # Proxy cache env vars
