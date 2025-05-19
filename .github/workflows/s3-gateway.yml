@@ -37,7 +37,7 @@ jobs:
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - name: Build and export
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.oss
           context: .
@@ -119,7 +119,7 @@ jobs:
           docker load --input ${{ runner.temp }}/oss.tar
 
       - name: Build and load oss image
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.latest-njs
           context: .
@@ -204,7 +204,7 @@ jobs:
           docker load --input ${{ runner.temp }}/oss.tar
 
       - name: Build and load oss image
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.unprivileged
           context: .
@@ -297,7 +297,7 @@ jobs:
 
       # Do an initial build of the base image and push to a local registry for downstream images because the `docker-container` driver can't find local images with `load`.
       - name: Build and push image [oss] to local registry for downstream
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.oss
           context: .
@@ -321,7 +321,7 @@ jobs:
 
       # This second invocation of the build/push should just use the existing build cache.
       - name: Build and push image [oss]
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.oss
           context: .
@@ -335,7 +335,7 @@ jobs:
             nginxinc/nginx-s3-gateway:latest
 
       - name: Build and push image [latest-njs]
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.latest-njs
           context: .
@@ -351,7 +351,7 @@ jobs:
             nginxinc/nginx-s3-gateway:latest-njs-oss
 
       - name: Build and push image [unprivileged]
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0 # v6.17.0
         with:
           file: Dockerfile.unprivileged
           context: .
