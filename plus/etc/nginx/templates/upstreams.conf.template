@@ -1,4 +1,4 @@
-# This configuration with NGINX Plus should dynamically reload S3 backends
+# This configuration should dynamically reload S3 backends
 # as they change in DNS.
 
 # Use NGINX's non-blocking DNS resolution

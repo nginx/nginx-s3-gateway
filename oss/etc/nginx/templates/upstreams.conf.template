@@ -1,8 +1,11 @@
+# This configuration should dynamically reload S3 backends
+# as they change in DNS.
+
 # Use NGINX's non-blocking DNS resolution
 resolver ${DNS_RESOLVERS};
 
 upstream storage_urls {
-    # Upstreams are not refreshed until NGINX configuration is reloaded.
-    # NGINX Plus will dynamically reload upstreams when DNS records are changed.
-    server ${S3_UPSTREAM};
+    zone s3_backends 64k;
+
+    server ${S3_UPSTREAM} resolve;
 }
