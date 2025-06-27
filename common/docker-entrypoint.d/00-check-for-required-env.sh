@@ -57,6 +57,16 @@ elif [[ -v AWS_WEB_IDENTITY_TOKEN_FILE ]]; then
     AWS_ROLE_SESSION_NAME="nginx-s3-gateway"
   fi
 
+# d) Using EKS pod identity. This is indicated by AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE being set.
+#    See https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html.
+#    Example: We are running inside an EKS cluster with a pod identity configured.
+elif [[ -v AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE ]]; then
+  echo "Running inside EKS with EKS pod identity"
+  if [[ ! -v AWS_ROLE_SESSION_NAME ]]; then
+    # The default value is set as a nginx-s3-gateway unless the value is defined.
+    AWS_ROLE_SESSION_NAME="nginx-s3-gateway"
+  fi
+
 elif [[ -v S3_ACCESS_KEY_ID ]]; then
   echo "Deprecated the S3_ACCESS_KEY_ID! Use the environment variable of AWS_ACCESS_KEY_ID instead"
   failed=1
