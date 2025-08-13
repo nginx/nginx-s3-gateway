@@ -37,6 +37,7 @@ services:
       PROXY_CACHE_VALID_OK: "1h"
       PROXY_CACHE_VALID_NOTFOUND: "1m"
       PROXY_CACHE_VALID_FORBIDDEN: "30s"
+      PROXY_CACHE_USE_STALE: "error timeout http_500 http_502 http_503 http_504"
 
   minio:
     image: quay.io/minio/minio:RELEASE.2023-06-09T07-32-12Z

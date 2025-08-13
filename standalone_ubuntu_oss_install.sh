@@ -96,6 +96,7 @@ echo "Slice of slice for byte range requests: ${PROXY_CACHE_SLICE_SIZE}"
 echo "Proxy Caching Time for Valid Response: ${PROXY_CACHE_VALID_OK}"
 echo "Proxy Caching Time for Not Found Response: ${PROXY_CACHE_VALID_NOTFOUND}"
 echo "Proxy Caching Time for Forbidden Response: ${PROXY_CACHE_VALID_FORBIDDEN}"
+echo "Proxy Cache Using Stale: ${PROXY_CACHE_USE_STALE:-'error timeout http_500 http_502 http_503 http_504'}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
