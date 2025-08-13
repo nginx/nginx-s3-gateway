@@ -71,7 +71,7 @@ fi
 # See documentation for this feature. We do not parse this as a boolean
 # since "true" and "false" are the required values of the header this populates
 if [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}" != "true" ] && [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}" != "false" ]; then
-  export CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""  
+  export CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""
 fi
 
 # This is the primary logic to determine the s3 host used for the
@@ -94,6 +94,10 @@ else
   export S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}"
 fi
 
+# Use default proxy_cache_use_stale settings if the variable is not defined
+if [[ ! -v PROXY_CACHE_USE_STALE ]]; then
+  export PROXY_CACHE_USE_STALE="error timeout http_500 http_502 http_503 http_504"
+fi
 
 # Nothing is modified under this line
 

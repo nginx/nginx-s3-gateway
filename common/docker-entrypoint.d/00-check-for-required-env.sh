@@ -24,7 +24,7 @@ failed=0
 
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION"
-"CORS_ENABLED")
+"CORS_ENABLED" "PROXY_CACHE_USE_STALE")
 
 # Require some form of authentication to be configured.
 
@@ -44,7 +44,7 @@ elif [[ -v AWS_SESSION_TOKEN ]]; then
 # b) Using Instance Metadata Service (IMDS) credentials, if IMDS is present at http://169.254.169.254.
 #    See https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-credentials.html.
 #    Example: We are running inside an EC2 instance.
-elif TOKEN=`curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` && curl  -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then 
+elif TOKEN=`curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` && curl  -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then
   echo "Running inside an EC2 instance, using IMDS for credentials"
 
 # c) Using assume role credentials. This is indicated by AWS_WEB_IDENTITY_TOKEN_FILE being set.
@@ -126,6 +126,10 @@ if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   fi
 fi
 
+if [[ ! "${PROXY_CACHE_USE_STALE}" ]]; then
+  >&2 echo "PROXY_CACHE_USE_STALE must not be blank"
+  failed=1
+fi
 
 if [ $failed -gt 0 ]; then
   exit 1
@@ -144,6 +148,7 @@ echo "Directory Listing Path Prefix: ${DIRECTORY_LISTING_PATH_PREFIX}"
 echo "Provide Index Pages Enabled: ${PROVIDE_INDEX_PAGE}"
 echo "Append slash for directory enabled: ${APPEND_SLASH_FOR_POSSIBLE_DIRECTORY}"
 echo "Stripping the following headers from responses: x-amz-;${HEADER_PREFIXES_TO_STRIP}"
-echo "Allow the following headers from responses (these take precendence over the above): ${HEADER_PREFIXES_ALLOWED}"
+echo "Allow the following headers from responses (these take precedence over the above): ${HEADER_PREFIXES_ALLOWED}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
+echo "Proxy cache using stale setting: ${PROXY_CACHE_USE_STALE}"
