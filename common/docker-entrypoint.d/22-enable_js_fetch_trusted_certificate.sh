@@ -1,3 +1,5 @@
+#!/usr/bin/bash
+
 #
 #  Copyright 2022 F5 Networks
 #

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 #
 #  Copyright 2020 F5 Networks
 #
@@ -71,7 +71,7 @@ fi
 # See documentation for this feature. We do not parse this as a boolean
 # since "true" and "false" are the required values of the header this populates
 if [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}" != "true" ] && [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}" != "false" ]; then
-  export CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""  
+  export CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""
 fi
 
 # This is the primary logic to determine the s3 host used for the

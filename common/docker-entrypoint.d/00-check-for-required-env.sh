@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 #
 #  Copyright 2020 F5 Networks
 #
@@ -44,7 +44,7 @@ elif [[ -v AWS_SESSION_TOKEN ]]; then
 # b) Using Instance Metadata Service (IMDS) credentials, if IMDS is present at http://169.254.169.254.
 #    See https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-credentials.html.
 #    Example: We are running inside an EC2 instance.
-elif TOKEN=`curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` && curl  -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then 
+elif TOKEN=`curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"` && curl  -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then
   echo "Running inside an EC2 instance, using IMDS for credentials"
 
 # c) Using assume role credentials. This is indicated by AWS_WEB_IDENTITY_TOKEN_FILE being set.
