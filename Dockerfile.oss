@@ -1,8 +1,4 @@
-FROM nginx:1.29.0@sha256:f5c017fb33c6db484545793ffb67db51cdd7daebee472104612f73a85063f889
-
-# NJS env vars
-ENV NJS_VERSION=0.9.0
-ENV NJS_RELEASE=1~bookworm
+FROM nginx:1.29.1@sha256:d5f28ef21aabddd098f3dbc21fe5b7a7d7a184720bc07da0b6c9b9820e97f25e
 
 # Proxy cache env vars
 ENV PROXY_CACHE_MAX_SIZE=10g
@@ -27,20 +23,20 @@ ENV PREFIX_LEADING_DIRECTORY_PATH=""
 # 3. Adding a directory for proxied objects to be stored.
 # 4. Replacing the entrypoint script with a modified version that explicitly sets resolvers.
 
-RUN set -x \
-    && echo "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/debian/ $(echo $PKG_RELEASE | cut -f2 -d~) nginx" >> /etc/apt/sources.list.d/nginx.list; \
-    apt-get update \
-    && apt-get install --no-install-recommends --no-install-suggests -y \
-      libedit2 \
-      nginx-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${NJS_RELEASE} \
-    && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nginx.list
+# Note: the PKG_RELEASE environment variable is inherited
 
-COPY oss/etc /etc
+RUN set -x \
+    && echo "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/debian/ $(echo $PKG_RELEASE | cut -f2 -d~) nginx" >> /etc/apt/sources.list.d/nginx.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends --no-install-suggests -y \
+      libedit2 nginx-module-njs nginx-module-xslt \
+    && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/*
+
+COPY oss/etc/nginx /etc/nginx
 COPY common/etc /etc
-COPY common/docker-entrypoint.sh /docker-entrypoint.sh
 COPY common/docker-entrypoint.d /docker-entrypoint.d/
 
 RUN set -x \
     && mkdir -p /var/cache/nginx/s3_proxy \
     && chown nginx:nginx /var/cache/nginx/s3_proxy \
-    && chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh;
+    && find /docker-entrypoint.d -type f \( -name '*.sh' -or -name '*.envsh' \) -exec chmod -v +x {} \;
