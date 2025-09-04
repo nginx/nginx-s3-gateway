@@ -83,8 +83,10 @@ RUN set -x \
 COPY plus/etc/nginx /etc/nginx
 COPY common/etc /etc
 COPY common/docker-entrypoint.sh /docker-entrypoint.sh
+COPY common/docker-entrypoint.d /docker-entrypoint.d/
 
 RUN set -x \
     && mkdir -p /var/cache/nginx/s3_proxy \
     && chown nginx:nginx /var/cache/nginx/s3_proxy \
-    && chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh;
+    && chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh \
+    && find /docker-entrypoint.d -type f -name '*.sh' -exec chmod -v +x {} \;
