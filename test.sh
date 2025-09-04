@@ -36,6 +36,8 @@ nginx_server_port="8989"
 test_server="${nginx_server_proto}://${nginx_server_host}:${nginx_server_port}"
 test_fail_exit_code=2
 no_dep_exit_code=3
+build_dep_exit_code=4
+
 script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 test_dir="${script_dir}/test"
 test_compose_config="${test_dir}/docker-compose.yaml"
@@ -197,6 +199,22 @@ compose() {
     export NGINX_INTERNAL_PORT=80
   fi
 
+  if [ "${nginx_type}" == "plus" ]; then
+    if [ -f /etc/nginx/license.jwt ]; then
+      NGINX_LICENSE_JWT="$(cat /etc/nginx/license.jwt)"
+    elif [ -f license.jwt ]; then
+      NGINX_LICENSE_JWT="$(cat license.jwt)"
+    else
+      e "NGINX Plus license file not found: /etc/nginx/license.jwt or $(pwd)/license.jwt"
+      exit ${build_dep_exit_code}
+    fi
+
+  else
+      NGINX_LICENSE_JWT=""
+  fi
+
+  export NGINX_LICENSE_JWT
+
   ${docker_compose_cmd} -f "${test_compose_config}" -p "${test_compose_project}" "$@"
 }
 
@@ -213,7 +231,7 @@ integration_test_data() {
   p "Starting Docker Compose Environment"
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true compose up -d
-  
+
   if [ "${wait_for_it_installed}" ]; then
     # Hit minio's health check end point to see if it has started up
     for (( i=1; i<=3; i++ ))
@@ -252,7 +270,7 @@ integration_test() {
   printf "\e[1m Integration test suite with STRIP_LEADING_DIRECTORY_PATH=%s\e[22m\n" "$5"
   printf "\033[34;1m▶\033[0m"
   printf "\e[1m Integration test suite with PREFIX_LEADING_DIRECTORY_PATH=%s\e[22m\n" "$6"
-  
+
 
   p "Starting Docker Compose Environment"
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
@@ -306,24 +324,20 @@ else
     if docker buildx > /dev/null 2>&1; then
       p "Building using BuildKit"
       export DOCKER_BUILDKIT=1
-      docker buildx build -f Dockerfile.buildkit.${nginx_type} \
+      docker buildx build -f "Dockerfile.${nginx_type}" \
         --secret id=nginx-crt,src=plus/etc/ssl/nginx/nginx-repo.crt \
         --secret id=nginx-key,src=plus/etc/ssl/nginx/nginx-repo.key \
-        --no-cache \
-        --tag nginx-s3-gateway --tag nginx-s3-gateway:${nginx_type} .
+        --tag nginx-s3-gateway --tag "nginx-s3-gateway:${nginx_type}" .
     else
-      docker build -f Dockerfile.${nginx_type} \
-        --tag nginx-s3-gateway --tag nginx-s3-gateway:${nginx_type} .
+      e "Only BuildKit builds are supported with NGINX Plus image"
+      exit ${build_dep_exit_code}
     fi
   else
-    docker build -f Dockerfile.${nginx_type} \
-      --tag nginx-s3-gateway --tag nginx-s3-gateway:${nginx_type} .
+    docker build -f "Dockerfile.${nginx_type}" \
+      --tag nginx-s3-gateway --tag "nginx-s3-gateway:${nginx_type}" .
   fi
 
-  unit_test_command="-t module -p '/etc/nginx'"
-
   if [ ${njs_latest} -eq 1 ]; then
-    unit_test_command="-m -p '/etc/nginx'"
     p "Layering in latest NJS build"
     docker build -f Dockerfile.latest-njs \
       --tag nginx-s3-gateway --tag nginx-s3-gateway:latest-njs-${nginx_type} .
