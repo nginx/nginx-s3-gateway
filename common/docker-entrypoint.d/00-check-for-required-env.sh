@@ -24,7 +24,7 @@ failed=0
 
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION"
-"CORS_ENABLED")
+"CORS_ENABLED", "PROXY_CACHE_USE_STALE")
 
 # Require some form of authentication to be configured.
 
@@ -126,6 +126,10 @@ if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   fi
 fi
 
+if [[ ! "${PROXY_CACHE_USE_STALE}" ]]; then
+  >&2 echo "PROXY_CACHE_USE_STALE must not be blank"
+  failed=1
+fi
 
 if [ $failed -gt 0 ]; then
   exit 1
