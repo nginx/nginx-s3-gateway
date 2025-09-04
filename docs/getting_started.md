@@ -268,9 +268,9 @@ It is worth noting that due to the way the startup scripts work, even the unpriv
 
 ### Building the NGINX Plus Container Image
 
-In order to build the NGINX Plus container image, copy your NGINX Plus 
-repository keys (`nginx-repo.crt` and `nginx-repo.key`) into the 
-`plus/etc/ssl/nginx` directory before building.
+In order to build the NGINX Plus container image, you will need to do two things:
+ 1. Setup the offical NGINX Plus Docker image repository, as [per the documentation](https://docs.nginx.com/nginx/admin-guide/installing-nginx/installing-nginx-docker/#use-official-nginx-plus-docker-images).
+ 2. Copy your NGINX Plus repository keys (`nginx-repo.crt` and `nginx-repo.key`) into the `plus/etc/ssl/nginx` directory on the system doing the container build.
 
 If you are using a version of Docker that supports Buildkit, then you can
 build the image as follows in order to prevent your private keys from
