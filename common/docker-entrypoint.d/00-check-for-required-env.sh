@@ -126,10 +126,6 @@ if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   fi
 fi
 
-if [[ ! "${PROXY_CACHE_USE_STALE}" ]]; then
-  >&2 echo "PROXY_CACHE_USE_STALE must not be blank"
-  failed=1
-fi
 
 if [ $failed -gt 0 ]; then
   exit 1
