@@ -180,6 +180,8 @@ PROXY_CACHE_VALID_OK=${PROXY_CACHE_VALID_OK:-'1h'}
 PROXY_CACHE_VALID_NOTFOUND=${PROXY_CACHE_VALID_NOTFOUND:-'1m'}
 # Proxy caching time for response code 403
 PROXY_CACHE_VALID_FORBIDDEN=${PROXY_CACHE_VALID_FORBIDDEN:-'30s'}
+# Proxy cache using stale data when error occurs
+PROXY_CACHE_USE_STALE=${PROXY_CACHE_USE_STALE:-'error timeout http_500 http_502 http_503 http_504'}
 # Enables or disables CORS for the S3 Gateway (true=enabled, false=disabled)
 CORS_ENABLED=${CORS_ENABLED:-'false'}
 # Configure portion of URL to be removed (optional)
