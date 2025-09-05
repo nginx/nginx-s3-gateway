@@ -56,7 +56,7 @@ server {
     proxy_cache_revalidate on;
     proxy_cache_background_update on;
     proxy_cache_lock on;
-    proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
+    proxy_cache_use_stale ${PROXY_CACHE_USE_STALE};
     proxy_cache_key "$request_method$host$uri";
 
     # If you need to support proxying range request, refer to this article:
