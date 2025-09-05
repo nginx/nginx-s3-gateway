@@ -1,12 +1,17 @@
-FROM debian:bookworm-slim@sha256:b1211f6d19afd012477bd34fdcabb6b663d680e0f4b0537da6e6b0fd057a3ec3
+FROM private-registry.nginx.com/nginx-plus/base:r35-debian-bookworm
 
 # Create RELEASE argument
 ARG RELEASE=bookworm
 
-# NJS env vars
-ENV NGINX_VERSION=34
-ENV NGINX_PKG_RELEASE=1~${RELEASE}
-ENV NJS_VERSION=0.9.0
+# OSS equivalent version
+ENV NGINX_VERSION=1.29.0
+# Plus version
+ENV NGINX_PLUS_VERSION=35
+# PKG release version for XSLT module
+ENV XSLT_PKG_RELEASE=1~${RELEASE}
+# NJS version
+ENV NJS_VERSION=0.9.1
+# PKG release version for njs module
 ENV NJS_PKG_RELEASE=1~${RELEASE}
 
 # Proxy cache env vars
@@ -37,8 +42,6 @@ COPY plus/etc/ssl /etc/ssl
 
 RUN set -x \
 # Create nginx user/group first, to be consistent throughout Docker variants
-    && groupadd --system --gid 101 nginx \
-    && useradd --system --gid nginx --no-create-home --home /nonexistent --comment "nginx user" --shell /bin/false --uid 101 nginx \
     && apt-get update \
     && apt-get install --no-install-recommends --no-install-suggests -y ca-certificates gnupg1 lsb-release \
     && \
@@ -61,9 +64,8 @@ RUN set -x \
     apt-get remove --purge --auto-remove -y gnupg1 && rm -rf /var/lib/apt/lists/* \
 # Install the latest release of NGINX Plus and/or NGINX Plus modules (written and maintained by F5)
     && nginxPackages=" \
-        nginx-plus=${NGINX_VERSION}-${NGINX_PKG_RELEASE} \
-        nginx-plus-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${NJS_PKG_RELEASE} \
-        nginx-plus-module-xslt=${NGINX_VERSION}-${NGINX_PKG_RELEASE} \
+        nginx-plus-module-njs=${NGINX_PLUS_VERSION}+${NJS_VERSION}-${NJS_PKG_RELEASE} \
+        nginx-plus-module-xslt=${NGINX_PLUS_VERSION}-${XSLT_PKG_RELEASE} \
     " \
     && echo "Acquire::https::pkgs.nginx.com::Verify-Peer \"true\";" > /etc/apt/apt.conf.d/90nginx \
     && echo "Acquire::https::pkgs.nginx.com::Verify-Host \"true\";" >> /etc/apt/apt.conf.d/90nginx \
@@ -74,16 +76,7 @@ RUN set -x \
     && apt-get install --no-install-recommends --no-install-suggests -y $nginxPackages curl gettext-base \
     && apt-get remove --purge -y lsb-release \
     && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nginx-plus.list \
-    && rm -rf /etc/apt/apt.conf.d/90nginx /etc/ssl/nginx \
-# Forward request logs to Docker log collector
-    && ln -sf /dev/stdout /var/log/nginx/access.log \
-    && ln -sf /dev/stderr /var/log/nginx/error.log
-
-EXPOSE 80
-
-STOPSIGNAL SIGTERM
-
-CMD ["nginx", "-g", "daemon off;"]
+    && rm -rf /etc/apt/apt.conf.d/90nginx /etc/ssl/nginx
 
 # Copy files from the OSS NGINX Docker container such that the container
 # startup is the same.
@@ -91,11 +84,9 @@ COPY plus/etc/nginx /etc/nginx
 COPY common/etc /etc
 COPY common/docker-entrypoint.sh /docker-entrypoint.sh
 COPY common/docker-entrypoint.d /docker-entrypoint.d/
-COPY plus/docker-entrypoint.d /docker-entrypoint.d/
 
 RUN set -x \
     && mkdir -p /var/cache/nginx/s3_proxy \
     && chown nginx:nginx /var/cache/nginx/s3_proxy \
-    && chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh;
-
-ENTRYPOINT ["/docker-entrypoint.sh"]
+    && chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh \
+    && find /docker-entrypoint.d -type f -name '*.sh' -exec chmod -v +x {} \;
