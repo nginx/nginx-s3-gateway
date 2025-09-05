@@ -94,6 +94,10 @@ else
   export S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}"
 fi
 
+# Use default proxy_cache_use_stale settings if the variable is not defined
+if [[ ! -v PROXY_CACHE_USE_STALE ]]; then
+  export PROXY_CACHE_USE_STALE="error timeout http_500 http_502 http_503 http_504"
+fi
 
 # Nothing is modified under this line
 
