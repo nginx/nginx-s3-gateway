@@ -4,7 +4,8 @@
 FROM nginx-s3-gateway
 
 RUN set -eux \
-    export DEBIAN_FRONTEND=noninteractive;  \
+    export DEBIAN_FRONTEND=noninteractive; \
+    export NGINX_VERSION="$(nginx -V 2>&1 | grep 'nginx version' | awk -F'[/ ]' '{print $4}')"; \
     apt-get update -qq; \
     apt-get install --no-install-recommends --no-install-suggests --yes make gcc libc6-dev curl expect libpcre2-dev libpcre3-dev libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev; \
     mkdir -p /tmp/nginx /tmp/njs-latest; \
