@@ -57,11 +57,11 @@ export CORS_ENABLED="$(parseBoolean "${CORS_ENABLED}")"
 # is not normally used as part of the gateway. The following variable
 # defines the set of acceptable headers.
 if [ "${CORS_ENABLED}" == "1" ]; then
-  export LIMIT_METHODS_TO="GET HEAD OPTIONS"
-  export LIMIT_METHODS_TO_CSV="GET, HEAD, OPTIONS"
+  export LIMIT_METHODS_TO="GET HEAD OPTIONS PUT DELETE"
+  export LIMIT_METHODS_TO_CSV="GET, HEAD, OPTIONS, PUT, DELETE"
 else
-  export LIMIT_METHODS_TO="GET HEAD"
-  export LIMIT_METHODS_TO_CSV="GET, HEAD"
+  export LIMIT_METHODS_TO="GET HEAD PUT DELETE"
+  export LIMIT_METHODS_TO_CSV="GET, HEAD, PUT, DELETE"
 fi
 
 if [ -z "${CORS_ALLOWED_ORIGIN+x}" ]; then
