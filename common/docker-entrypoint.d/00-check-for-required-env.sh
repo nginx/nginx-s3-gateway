@@ -130,21 +130,3 @@ fi
 if [ $failed -gt 0 ]; then
   exit 1
 fi
-
-echo "S3 Backend Environment"
-echo "Service: ${S3_SERVICE:-s3}"
-echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
-echo "Origin: ${S3_SERVER_PROTO}://${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
-echo "Region: ${S3_REGION}"
-echo "Addressing Style: ${S3_STYLE}"
-echo "AWS Signatures Version: v${AWS_SIGS_VERSION}"
-echo "DNS Resolvers: ${DNS_RESOLVERS}"
-echo "Directory Listing Enabled: ${ALLOW_DIRECTORY_LIST}"
-echo "Directory Listing Path Prefix: ${DIRECTORY_LISTING_PATH_PREFIX}"
-echo "Provide Index Pages Enabled: ${PROVIDE_INDEX_PAGE}"
-echo "Append slash for directory enabled: ${APPEND_SLASH_FOR_POSSIBLE_DIRECTORY}"
-echo "Stripping the following headers from responses: x-amz-;${HEADER_PREFIXES_TO_STRIP}"
-echo "Allow the following headers from responses (these take precedence over the above): ${HEADER_PREFIXES_ALLOWED}"
-echo "CORS Enabled: ${CORS_ENABLED}"
-echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
-echo "Proxy cache using stale setting: ${PROXY_CACHE_USE_STALE}"

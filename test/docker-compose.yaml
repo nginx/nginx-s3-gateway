@@ -1,5 +1,3 @@
-version: "3"
-
 services:
   nginx-s3-gateway:
     # If minio client is up and running properly, we are reasonably sure that
@@ -37,6 +35,7 @@ services:
       PROXY_CACHE_VALID_OK: "1h"
       PROXY_CACHE_VALID_NOTFOUND: "1m"
       PROXY_CACHE_VALID_FORBIDDEN: "30s"
+      NGINX_LICENSE_JWT: "${NGINX_LICENSE_JWT}"
 
   minio:
     image: quay.io/minio/minio:RELEASE.2023-06-09T07-32-12Z
