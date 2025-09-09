@@ -8,7 +8,8 @@ FROM nginx-s3-gateway
 # provided by the inherited container images and we do not want to mess with
 # them.
 RUN set -eux \
-    export DEBIAN_FRONTEND=noninteractive;  \
+    export DEBIAN_FRONTEND=noninteractive; \
+    export NGINX_VERSION="$(nginx -V 2>&1 | grep 'nginx version' | awk -F'[/ ]' '{print $4}')"; \
     apt-get update -qq; \
     apt-get install --no-install-recommends --no-install-suggests --yes --allow-change-held-packages \
         make gcc libc6-dev curl expect libpcre2-dev \
