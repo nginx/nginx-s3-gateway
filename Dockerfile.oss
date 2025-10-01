@@ -25,10 +25,13 @@ RUN set -eux \
     mkdir -p /var/cache/nginx/s3_proxy; \
     chown nginx:nginx /var/cache/nginx/s3_proxy; \
     chmod -R -v +x /docker-entrypoint.sh /docker-entrypoint.d/*.sh; \
+    apt-get update; \
+    apt-get install --no-install-recommends --no-install-suggests --yes gnupg2 curl; \
+    curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nginx.gpg; \
     echo "deb https://nginx.org/packages/mainline/debian/ $(echo $PKG_RELEASE | cut -f2 -d~) nginx" >> /etc/apt/sources.list.d/nginx.list; \
     apt-get update; \
     apt-get install --no-install-recommends --no-install-suggests --yes \
       nginx-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${PKG_RELEASE}; \
-    apt-get remove --purge --auto-remove --yes; \
+    apt-get remove --purge --auto-remove --yes gnupg2 curl; \
     rm -rf /var/lib/apt/lists/* /etc/apt/sources.list.d/nginx.list
 
