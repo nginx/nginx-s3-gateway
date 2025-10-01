@@ -10,4 +10,10 @@ upstream storage_urls {
     # Be sure to specify the port in the S3_SERVER and be sure that port
     # corresponds to the https/http in the proxy_pass directive.
     server ${S3_SERVER}:${S3_SERVER_PORT} resolve;
+
+    # Keep idle connections open to S3 for better performance
+    # This is especially important for serving many small files (e.g., Zoomify tiles)
+    keepalive 100;
+    keepalive_timeout 300s;
+    keepalive_requests 1000;
 }

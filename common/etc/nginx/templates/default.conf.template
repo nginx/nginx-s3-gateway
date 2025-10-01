@@ -37,8 +37,8 @@ server {
     add_header Access-Control-Allow-Origin *;
 
     keepalive_timeout 120s;
-    proxy_read_timeout 120s;
-    proxy_connect_timeout 120s;
+    proxy_read_timeout 300s;
+    proxy_connect_timeout 30s;
     proxy_send_timeout 120s;
     send_timeout 120s;
 
