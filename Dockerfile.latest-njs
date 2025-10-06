@@ -3,10 +3,18 @@
 # source, and installs it.
 FROM nginx-s3-gateway
 
+# Package names with trailing dashes are intentionally specified in order to
+# suppress their install as build dependencies. Those libraries are being
+# provided by the inherited container images and we do not want to mess with
+# them.
 RUN set -eux \
-    export DEBIAN_FRONTEND=noninteractive;  \
+    export DEBIAN_FRONTEND=noninteractive; \
+    export NGINX_VERSION="$(nginx -V 2>&1 | grep 'nginx version' | awk -F'[/ ]' '{print $4}')"; \
     apt-get update -qq; \
-    apt-get install --no-install-recommends --no-install-suggests --yes make gcc libc6-dev curl expect libpcre2-dev libpcre3-dev libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev; \
+    apt-get install --no-install-recommends --no-install-suggests --yes --allow-change-held-packages \
+        make gcc libc6-dev curl expect libpcre2-dev \
+        libpcre3-dev libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev \
+        libgcrypt20 libicu-dev libssl-dev libxslt1-dev- libxml2-dev-; \
     mkdir -p /tmp/nginx /tmp/njs-latest; \
     curl --retry 6 --location "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" \
         | gunzip | tar --extract --strip-components=1 --directory /tmp/nginx; \

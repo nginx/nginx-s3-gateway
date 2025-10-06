@@ -269,40 +269,23 @@ It is worth noting that due to the way the startup scripts work, even the unpriv
 
 ### Building the NGINX Plus Container Image
 
-In order to build the NGINX Plus container image, copy your NGINX Plus 
-repository keys (`nginx-repo.crt` and `nginx-repo.key`) into the 
-`plus/etc/ssl/nginx` directory before building.
-
-If you are using a version of Docker that supports Buildkit, then you can
-build the image as follows in order to prevent your private keys from
-being stored in the container image.
+In order to build the NGINX Plus container image, you will need to set up the official NGINX
+Plus Docker image repository, as [per the documentation](https://docs.nginx.com/nginx/admin-guide/installing-nginx/installing-nginx-docker/#use-official-nginx-plus-docker-images).
 
 To build, run the following from the project root directory:
 
 ```
-DOCKER_BUILDKIT=1 docker build \
-    --file Dockerfile.buildkit.plus \
-    --tag nginx-plus-s3-gateway --tag nginx-plus-s3-gateway:plus \
-    --secret id=nginx-crt,src=plus/etc/ssl/nginx/nginx-repo.crt \
-    --secret id=nginx-key,src=plus/etc/ssl/nginx/nginx-repo.key \
-    --squash .
+docker buildx build \
+    --file Dockerfile.plus \
+    --tag nginx-plus-s3-gateway --tag nginx-plus-s3-gateway:plus .
 ```
-
-Otherwise, if you don't have Buildkit available, then build as follows. If you
-want to remove the private keys from the image, then you may need to do a
-post-build squash operation using a utility like
-[docker-squash](https://pypi.org/project/docker-squash/).
-
-```
-docker build --file Dockerfile.plus --tag nginx-plus-s3-gateway --tag nginx-plus-s3-gateway:plus .
-``` 
 
 Alternatively, if you would like to use the latest version of
 [njs](https://nginx.org/en/docs/njs/) with NGINX Plus, you can build an image
 from the latest njs source by building this image after building the parent 
 image above:
 ```
-docker build --file Dockerfile.plus --tag nginx-plus-s3-gateway --tag nginx-plus-s3-gateway:latest-njs-plus .
+docker build --file Dockerfile.latest-njs --tag nginx-plus-s3-gateway:latest-njs-plus .
 ```
 
 After building, you can run the image by issuing the following command and
