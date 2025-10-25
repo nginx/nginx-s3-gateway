@@ -464,7 +464,7 @@ An alternative way to use the container image on an EKS cluster is to use a serv
 - Configuring a [Kubernetes service account to assume an IAM role with EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-association.html)
 - [Configure your pods, Deployments, etc to use the Service Account](https://docs.aws.amazon.com/eks/latest/userguide/pod-configuration.html)
 - As soon as the pods/deployments are updated, you will see the couple of Env Variables listed below in the pods.
-  - `AWS_CONTAINER_CREDENTIALS_FULL_URI` - Contains the Uri of the EKS Pod Identity Agent that will provide the credentials 
+  - `AWS_CONTAINER_CREDENTIALS_FULL_URI` - Contains the URI of the EKS Pod Identity Agent that will provide the credentials 
   - `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`  - Contains the token which will be used to create temporary credentials using the EKS Pod Identity Agent.
 
 The minimal set of resources to deploy is the same than for [Running on EKS with IAM roles for service accounts](#running-on-eks-with-iam-roles-for-service-accounts), except there is no need to annotate the service account:
