@@ -2,7 +2,7 @@
   "devDependencies": {
     "better-docs": "^2.7.3",
     "jsdoc": "^4.0.4",
-    "njs-types": "^0.9.1",
+    "njs-types": "^0.9.4",
     "taffydb": "^2.7.3"
   }
 }
