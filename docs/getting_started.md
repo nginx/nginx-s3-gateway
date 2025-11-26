@@ -207,7 +207,7 @@ sudo env $(cat settings.example) ./standalone_ubuntu_oss_install.sh
 
 ### Running the Public Open Source NGINX Container Image
 
-The latest builds of the gateway (that use open source NGINX) are available on 
+The latest builds of the gateway (that use open source NGINX) are available on
 the project's Github [package repository](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway).
 
 To run with the public open source image, replace the `settings` file specified
@@ -220,7 +220,7 @@ docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
 If you would like to run with the latest njs version, run:
 ```
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss 
+    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
 ```
 
 Alternatively, if you would like to pin your version to a specific point in
@@ -228,6 +228,22 @@ time release, find the version with an embedded date and run:
 ```
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
     ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
+```
+
+#### Running Unprivileged Container Images
+
+Unprivileged container images run NGINX as a non-root user and listen on port **8080** internally (instead of port 80). This provides enhanced security by not requiring privileged ports.
+
+To run an unprivileged image, use the `unprivileged-oss` tag and map to port **8080**:
+```
+docker run --env-file ./settings --publish 80:8080 --name nginx-s3-gateway \
+    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
+```
+
+Alternatively, you can map host port 8080 to container port 8080 to avoid requiring elevated privileges on the host:
+```
+docker run --env-file ./settings --publish 8080:8080 --name nginx-s3-gateway \
+    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
 ```
 
 ### Building the Public Open Source NGINX Container Image
@@ -457,6 +473,9 @@ spec:
               path: /health
               port: http
 ```
+
+**Note:** If using an unprivileged container image (e.g., `unprivileged-oss-YYYYMMDD`), change `containerPort: 80` to `containerPort: 8080` as unprivileged containers listen on port 8080.
+
 ## Running on EKS with EKS Pod Identities
 
 An alternative way to use the container image on an EKS cluster is to use a service account which can assume a role using [Pod Identities](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html).
