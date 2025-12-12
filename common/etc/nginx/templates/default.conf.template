@@ -13,6 +13,13 @@ map $request_uri $uri_full_path {
     "~^(?P<path>.*?)(\?.*)*$"  $path;
 }
 
+# Retrieves the initial scheme send by the User Agent. This uses
+# X-Forwarded-Proto header added by possible proxy or load balancer.
+map $http_x_forwarded_proto $real_scheme {
+    default    $http_x_forwarded_proto;
+    ""         $scheme;
+}
+
 # Remove/replace a portion of request URL (if configured)
 map $uri_full_path $uri_path {
 	"~^$STRIP_LEADING_DIRECTORY_PATH(.*)"  $PREFIX_LEADING_DIRECTORY_PATH$1;
@@ -304,7 +311,7 @@ server {
         # 302 to request without slashes
         # Adding a ? to the end of the replacement param in `rewrite` prevents it from
         # appending the query string.
-        rewrite ^ $scheme://$http_host$uri/$is_args$query_string? redirect;
+        rewrite ^ $real_scheme://$http_host$uri/$is_args$query_string? redirect;
     }
 
     # Provide a hint to the client on 405 errors of the acceptable request methods
