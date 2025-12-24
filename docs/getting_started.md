@@ -83,7 +83,7 @@ A full reference for S3 addressing styles may be found [here](https://docs.aws.a
 Here is the difference between `virtual` and `virtual-v2`:
 #### virtual
 * Proxied endpoint: `S3_SERVER:S3_SERVER_PORT`
-* `Host` header: `S3_BUCKET_NAME}.S3_SERVER`
+* `Host` header: `S3_BUCKET_NAME.S3_SERVER`
 * `host` field in the [S3 V4 `CanonicalHeaders`](https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html): `S3_BUCKET_NAME}.S3_SERVER`
 
 #### virtual-v2
