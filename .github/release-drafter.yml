@@ -1,0 +1,110 @@
+---
+name-template: $RESOLVED_VERSION
+tag-template: $RESOLVED_VERSION
+include-pre-releases: true
+categories:
+  - title: 💣 Breaking Changes
+    labels:
+      - breaking change
+  - title: 🔔 Deprecation Warnings
+    labels:
+      - deprecation
+  - title: 🚀 Features
+    labels:
+      - enhancement
+  - title: 🐛 Bug Fixes
+    labels:
+      - bug
+  - title: 🧪 Tests
+    labels:
+      - tests
+  - title: 📝 Documentation
+    labels:
+      - documentation
+  - title: 👷 CI/CD
+    labels:
+      - ci
+      - build
+  - title: 🔨 Maintenance
+    labels:
+      - chore
+  - title: ⬆️ Dependencies
+    collapse-after: 15
+    labels:
+      - dependencies
+  - title: Other Changes
+    labels:
+      - *
+exclude-labels:
+    - skip changelog
+version-resolver:
+  minor:
+    labels:
+      - breaking change
+      - deprecation
+  patch:
+    labels:
+      - bug
+      - chore
+      - dependencies
+      - documentation
+      - enhancement
+      - tests
+  default: patch
+autolabeler:
+  - label: breaking change
+    body:
+      - "/breaking/i"
+  - label: deprecation
+    branch:
+      - "/deprecate\/.+/"
+    title:
+      - "/deprecate/i"
+  - label: enhancement
+    branch:
+      - "/feat\/.+/"
+      - "/feature\/.+/"
+    title:
+      - "/feat/i"
+      - "/feature/i"
+  - label: bug
+    branch:
+      - "/fix\/.+/"
+      - "/bug\/.+/"
+      - "/bugfix\/.+/"
+    title:
+      - "/fix/i"
+      - "/bug/i"
+      - "/bugfix/i"
+  - label: tests
+    branch:
+      - "/tests{0,1}\/.+/"
+    files:
+      - "/tests/**"
+    title:
+      - "/tests{0,1}\/.+/i"
+  - label: documentation
+    branch:
+      - "/docs{0,1}\/.+/"
+      - "/documentation\/.+/"
+    files:
+      - "docs/**"
+    title:
+      - "/docs{0,1}\/.+/i"
+      - "/documentation/i"
+  - label: dependencies #todo review
+    files:
+      - ".github/workflows/requirements/*"
+replacers: #todo review
+  - search: "/(feat|fix|docs|chore|cleanup|style|refactor|perf|test)(\(\w+\))?: /g"
+    replace: ""
+template: |
+    ## What's new in the NGINX S3 Gateway $RESOLVED_VERSION!
+
+    $CHANGES
+
+    ## Install & Upgrade 
+
+    - The easiest way to use the most recent version is to find it in the [docker images](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway) are which contains installation instructions
+    - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
+
