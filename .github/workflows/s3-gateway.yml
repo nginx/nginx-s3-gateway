@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -45,7 +45,7 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/oss.tar
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: oss
           path: ${{ runner.temp }}/oss.tar
@@ -61,14 +61,14 @@ jobs:
         path_style: [virtual, virtual-v2]
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -83,7 +83,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -101,7 +101,7 @@ jobs:
     needs: test-oss
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -109,7 +109,7 @@ jobs:
           driver: docker
 
       - name: Download artifact
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -132,7 +132,7 @@ jobs:
           docker save nginx-s3-gateway:latest-njs-oss > ${{ runner.temp }}/latest-njs.tar
 
       - name: Upload artifact - latest-njs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: latest-njs
           path: ${{ runner.temp }}/latest-njs.tar
@@ -145,14 +145,14 @@ jobs:
     needs: build-latest-njs-for-test
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -167,7 +167,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: latest-njs
           path: ${{ runner.temp }}
@@ -186,7 +186,7 @@ jobs:
     needs: test-oss
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -194,7 +194,7 @@ jobs:
           driver: docker
 
       - name: Download artifact
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -217,7 +217,7 @@ jobs:
           docker save nginx-s3-gateway:unprivileged-oss > ${{ runner.temp }}/unprivileged.tar
 
       - name: Upload artifact - unprivileged
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: unprivileged
           path: ${{ runner.temp }}/unprivileged.tar
@@ -230,14 +230,14 @@ jobs:
     needs: build-unprivileged-for-test
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Install dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -252,7 +252,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: unprivileged
           path: ${{ runner.temp }}
@@ -281,7 +281,7 @@ jobs:
           - 5000:5000
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Get current date
         id: date
