@@ -1,7 +1,7 @@
 # Pull from NGINX image that provides the XSLT module and supporting libraries
-FROM private-registry.nginx.com/nginx-plus/modules:r35-xslt-debian@sha256:3eaa85dca47e31b9a6648bcaf6034f076cd59be9b1510b25fd1bbe1144f0bb48 AS xslt
+FROM private-registry.nginx.com/nginx-plus/modules:r36-xslt-debian@sha256:54b3e6d9d25f3fb7ad2b93fc7d66ccae1dbc3186b3ce417eda4194a45ee398c3 AS xslt
 
-FROM private-registry.nginx.com/nginx-plus/base:r35-debian-bookworm@sha256:9a82ad3f96d58be861257efd621f215d599e226ebedd24d9f3211bdd743c3c27
+FROM private-registry.nginx.com/nginx-plus/base:r36-debian-trixie@sha256:7dd5de94b8c5d6e726918eb36ea78435efad4f9f63be4325c96919c48603a102
 
 # Proxy cache env vars
 ENV PROXY_CACHE_MAX_SIZE=10g
