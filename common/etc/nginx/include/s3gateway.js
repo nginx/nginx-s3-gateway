@@ -299,30 +299,42 @@ function s3BaseUri(r) {
  * Returns the s3 path given the incoming request
  *
  * @param r {NginxHTTPRequest} HTTP request
+ * @param opts {Object} Additional options for assembling the s3 URI
+ * @param opts.preserveBasePath {boolean} If set, modifications to the base path such as the addition of the bucket name will not be performed.
  * @returns {string} uri for s3 request
  */
-function s3uri(r) {
-    let uriPath = r.variables.uri_path;
-    const basePath = s3BaseUri(r);
+function s3uri(r, opts) {
+    if (!opts) {
+        opts = { preserveBasePath: false };
+    }
+
+    let basePath;
     let path;
+    let uriPath = r.variables.uri_path;
+
+    if (opts.preserveBasePath) {
+        basePath = '';
+    } else {
+        basePath = s3BaseUri(r);
+    }
 
     // Create query parameters only if directory listing is enabled.
     if (ALLOW_LISTING && !utils.parseBoolean(r.variables.forIndexPage)) {
         const queryParams = _s3DirQueryParams(uriPath, r.method);
         if (queryParams.length > 0) {
-            path = basePath + '?' + queryParams;
+            path = `${basePath}?${queryParams}`;
         } else {
-            path = _escapeURIPath(basePath + uriPath);
+            path = _escapeURIPath(`${basePath}${uriPath}`);
         }
     } else {
         // This is a path that will resolve to an index page
         if (PROVIDE_INDEX_PAGE  && _isDirectory(uriPath) ) {
             uriPath += INDEX_PAGE;
         }
-        path = _escapeURIPath(basePath + uriPath);
+        path = _escapeURIPath(`${basePath}${uriPath}`);
     }
 
-    utils.debug_log(r, 'S3 Request URI: ' + r.method + ' ' + path);
+    utils.debug_log(r, `S3 Request URI: ${r.method} ${path}`);
     return path;
 }
 
@@ -418,7 +430,12 @@ async function loadContent(r) {
         r.internalRedirect("@s3Directory");
         return;
     }
-    const uri = s3uri(r);
+    // For the index page check, don't add the bucket name
+    // in the case of a path-style uri because the subrequest will
+    // add it after the redirect.  Adding it here would result in the
+    // bucket name being added twice.
+    const uri = s3uri(r, { preserveBasePath: true });
+
     let reply = await ngx.fetch(
         `http://127.0.0.1:80${uri}`
     );
