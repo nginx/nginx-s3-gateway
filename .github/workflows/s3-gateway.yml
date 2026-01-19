@@ -68,7 +68,7 @@ jobs:
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -152,7 +152,7 @@ jobs:
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -237,7 +237,7 @@ jobs:
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
