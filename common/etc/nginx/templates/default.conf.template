@@ -26,7 +26,7 @@ map $uri_full_path $uri_path {
     default $PREFIX_LEADING_DIRECTORY_PATH$uri_full_path;
 }
 
-# Map to detect cache-control: no-cache request header for cache bypass.
+# Map to detect Cache-Control: no-cache request header for cache bypass.
 # This allows clients to force a fresh response by sending Cache-Control: no-cache.
 map $http_cache_control $cache_bypass_request {
     default                         0;
