@@ -26,6 +26,13 @@ map $uri_full_path $uri_path {
     default $PREFIX_LEADING_DIRECTORY_PATH$uri_full_path;
 }
 
+# Map to detect cache-control: no-cache request header for cache bypass.
+# This allows clients to force a fresh response by sending Cache-Control: no-cache.
+map $http_cache_control $cache_bypass_request {
+    default         0;
+    ~*no-cache      1;
+}
+
 # S3_HOST_HEADER is set in the startup script
 # (either ./common/docker-entrypoint.sh or ./standalone_ubuntu_oss_install.sh)
 # based on the S3_STYLE configuration option.
@@ -67,6 +74,8 @@ server {
     proxy_cache_lock on;
     proxy_cache_use_stale ${PROXY_CACHE_USE_STALE};
     proxy_cache_key "$request_method$host$uri";
+    # Bypass the cache when the client sends Cache-Control: no-cache (e.g., browser force refresh)
+    proxy_cache_bypass $cache_bypass_request;
 
     # If you need to support proxying range request, refer to this article:
     # https://www.nginx.com/blog/smart-efficient-byte-range-caching-nginx/
@@ -121,6 +130,7 @@ server {
         proxy_cache s3_cache_slices;
         proxy_cache_valid 200 302 206 ${PROXY_CACHE_VALID_OK};
         proxy_cache_key "$request_method$host$uri$slice_range";
+        proxy_cache_bypass $cache_bypass_request;
 
         slice             ${PROXY_CACHE_SLICE_SIZE};
         proxy_set_header   Range $slice_range;

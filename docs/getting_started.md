@@ -156,6 +156,16 @@ Setting your slice size too small can have performance impacts since NGINX perfo
 
 You may make byte-range requests and normal requests for the same file and NGINX will automatically handle them differently.  The caches for file chunks and normal file requests are separate on disk.
 
+## Cache-Control Request Header
+The gateway respects the `Cache-Control: no-cache` request header. When a client sends a request with this header (e.g., a browser force refresh using Ctrl+F5 or Cmd+Shift+R), the gateway will bypass the local cache and fetch the resource directly from S3.
+
+This is useful when:
+- You need to force a fresh response after updating an object in S3
+- A browser user wants to bypass cached content using a force refresh
+- You're debugging caching behavior
+
+Note that this only bypasses the cache for reading; the response from S3 will still be cached for subsequent requests that don't include `Cache-Control: no-cache`.
+
 ## Usage with AWS S3 Express One Zone
 The gateway may be used to proxy files in the AWS S3 Express One Zone product (also called Directory Buckets).
 
