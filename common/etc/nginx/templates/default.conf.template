@@ -29,8 +29,8 @@ map $uri_full_path $uri_path {
 # Map to detect cache-control: no-cache request header for cache bypass.
 # This allows clients to force a fresh response by sending Cache-Control: no-cache.
 map $http_cache_control $cache_bypass_request {
-    default         0;
-    ~*no-cache      1;
+    default                         0;
+    ~*(^|,)\s*no-cache\s*(,|$)      1;
 }
 
 # S3_HOST_HEADER is set in the startup script
