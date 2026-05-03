@@ -398,7 +398,7 @@ function trailslashControl(r) {
         // consider the uri without query params or anchors
         const path = r.variables.uri_path.split(/[?#]/)[0];
 
-        const hasExtension = /\/[^.\/]+\.[^.]+$/;
+        const hasExtension = /(\/[^\/]*)*(\/[^\/]*\.[^.\/]*)$/;
         if (!hasExtension.test(path)  && !_isDirectory(path)){
             return r.internalRedirect("@trailslash");
         }
