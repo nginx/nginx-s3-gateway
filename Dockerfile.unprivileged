@@ -6,7 +6,8 @@
 FROM nginx-s3-gateway
 
 # Implement changes required to run NGINX as an unprivileged user
-RUN sed -i "/^server {/a \    listen       8080;" /etc/nginx/templates/default.conf.template \
+RUN sed -i 's/listen[[:space:]]*80;/listen 8080;/g' /etc/nginx/templates/default.conf.template \
+    && sed -i 's/listen[[:space:]]*\[::\]:80;/listen [::]:8080;/g' /etc/nginx/templates/default.conf.template \
     && sed -i '/user  nginx;/d' /etc/nginx/nginx.conf \
     && sed -i 's#http://127.0.0.1:80#http://127.0.0.1:8080#g' /etc/nginx/include/s3gateway.js \
     && sed -i 's,/var/run/nginx.pid,/tmp/nginx.pid,' /etc/nginx/nginx.conf \
