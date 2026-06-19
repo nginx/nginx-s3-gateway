@@ -22,9 +22,17 @@ set -e
 
 failed=0
 
-required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
+required=("S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION"
 "CORS_ENABLED")
+
+if [ "${S3_STYLE}" != "endpoint" ]; then
+    required+=("S3_BUCKET_NAME")
+fi
+
+if [ "${SSL_ENABLED}" == "true" ]; then
+    required+=("SSL_CERT_PATH" "SSL_KEY_PATH" "SSL_CLIENT_CA_PATH")
+fi
 
 # Require some form of authentication to be configured.
 

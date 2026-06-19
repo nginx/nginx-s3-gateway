@@ -32,7 +32,9 @@ import awssig2 from "./awssig2.js";
 import awssig4 from "./awssig4.js";
 import utils from "./utils.js";
 
-_requireEnvVars('S3_BUCKET_NAME');
+if (process.env['S3_STYLE'] !== 'endpoint') {
+    _requireEnvVars('S3_BUCKET_NAME');
+}
 _requireEnvVars('S3_SERVER');
 _requireEnvVars('S3_SERVER_PROTO');
 _requireEnvVars('S3_SERVER_PORT');
@@ -193,7 +195,7 @@ function s3date(r) {
  * @returns {string} AWS authentication signature
  */
 function s3auth(r) {
-    const bucket = process.env['S3_BUCKET_NAME'];
+    const bucket = process.env['S3_BUCKET_NAME'] || '';
     const region = process.env['S3_REGION'];
     const host = r.variables.s3_host;
     const sigver = process.env['AWS_SIGS_VERSION'];
@@ -282,10 +284,10 @@ function _s3ReqParamsForSigV4(r, bucket, host) {
  * @returns {string} start of the file path for the S3 object URI
  */
 function s3BaseUri(r) {
-    const bucket = process.env['S3_BUCKET_NAME'];
+    const bucket = process.env['S3_BUCKET_NAME'] || '';
     let basePath;
 
-    if (S3_STYLE === 'path') {
+    if (S3_STYLE === 'path' && bucket) {
         utils.debug_log(r, 'Using path style uri : ' + '/' + bucket);
         basePath = '/' + bucket;
     } else {
@@ -350,9 +352,15 @@ function _s3DirQueryParams(uriPath, method) {
 
     if (uriPath !== '/') {
         let decodedUriPath = decodeURIComponent(uriPath);
-        let without_leading_slash = decodedUriPath.charAt(0) === '/' ?
-            decodedUriPath.substring(1, decodedUriPath.length) : decodedUriPath;
-        path += '&prefix=' + _encodeURIComponent(without_leading_slash);
+        if (S3_STYLE === 'endpoint') {
+            const segs = decodedUriPath.split('/').filter(p => p.length > 0);
+            const subPrefix = segs.slice(1).join('/');
+            path += '&prefix=' + _encodeURIComponent(subPrefix ? subPrefix + '/' : '');
+        } else {
+            let without_leading_slash = decodedUriPath.charAt(0) === '/' ?
+                decodedUriPath.substring(1, decodedUriPath.length) : decodedUriPath;
+            path += '&prefix=' + _encodeURIComponent(without_leading_slash);
+        }
     }
 
     return path;

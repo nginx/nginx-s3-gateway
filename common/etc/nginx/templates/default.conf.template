@@ -41,6 +41,17 @@ js_set $s3uri s3gateway.s3uri;
 server {
     listen       80;
     listen       [::]:80;
+    listen       ${SSL_PORT} ssl;
+    listen       [::]:${SSL_PORT} ssl;
+
+    ssl_certificate ${SSL_CERT_PATH};
+    ssl_certificate_key ${SSL_KEY_PATH};
+    
+    # Mandatory mTLS Client Certificate Enforcement
+    ssl_client_certificate ${SSL_CLIENT_CA_PATH};
+    ssl_verify_client on;
+    ssl_verify_depth 2;
+    ssl_protocols TLSv1.2 TLSv1.3;
     include /etc/nginx/conf.d/gateway/server_variables.conf;
 
     # Don't display the NGINX version number because we don't want to reveal
