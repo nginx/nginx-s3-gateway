@@ -18,7 +18,7 @@ RUN set -eux \
     mkdir -p /tmp/nginx /tmp/njs-latest; \
     curl --retry 6 --location "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" \
         | gunzip | tar --extract --strip-components=1 --directory /tmp/nginx; \
-    curl --retry 6 --location 'https://hg.nginx.org/njs/archive/tip.tar.gz' \
+    curl --retry 6 --location 'https://github.com/nginx/njs/archive/refs/heads/master.tar.gz' \
         | gunzip | tar --extract --strip-components=1 --directory /tmp/njs-latest; \
     cd /tmp/njs-latest; \
     ./configure; \
