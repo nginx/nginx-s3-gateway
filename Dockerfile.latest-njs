@@ -11,7 +11,9 @@
 FROM nginx-s3-gateway AS njs-builder
 
 # Build-only dependencies. These stay confined to this stage and are discarded
-# when the final image is assembled, so they do not need to be purged.
+# when the final image is assembled, so they do not need to be purged. The apt
+# package indexes and the unpacked source trees are still removed at the end of
+# the RUN, since this stage's layer is retained in the build cache.
 #
 # Note: libpcre3-dev is deliberately absent. Debian trixie dropped the legacy
 # PCRE1 (pcre3) source package; NGINX and njs build against PCRE2 by way of
@@ -59,7 +61,8 @@ RUN set -eux; \
         --with-cc-opt="-g -O2 -fdebug-prefix-map=/data/builder/debuild/nginx-${NGINX_VERSION}/debian/debuild-base/nginx-${NGINX_VERSION}=. -fstack-protector-strong -Wformat -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -fPIC"; \
     make -j "$(nproc)"; \
     cp objs/ngx_stream_js_module.so /usr/lib/nginx/modules; \
-    cp objs/ngx_http_js_module.so /usr/lib/nginx/modules
+    cp objs/ngx_http_js_module.so /usr/lib/nginx/modules; \
+    rm -rf /var/lib/apt/lists/* /tmp/nginx /tmp/njs-latest
 
 # Final runtime image: inherits the clean gateway image and receives only the
 # freshly built njs artifacts. No build toolchain is present here.
