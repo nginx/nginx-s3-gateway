@@ -372,10 +372,63 @@ async function testEKSPodIdentityCredentialRetrieval() {
     }
 }
 
+async function testEKSPodIdentityCredentialRetrievalNon200Response() {
+    printHeader('testEKSPodIdentityCredentialRetrievalNon200Response');
+    if ('AWS_ACCESS_KEY_ID' in process.env) {
+        delete process.env['AWS_ACCESS_KEY_ID'];
+    }
+    if ('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI' in process.env) {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+    if ('AWS_WEB_IDENTITY_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
+    }
+    var tempDir = (process.env['TMPDIR'] ? process.env['TMPDIR'] : '/tmp');
+    var uniqId = `${new Date().getTime()}-${Math.floor(Math.random()*101)}`;
+    var tempFile = `${tempDir}/credentials-unit-test-${uniqId}.json`;
+    var testToken = 'A_TOKEN';
+    fs.writeFileSync(tempFile, testToken);
+    process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'] = tempFile;
+    globalThis.errorBodyParsedAsCredentials = false;
+    globalThis.ngx.fetch = function(url, options) {
+        console.log(' fetching eks pod identity mock error response');
+        return Promise.resolve({
+            ok: false,
+            status: 503,
+            json: function() {
+                // A non-200 body must never be parsed as credentials.
+                globalThis.errorBodyParsedAsCredentials = true;
+                return Promise.resolve({
+                    message: 'Service Unavailable',
+                });
+            },
+        });
+    };
+    var returnedCode = null;
+    var r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        return: function(code) {
+            returnedCode = code;
+        },
+    };
+
+    await awscred.fetchCredentials(r);
+
+    if (globalThis.errorBodyParsedAsCredentials) {
+        throw 'A non-200 EKS Pod Identity agent response was parsed as credentials.';
+    }
+    if (returnedCode !== 500) {
+        throw 'Expected the credentials fetch to fail with 500, got: ' + returnedCode;
+    }
+}
+
 async function test() {
     await testEc2CredentialRetrieval();
     await testEcsCredentialRetrieval();
     await testEKSPodIdentityCredentialRetrieval();
+    await testEKSPodIdentityCredentialRetrievalNon200Response();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();
     testReadCredentialsFromFilePath();
     testReadCredentialsFromNonexistentPath();
