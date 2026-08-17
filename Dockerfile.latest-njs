@@ -29,10 +29,15 @@ RUN set -eux; \
         libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev \
         libgcrypt20 libicu-dev; \
     mkdir -p /tmp/nginx /tmp/njs-latest; \
-    curl --fail --retry 6 --location "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" \
-        | gunzip | tar --extract --strip-components=1 --directory /tmp/nginx; \
-    curl --fail --retry 6 --location 'https://github.com/nginx/njs/archive/refs/heads/master.tar.gz' \
-        | gunzip | tar --extract --strip-components=1 --directory /tmp/njs-latest; \
+    # Download to files rather than piping curl into tar: /bin/sh has no
+    # pipefail, so a mid-stream curl failure could otherwise be masked by a
+    # tar that exits 0 on the truncated input.
+    curl --fail --retry 6 --location --output /tmp/nginx.tar.gz \
+        "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
+    tar --extract --gzip --file /tmp/nginx.tar.gz --strip-components=1 --directory /tmp/nginx; \
+    curl --fail --retry 6 --location --output /tmp/njs-latest.tar.gz \
+        'https://github.com/nginx/njs/archive/refs/heads/master.tar.gz'; \
+    tar --extract --gzip --file /tmp/njs-latest.tar.gz --strip-components=1 --directory /tmp/njs-latest; \
     cd /tmp/njs-latest; \
     ./configure; \
     make -j "$(nproc)"; \
@@ -63,7 +68,7 @@ RUN set -eux; \
     make -j "$(nproc)" modules; \
     cp objs/ngx_stream_js_module.so /usr/lib/nginx/modules; \
     cp objs/ngx_http_js_module.so /usr/lib/nginx/modules; \
-    rm -rf /var/lib/apt/lists/* /tmp/nginx /tmp/njs-latest
+    rm -rf /var/lib/apt/lists/* /tmp/nginx /tmp/njs-latest /tmp/nginx.tar.gz /tmp/njs-latest.tar.gz
 
 # Final runtime image: inherits the clean gateway image and receives only the
 # freshly built njs artifacts. No build toolchain is present here.

@@ -234,24 +234,25 @@ hadolint: ## Lint Dockerfiles with hadolint when installed (opt-in, not part of 
 # suppression is retained so doc generation stays best-effort. Revisit
 # during the test.sh refactor phase.
 docs: ## Generate JSDoc reference documentation into DOCS_DIR
-	cd "$(BASE_DIR)" && npx jsdoc -c jsdoc/conf.json -d $(DOCS_DIR) || true
+	cd "$(BASE_DIR)" && npx jsdoc -c jsdoc/conf.json -d "$(DOCS_DIR)" || true
 
 docs-open: docs ## Generate documentation and open it in a browser
-	$(OPEN_CMD) $(BASE_DIR)$(DOCS_DIR)/index.html
+	$(OPEN_CMD) "$(BASE_DIR)$(DOCS_DIR)/index.html"
 
 jsdoc: docs ## Back-compat alias for docs (previous Makefile's target name)
 
 ##@ Maintenance
 
-# The DOCS_DIR guard rejects empty, absolute, and parent-traversal values so
-# the rm -rf can never escape the repository.
+# The DOCS_DIR guard rejects empty, absolute, parent-traversal, and
+# trailing-slash values so the rm -rf can never escape the repository (a
+# trailing slash would make rm follow a symlinked DOCS_DIR into its target).
 # The teardown mirrors test.sh's compose() invocation, including its
 # docker-compose fallback, and also removes the mc alias test.sh registers.
 clean: ## Remove generated docs and tear down the test compose environment
 	@case "$(DOCS_DIR)" in \
-		""|.|..|/*|*..*) echo "ERROR: refusing to rm -rf suspicious DOCS_DIR '$(DOCS_DIR)'"; exit 1;; \
+		""|.|..|/*|*..*|*/) echo "ERROR: refusing to rm -rf suspicious DOCS_DIR '$(DOCS_DIR)'"; exit 1;; \
 	esac
-	rm -rf "$(BASE_DIR)$(DOCS_DIR)"
+	rm -rf -- "$(BASE_DIR)$(DOCS_DIR)"
 	@if $(DOCKER) compose version > /dev/null 2>&1; then compose_cmd="$(DOCKER) compose"; \
 	else compose_cmd="docker-compose"; fi; \
 	COMPOSE_COMPATIBILITY=true \
