@@ -1,20 +1,31 @@
-# This container image removes the existing njs package from the inherited image
-# (which could be OSS NGINX or NGINX Plus), builds njs from the latest
-# source, and installs it.
-FROM nginx-s3-gateway
+# This container image builds njs from the latest source and installs it over
+# the njs provided by the inherited image (which could be OSS NGINX or NGINX
+# Plus). Note that the nginx-module-njs package itself is not uninstalled --
+# its files are overwritten in place.
+#
+# The build is split into two stages so that the compiler toolchain and the
+# build-only dependencies (gcc, make, the -dev packages, ...) never reach the
+# shipped runtime image. Only the compiled njs CLI and the two dynamic NGINX
+# modules are copied into the final stage, which keeps the runtime image's
+# package footprint identical to that of the inherited image.
+FROM nginx-s3-gateway AS njs-builder
 
-# Package names with trailing dashes are intentionally specified in order to
-# suppress their install as build dependencies. Those libraries are being
-# provided by the inherited container images and we do not want to mess with
-# them.
-RUN set -eux \
+# Build-only dependencies. These stay confined to this stage and are discarded
+# when the final image is assembled, so they do not need to be purged. The apt
+# package indexes and the unpacked source trees are still removed at the end of
+# the RUN, since this stage's layer is retained in the build cache.
+#
+# Note: libpcre3-dev is deliberately absent. Debian trixie dropped the legacy
+# PCRE1 (pcre3) source package; NGINX and njs build against PCRE2 by way of
+# libpcre2-dev instead.
+RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     export NGINX_VERSION="$(nginx -V 2>&1 | grep 'nginx version' | awk -F'[/ ]' '{print $4}')"; \
     apt-get update -qq; \
     apt-get install --no-install-recommends --no-install-suggests --yes --allow-change-held-packages \
         make gcc libc6-dev curl expect libpcre2-dev \
-        libpcre3-dev libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev \
-        libgcrypt20 libicu-dev libssl-dev libxslt1-dev- libxml2-dev-; \
+        libedit-dev libreadline-dev libssl-dev libpcre2-posix3 libxml2-dev libxslt1-dev zlib1g-dev \
+        libgcrypt20 libicu-dev; \
     mkdir -p /tmp/nginx /tmp/njs-latest; \
     curl --retry 6 --location "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" \
         | gunzip | tar --extract --strip-components=1 --directory /tmp/nginx; \
@@ -51,7 +62,12 @@ RUN set -eux \
     make -j "$(nproc)"; \
     cp objs/ngx_stream_js_module.so /usr/lib/nginx/modules; \
     cp objs/ngx_http_js_module.so /usr/lib/nginx/modules; \
-    apt-get purge --yes --auto-remove make gcc libc6-dev expect libpcre2-dev libpcre3-dev libedit-dev libreadline-dev libssl-dev zlib1g-dev; \
-    rm -rf \
-      /var/lib/apt/lists/* \
-      /tmp/*
+    rm -rf /var/lib/apt/lists/* /tmp/nginx /tmp/njs-latest
+
+# Final runtime image: inherits the clean gateway image and receives only the
+# freshly built njs artifacts. No build toolchain is present here.
+FROM nginx-s3-gateway
+
+COPY --from=njs-builder /usr/lib/nginx/modules/ngx_http_js_module.so /usr/lib/nginx/modules/ngx_http_js_module.so
+COPY --from=njs-builder /usr/lib/nginx/modules/ngx_stream_js_module.so /usr/lib/nginx/modules/ngx_stream_js_module.so
+COPY --from=njs-builder /usr/bin/njs /usr/bin/njs
