@@ -407,9 +407,9 @@ async function _fetchEKSPodIdentityCredentials() {
             'Authorization': token,
         },
     });
-    if (!resp.ok) {
-        throw 'Credentials endpoint response was not ok.';
-    }
+if (!resp.ok) {
+    throw `Credentials endpoint response was not ok (status: ${resp.status}).`;
+}
     const creds = await resp.json();
 
     return {
