@@ -341,29 +341,23 @@ async function testEc2CredentialRetrieval() {
 
 async function testEKSPodIdentityCredentialRetrieval() {
     printHeader('testEKSPodIdentityCredentialRetrieval');
-    if ('AWS_ACCESS_KEY_ID' in process.env) {
-        delete process.env['AWS_ACCESS_KEY_ID'];
-    }
-    if ('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI' in process.env) {
-        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
-    }
-    if ('AWS_WEB_IDENTITY_TOKEN_FILE' in process.env) {
-        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
-    }
-    var tempDir = (process.env['TMPDIR'] ? process.env['TMPDIR'] : '/tmp');
-    var uniqId = `${new Date().getTime()}-${Math.floor(Math.random()*101)}`;
-    var tempFile = `${tempDir}/credentials-unit-test-${uniqId}.json`;
+    clearProviderEnv();
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var credentialsFile = tempFilePath('eks-happy-credentials-unit-test', '.json');
+    var tokenFile = tempFilePath('eks-happy-token-unit-test', '');
     var testToken = 'A_TOKEN';
-    fs.writeFileSync(tempFile, testToken);
-    process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'] = tempFile;
+    fs.writeFileSync(tokenFile, testToken);
+    process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'] = tokenFile;
+    var credentialsIssued = false;
     globalThis.ngx.fetch = function(url, options) {
         console.log(' fetching eks pod identity mock credentials');
         if (url === 'http://169.254.170.23/v1/credentials') {
-            if (options && options.headers && options.headers['Authorization'].toString() === testToken) {
+            if (options && options.headers && options.headers['Authorization'] &&
+                options.headers['Authorization'].toString() === testToken) {
                 return Promise.resolve({
                     ok: true,
                     json: function() {
-                        globalThis.credentialsIssued = true;
+                        credentialsIssued = true;
                         return Promise.resolve({
                             AccessKeyId: 'AN_ACCESS_KEY_ID',
                             Expiration: '2017-05-17T15:09:54Z',
@@ -374,22 +368,13 @@ async function testEKSPodIdentityCredentialRetrieval() {
                     },
                 });
             } else {
-                throw 'Invalid token passed: ' + options.headers['Authorization'];
+                throw 'Invalid token passed to the EKS Pod Identity agent';
             }
         } else {
             throw 'Invalid request URL: ' + url;
         }
     };
     var r = {
-        "headersOut": {
-            "Accept-Ranges": "bytes",
-            "Content-Length": 42,
-            "Content-Security-Policy": "block-all-mixed-content",
-            "Content-Type": "text/plain",
-            "X-Amz-Bucket-Region": "us-east-1",
-            "X-Amz-Request-Id": "166539E18A46500A",
-            "X-Xss-Protection": "1; mode=block"
-        },
         log: function(msg) {
             console.log(msg);
         },
@@ -401,14 +386,86 @@ async function testEKSPodIdentityCredentialRetrieval() {
     };
 
     try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = credentialsFile;
         await awscred.fetchCredentials(r);
 
-        if (!globalThis.credentialsIssued) {
+        if (!credentialsIssued) {
             throw 'Did not reach the point where EKS Pod Identity credentials were issued.';
         }
     } finally {
+        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         delete process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
-        removeIfExists(tempFile);
+        removeIfExists(credentialsFile);
+        removeIfExists(tokenFile);
+    }
+}
+
+async function testEKSPodIdentityCredentialRetrievalNon200Response() {
+    printHeader('testEKSPodIdentityCredentialRetrievalNon200Response');
+    clearProviderEnv();
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var credentialsFile = tempFilePath('eks-non200-credentials-unit-test', '.json');
+    var tokenFile = tempFilePath('eks-non200-token-unit-test', '');
+    var testToken = 'A_TOKEN';
+    fs.writeFileSync(tokenFile, testToken);
+    process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'] = tokenFile;
+    var non200ResponseServed = false;
+    var errorBodyParsedAsCredentials = false;
+    var returnedCode = null;
+    var r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        return: function(code) {
+            returnedCode = code;
+        },
+    };
+    globalThis.ngx.fetch = function(url, options) {
+        console.log(' fetching eks pod identity mock error response');
+        if (url === 'http://169.254.170.23/v1/credentials') {
+            if (options && options.headers && options.headers['Authorization'] &&
+                options.headers['Authorization'].toString() === testToken) {
+                non200ResponseServed = true;
+                return Promise.resolve({
+                    ok: false,
+                    status: 503,
+                    json: function() {
+                        // A non-200 body must never be parsed as credentials.
+                        errorBodyParsedAsCredentials = true;
+                        return Promise.resolve({
+                            message: 'Service Unavailable',
+                        });
+                    },
+                });
+            } else {
+                throw 'Invalid token passed to the EKS Pod Identity agent';
+            }
+        } else {
+            throw 'Invalid request URL: ' + url;
+        }
+    };
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = credentialsFile;
+        await awscred.fetchCredentials(r);
+
+        if (!non200ResponseServed) {
+            throw 'The mocked non-200 EKS Pod Identity response was never served.';
+        }
+        if (errorBodyParsedAsCredentials) {
+            throw 'A non-200 EKS Pod Identity agent response was parsed as credentials.';
+        }
+        if (returnedCode !== 500) {
+            throw 'Expected the credentials fetch to fail with 500, got: ' + returnedCode;
+        }
+        if (fs.statSync(credentialsFile, {throwIfNoEntry: false})) {
+            throw 'Credentials must not be cached from a non-200 response.';
+        }
+    } finally {
+        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
+        delete process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
+        removeIfExists(credentialsFile);
+        removeIfExists(tokenFile);
     }
 }
 
@@ -765,6 +822,7 @@ async function test() {
     await testEc2CredentialRetrieval();
     await testEcsCredentialRetrieval();
     await testEKSPodIdentityCredentialRetrieval();
+    await testEKSPodIdentityCredentialRetrievalNon200Response();
     await testEc2CredentialRetrievalNon200Response();
     await testEc2CredentialRetrievalIMDSv1Fallback();
     await testEc2CredentialRetrievalIMDSv1FallbackOnTokenError();

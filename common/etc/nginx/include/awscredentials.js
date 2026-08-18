@@ -439,6 +439,9 @@ async function _fetchEKSPodIdentityCredentials() {
             'Authorization': token,
         },
     });
+    if (!resp.ok) {
+        throw `EKS Pod Identity credentials endpoint response was not ok (status: ${resp.status}).`;
+    }
     const creds = await resp.json();
 
     return {
