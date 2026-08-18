@@ -1,7 +1,10 @@
 ---
 name-template: $RESOLVED_VERSION
 tag-template: $RESOLVED_VERSION
-include-pre-releases: true
+# Render markdown control characters, @mentions, and #refs in PR titles
+# literally, so titles cannot inject formatting into the notes or ping
+# unrelated users/issues when the release is published.
+change-title-escapes: '\<*_&`#@'
 categories:
   - title: 💣 Breaking Changes
     labels:
@@ -32,79 +35,85 @@ categories:
     collapse-after: 15
     labels:
       - dependencies
+  # No labels on purpose: a category without labels is release-drafter's
+  # catch-all for PRs that match no other category.
   - title: Other Changes
-    labels:
-      - *
 exclude-labels:
-    - skip changelog
+  - skip-changelog
 version-resolver:
+  # Pre-1.0 policy: breaking changes and deprecations bump the minor
+  # version; everything else is a patch. Once 1.0.0 ships, move
+  # "breaking change" to a `major:` mapping.
   minor:
     labels:
       - breaking change
       - deprecation
-  patch:
-    labels:
-      - bug
-      - chore
-      - dependencies
-      - documentation
-      - enhancement
-      - tests
   default: patch
 autolabeler:
+  # PR titles are enforced Conventional Commits (see lint-pr-title.yml), so
+  # titles are matched as anchored `type(scope)!:` prefixes. Branch patterns
+  # are a best-effort fallback for maintainer branches. A `!` breaking marker
+  # routes a PR to `breaking change` instead of its type label.
   - label: breaking change
+    title:
+      - '/^\w+(\([^)]+\))?!: /'
     body:
-      - "/breaking/i"
+      - '/BREAKING CHANGE:/'
   - label: deprecation
     branch:
-      - "/deprecate\/.+/"
+      - '/deprecate\/.+/'
     title:
-      - "/deprecate/i"
+      - '/deprecat/i'
   - label: enhancement
     branch:
-      - "/feat\/.+/"
-      - "/feature\/.+/"
+      - '/feat\/.+/'
+      - '/feature\/.+/'
     title:
-      - "/feat/i"
-      - "/feature/i"
+      - '/^feat(\([^)]+\))?: /i'
   - label: bug
     branch:
-      - "/fix\/.+/"
-      - "/bug\/.+/"
-      - "/bugfix\/.+/"
+      - '/fix\/.+/'
+      - '/bug\/.+/'
+      - '/bugfix\/.+/'
     title:
-      - "/fix/i"
-      - "/bug/i"
-      - "/bugfix/i"
+      - '/^fix(\([^)]+\))?: /i'
   - label: tests
     branch:
-      - "/tests{0,1}\/.+/"
+      - '/tests?\/.+/'
     files:
-      - "/tests/**"
+      - 'test/**'
     title:
-      - "/tests{0,1}\/.+/i"
+      - '/^test(\([^)]+\))?: /i'
   - label: documentation
     branch:
-      - "/docs{0,1}\/.+/"
-      - "/documentation\/.+/"
+      - '/docs?\/.+/'
+      - '/documentation\/.+/'
     files:
-      - "docs/**"
+      - 'docs/**'
     title:
-      - "/docs{0,1}\/.+/i"
-      - "/documentation/i"
-  - label: dependencies #todo review
-    files:
-      - ".github/workflows/requirements/*"
-replacers: #todo review
-  - search: "/(feat|fix|docs|chore|cleanup|style|refactor|perf|test)(\(\w+\))?: /g"
-    replace: ""
+      - '/^docs(\([^)]+\))?: /i'
+  - label: ci
+    title:
+      - '/^ci(\([^)]+\))?: /i'
+  # `build(deps...)` PRs are dependency bumps that Dependabot already labels
+  # `dependencies`; exclude them so they do not also land under CI/CD.
+  - label: build
+    title:
+      - '/^build(?!\(deps)(\([^)]+\))?: /i'
+  - label: chore
+    title:
+      - '/^(chore|refactor|style|perf)(\([^)]+\))?: /i'
+replacers:
+  # Strip the Conventional Commit `type(scope)!:` prefix from PR titles in
+  # the notes. Keep the type list in sync with what lint-pr-title.yml accepts.
+  - search: '/^(\* )(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: /gm'
+    replace: '$1'
 template: |
-    ## What's new in the NGINX S3 Gateway $RESOLVED_VERSION!
+  ## What's new in the NGINX S3 Gateway $RESOLVED_VERSION!
 
-    $CHANGES
+  $CHANGES
 
-    ## Install & Upgrade 
+  ## Install & Upgrade
 
-    - The easiest way to use the most recent version is to find it in the [docker images](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway) are which contains installation instructions
-    - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
-
+  - Container images and installation instructions are available in the [GitHub Container Registry](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway)
+  - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
