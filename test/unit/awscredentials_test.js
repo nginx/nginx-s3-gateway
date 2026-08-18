@@ -154,11 +154,10 @@ function testReadAndWriteCredentialsFromKeyValStore() {
             }
         };
         let expectedCredentials = {
-            AccessKeyId: 'AN_ACCESS_KEY_ID',
-            Expiration: '2017-05-17T15:09:54Z',
-            RoleArn: 'TASK_ROLE_ARN',
-            SecretAccessKey: 'A_SECRET_ACCESS_KEY',
-            Token: 'A_SECURITY_TOKEN',
+            accessKeyId: 'AN_ACCESS_KEY_ID',
+            secretAccessKey: 'A_SECRET_ACCESS_KEY',
+            sessionToken: 'A_SECURITY_TOKEN',
+            expiration: '2017-05-17T15:09:54Z',
         };
 
         awscred.writeCredentials(r, expectedCredentials);
@@ -372,14 +371,323 @@ async function testEKSPodIdentityCredentialRetrieval() {
     }
 }
 
+async function testEc2CredentialRetrievalNon200Response() {
+    printHeader('testEc2CredentialRetrievalNon200Response');
+    if ('AWS_ACCESS_KEY_ID' in process.env) {
+        delete process.env['AWS_ACCESS_KEY_ID'];
+    }
+    if ('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI' in process.env) {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+    if ('AWS_WEB_IDENTITY_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
+    }
+    if ('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
+    }
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var tempDir = (process.env['TMPDIR'] ? process.env['TMPDIR'] : '/tmp');
+    var uniqId = `${new Date().getTime()}-${Math.floor(Math.random()*101)}`;
+    var tempFile = `${tempDir}/credentials-unit-test-${uniqId}.json`;
+    var non200ResponseServed = false;
+    var errorBodyParsedAsCredentials = false;
+    var returnedCode = null;
+    var r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        return: function(code) {
+            returnedCode = code;
+        },
+    };
+    globalThis.ngx.fetch = function (url, options) {
+        if (url === 'http://169.254.169.254/latest/api/token' && options && options.method === 'PUT') {
+            return Promise.resolve({
+                ok: true,
+                text: function () {
+                    return Promise.resolve('A_TOKEN');
+                },
+            });
+        } else if (url === 'http://169.254.169.254/latest/meta-data/iam/security-credentials/') {
+            return Promise.resolve({
+                ok: true,
+                text: function () {
+                    return Promise.resolve('A_ROLE_NAME');
+                },
+            });
+        } else if (url === 'http://169.254.169.254/latest/meta-data/iam/security-credentials/A_ROLE_NAME') {
+            non200ResponseServed = true;
+            return Promise.resolve({
+                ok: false,
+                status: 503,
+                json: function () {
+                    // A non-200 body must never be parsed as credentials.
+                    errorBodyParsedAsCredentials = true;
+                    return Promise.resolve({
+                        message: 'Service Unavailable',
+                    });
+                },
+            });
+        } else {
+            throw 'Invalid request URL: ' + url;
+        }
+    };
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
+        await awscred.fetchCredentials(r);
+
+        if (!non200ResponseServed) {
+            throw 'The mocked non-200 EC2 credentials response was never served.';
+        }
+        if (errorBodyParsedAsCredentials) {
+            throw 'A non-200 EC2 metadata response was parsed as credentials.';
+        }
+        if (returnedCode !== 500) {
+            throw 'Expected the credentials fetch to fail with 500, got: ' + returnedCode;
+        }
+        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+            throw 'Credentials must not be cached from a non-200 response.';
+        }
+    } finally {
+        if (originalCredentialPath) {
+            process.env['AWS_CREDENTIALS_TEMP_FILE'] = originalCredentialPath;
+        } else {
+            delete process.env['AWS_CREDENTIALS_TEMP_FILE'];
+        }
+        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+            fs.unlinkSync(tempFile);
+        }
+    }
+}
+
+async function testEc2CredentialRetrievalIMDSv1Fallback() {
+    printHeader('testEc2CredentialRetrievalIMDSv1Fallback');
+    if ('AWS_ACCESS_KEY_ID' in process.env) {
+        delete process.env['AWS_ACCESS_KEY_ID'];
+    }
+    if ('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI' in process.env) {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+    if ('AWS_WEB_IDENTITY_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
+    }
+    if ('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
+    }
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var tempDir = (process.env['TMPDIR'] ? process.env['TMPDIR'] : '/tmp');
+    var uniqId = `${new Date().getTime()}-${Math.floor(Math.random()*101)}`;
+    var tempFile = `${tempDir}/credentials-unit-test-${uniqId}.json`;
+    var credentialsIssued = false;
+    var r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        return: function(code) {
+            if (code !== 200) {
+                throw 'Expected 200 status code, got: ' + code;
+            }
+        },
+    };
+    globalThis.ngx.fetch = function (url, options) {
+        if (url === 'http://169.254.169.254/latest/api/token' && options && options.method === 'PUT') {
+            // Simulate an IMDSv1-only metadata service rejecting the token request.
+            return Promise.resolve({
+                ok: false,
+                status: 405,
+            });
+        }
+        if (options && options.headers && 'x-aws-ec2-metadata-token' in options.headers) {
+            throw 'IMDSv2 token header must not be sent after a rejected token request';
+        }
+        if (url === 'http://169.254.169.254/latest/meta-data/iam/security-credentials/') {
+            return Promise.resolve({
+                ok: true,
+                text: function () {
+                    return Promise.resolve('A_ROLE_NAME');
+                },
+            });
+        } else if (url === 'http://169.254.169.254/latest/meta-data/iam/security-credentials/A_ROLE_NAME') {
+            return Promise.resolve({
+                ok: true,
+                json: function () {
+                    credentialsIssued = true;
+                    return Promise.resolve({
+                        AccessKeyId: 'AN_ACCESS_KEY_ID',
+                        Expiration: '2017-05-17T15:09:54Z',
+                        RoleArn: 'TASK_ROLE_ARN',
+                        SecretAccessKey: 'A_SECRET_ACCESS_KEY',
+                        Token: 'A_SECURITY_TOKEN',
+                    });
+                },
+            });
+        } else {
+            throw 'Invalid request URL: ' + url;
+        }
+    };
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
+        await awscred.fetchCredentials(r);
+
+        if (!credentialsIssued) {
+            throw 'Did not reach the point where EC2 credentials were issued via IMDSv1.';
+        }
+    } finally {
+        if (originalCredentialPath) {
+            process.env['AWS_CREDENTIALS_TEMP_FILE'] = originalCredentialPath;
+        } else {
+            delete process.env['AWS_CREDENTIALS_TEMP_FILE'];
+        }
+        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+            fs.unlinkSync(tempFile);
+        }
+    }
+}
+
+async function testWebIdentityCredentialRetrievalNon200Response() {
+    printHeader('testWebIdentityCredentialRetrievalNon200Response');
+    if ('AWS_ACCESS_KEY_ID' in process.env) {
+        delete process.env['AWS_ACCESS_KEY_ID'];
+    }
+    if ('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI' in process.env) {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+    if ('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE' in process.env) {
+        delete process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
+    }
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var tempDir = (process.env['TMPDIR'] ? process.env['TMPDIR'] : '/tmp');
+    var uniqId = `${new Date().getTime()}-${Math.floor(Math.random()*101)}`;
+    var tempFile = `${tempDir}/credentials-unit-test-${uniqId}.json`;
+    var tokenFile = `${tempDir}/web-identity-token-unit-test-${uniqId}`;
+    fs.writeFileSync(tokenFile, 'A_WEB_IDENTITY_TOKEN');
+    var non200ResponseServed = false;
+    var errorBodyParsedAsCredentials = false;
+    var returnedCode = null;
+    var r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        return: function(code) {
+            returnedCode = code;
+        },
+    };
+    globalThis.ngx.fetch = function (url) {
+        if (url.startsWith('https://sts.unit-test.example.com?')) {
+            non200ResponseServed = true;
+            return Promise.resolve({
+                ok: false,
+                status: 400,
+                text: function () {
+                    return Promise.resolve('{"Error":{"Code":"ExpiredTokenException"}}');
+                },
+                json: function () {
+                    // A non-200 body must never be parsed as credentials.
+                    errorBodyParsedAsCredentials = true;
+                    return Promise.resolve({});
+                },
+            });
+        } else {
+            throw 'Invalid request URL: ' + url;
+        }
+    };
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
+        process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] = tokenFile;
+        process.env['AWS_ROLE_ARN'] = 'arn:aws:iam::000000000000:role/unit-test';
+        process.env['AWS_ROLE_SESSION_NAME'] = 'unit-test';
+        process.env['STS_ENDPOINT'] = 'https://sts.unit-test.example.com';
+        await awscred.fetchCredentials(r);
+
+        if (!non200ResponseServed) {
+            throw 'The mocked non-200 STS response was never served.';
+        }
+        if (errorBodyParsedAsCredentials) {
+            throw 'A non-200 STS response was parsed as credentials.';
+        }
+        if (returnedCode !== 500) {
+            throw 'Expected the credentials fetch to fail with 500, got: ' + returnedCode;
+        }
+        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+            throw 'Credentials must not be cached from a non-200 response.';
+        }
+    } finally {
+        if (originalCredentialPath) {
+            process.env['AWS_CREDENTIALS_TEMP_FILE'] = originalCredentialPath;
+        } else {
+            delete process.env['AWS_CREDENTIALS_TEMP_FILE'];
+        }
+        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
+        delete process.env['AWS_ROLE_ARN'];
+        delete process.env['AWS_ROLE_SESSION_NAME'];
+        delete process.env['STS_ENDPOINT'];
+        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+            fs.unlinkSync(tempFile);
+        }
+        if (fs.statSync(tokenFile, {throwIfNoEntry: false})) {
+            fs.unlinkSync(tokenFile);
+        }
+    }
+}
+
+function testWriteInvalidCredentials() {
+    printHeader('testWriteInvalidCredentials');
+
+    let accessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+    let secretKey = process.env['AWS_SECRET_ACCESS_KEY'];
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    try {
+        let r = {
+            variables: {
+                cache_instance_credentials_enabled: 1,
+                instance_credential_json: null
+            }
+        };
+        let invalidCredentials = [
+            null,
+            {},
+            {accessKeyId: 'AN_ACCESS_KEY_ID'},
+            {secretAccessKey: 'A_SECRET_ACCESS_KEY'},
+            {accessKeyId: undefined, secretAccessKey: undefined,
+                sessionToken: undefined, expiration: undefined},
+        ];
+        invalidCredentials.forEach(function(credentials) {
+            let threw = false;
+            try {
+                awscred.writeCredentials(r, credentials);
+            } catch (e) {
+                threw = true;
+            }
+            if (!threw) {
+                throw 'writeCredentials accepted invalid credentials: ' +
+                    JSON.stringify(credentials);
+            }
+        });
+        if (r.variables.instance_credential_json !== null) {
+            throw 'Invalid credentials were written to the credentials cache.';
+        }
+    } finally {
+        process.env['AWS_ACCESS_KEY_ID'] = accessKeyId;
+        process.env['AWS_SECRET_ACCESS_KEY'] = secretKey;
+    }
+}
+
 async function test() {
     await testEc2CredentialRetrieval();
     await testEcsCredentialRetrieval();
     await testEKSPodIdentityCredentialRetrieval();
+    await testEc2CredentialRetrievalNon200Response();
+    await testEc2CredentialRetrievalIMDSv1Fallback();
+    await testWebIdentityCredentialRetrievalNon200Response();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();
     testReadCredentialsFromFilePath();
     testReadCredentialsFromNonexistentPath();
     testReadAndWriteCredentialsFromKeyValStore();
+    testWriteInvalidCredentials();
 }
 
 function printHeader(testName) {

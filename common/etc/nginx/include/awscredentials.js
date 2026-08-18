@@ -196,8 +196,11 @@ function writeCredentials(r, credentials) {
         return;
     }
 
-    if (!credentials) {
-        throw `Cannot write invalid credentials: ${JSON.stringify(credentials)}`;
+    /* Guard against caching malformed credentials (such as an error response
+       body that was mistakenly parsed as credentials) - field values are
+       deliberately not logged so that secrets cannot leak into logs. */
+    if (!credentials || !credentials.accessKeyId || !credentials.secretAccessKey) {
+        throw 'Cannot write invalid credentials: missing accessKeyId or secretAccessKey';
     }
 
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
@@ -364,12 +367,19 @@ async function _fetchEC2RoleCredentials() {
         },
         method: 'PUT',
     });
-    const token = await tokenResp.text();
+    /* Fall back to IMDSv1 (no session token) when the IMDSv2 token request is
+       rejected, matching AWS SDK behavior with IMDSv1-only metadata services
+       such as older metadata emulators. */
+    const headers = {};
+    if (tokenResp.ok) {
+        headers['x-aws-ec2-metadata-token'] = await tokenResp.text();
+    }
     let resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT, {
-        headers: {
-            'x-aws-ec2-metadata-token': token,
-        },
+        headers: headers,
     });
+    if (!resp.ok) {
+        throw `Security credentials endpoint response was not ok (status: ${resp.status}).`;
+    }
     /* This _might_ get multiple possible roles in other scenarios, however,
        EC2 supports attaching one role only.It should therefore be safe to take
        the whole output, even given IMDS _might_ (?) be able to return multiple
@@ -379,10 +389,11 @@ async function _fetchEC2RoleCredentials() {
         throw 'No credentials available for EC2 instance';
     }
     resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT + credName, {
-        headers: {
-            'x-aws-ec2-metadata-token': token,
-        },
+        headers: headers,
     });
+    if (!resp.ok) {
+        throw `Credentials endpoint response was not ok (status: ${resp.status}).`;
+    }
     const creds = await resp.json();
 
     return {
@@ -463,6 +474,10 @@ async function _fetchWebIdentityCredentials(r) {
         },
         method: 'GET',
     });
+    if (!response.ok) {
+        const errorBody = await response.text();
+        throw `STS endpoint response was not ok (status: ${response.status}, body: ${errorBody}).`;
+    }
 
     const resp = await response.json();
     const creds = resp.AssumeRoleWithWebIdentityResponse.AssumeRoleWithWebIdentityResult.Credentials;
