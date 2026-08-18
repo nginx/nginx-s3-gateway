@@ -313,7 +313,7 @@ async function fetchCredentials(r) {
         }
     } else {
         try {
-            credentials = await _fetchEC2RoleCredentials();
+            credentials = await _fetchEC2RoleCredentials(r);
         } catch (e) {
             utils.debug_log(r, 'Could not load EC2 task role credentials: ' + JSON.stringify(e));
             r.return(500);
@@ -341,7 +341,7 @@ async function fetchCredentials(r) {
 async function _fetchEcsRoleCredentials(credentialsUri) {
     const resp = await ngx.fetch(credentialsUri);
     if (!resp.ok) {
-        throw 'Credentials endpoint response was not ok.';
+        throw `ECS credentials endpoint response was not ok (status: ${resp.status}).`;
     }
     const creds = await resp.json();
 
@@ -357,22 +357,43 @@ async function _fetchEcsRoleCredentials(credentialsUri) {
  * Get the credentials needed to generate AWS signatures from the EC2
  * metadata endpoint.
  *
+ * @param r {NginxHTTPRequest} HTTP request object
  * @returns {Promise<Credentials>}
  * @private
  */
-async function _fetchEC2RoleCredentials() {
-    const tokenResp = await ngx.fetch(EC2_IMDS_TOKEN_ENDPOINT, {
-        headers: {
-            'x-aws-ec2-metadata-token-ttl-seconds': '21600',
-        },
-        method: 'PUT',
-    });
+async function _fetchEC2RoleCredentials(r) {
+    let tokenResp = null;
+    try {
+        tokenResp = await ngx.fetch(EC2_IMDS_TOKEN_ENDPOINT, {
+            headers: {
+                'x-aws-ec2-metadata-token-ttl-seconds': '21600',
+            },
+            method: 'PUT',
+        });
+    } catch (e) {
+        /* A network error or timeout on the token request falls back to
+           IMDSv1 below, matching AWS SDK behavior. This covers instances
+           whose HttpPutResponseHopLimit is too low for the gateway's network
+           position (e.g. running inside a container behind a bridge network),
+           where the token response is dropped but IMDSv1 GETs succeed. */
+        utils.debug_log(r, `EC2 IMDS token request failed (${e}), falling back to IMDSv1`);
+    }
     /* Fall back to IMDSv1 (no session token) when the IMDSv2 token request is
-       rejected, matching AWS SDK behavior with IMDSv1-only metadata services
-       such as older metadata emulators. */
+       rejected with 403/404/405, matching AWS SDK behavior with IMDSv1-only
+       metadata services such as older metadata emulators. Other failure
+       statuses (e.g. 429/5xx throttling on an IMDSv2-required instance) are
+       fatal so that the root cause is surfaced instead of the misleading 401
+       a token-less request would produce. */
     const headers = {};
-    if (tokenResp.ok) {
-        headers['x-aws-ec2-metadata-token'] = await tokenResp.text();
+    if (tokenResp) {
+        if (tokenResp.ok) {
+            headers['x-aws-ec2-metadata-token'] = await tokenResp.text();
+        } else if (tokenResp.status === 403 || tokenResp.status === 404 ||
+                   tokenResp.status === 405) {
+            utils.debug_log(r, `EC2 IMDS token endpoint returned status ${tokenResp.status}, falling back to IMDSv1`);
+        } else {
+            throw `IMDS token endpoint response was not ok (status: ${tokenResp.status}).`;
+        }
     }
     let resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT, {
         headers: headers,
@@ -392,7 +413,7 @@ async function _fetchEC2RoleCredentials() {
         headers: headers,
     });
     if (!resp.ok) {
-        throw `Credentials endpoint response was not ok (status: ${resp.status}).`;
+        throw `EC2 role credentials endpoint response was not ok (status: ${resp.status}).`;
     }
     const creds = await resp.json();
 
@@ -466,7 +487,11 @@ async function _fetchWebIdentityCredentials(r) {
 
     const token = fs.readFileSync(process.env['AWS_WEB_IDENTITY_TOKEN_FILE']);
 
-    const params = `Version=2011-06-15&Action=AssumeRoleWithWebIdentity&RoleArn=${arn}&RoleSessionName=${name}&WebIdentityToken=${token}`;
+    /* Percent-encode the values - IAM role session names may legally contain
+       '+' and '=', and web identity tokens that are not base64url-encoded
+       JWTs (e.g. OAuth access tokens) may contain characters that corrupt
+       query-string parsing when left unencoded. */
+    const params = `Version=2011-06-15&Action=AssumeRoleWithWebIdentity&RoleArn=${encodeURIComponent(arn)}&RoleSessionName=${encodeURIComponent(name)}&WebIdentityToken=${encodeURIComponent(token)}`;
 
     const response = await ngx.fetch(sts_endpoint + "?" + params, {
         headers: {
@@ -475,7 +500,10 @@ async function _fetchWebIdentityCredentials(r) {
         method: 'GET',
     });
     if (!response.ok) {
-        const errorBody = await response.text();
+        /* Cap the amount of the error body kept so that an unexpectedly large
+           error document cannot balloon the thrown message; real STS error
+           bodies are far smaller than this. */
+        const errorBody = (await response.text()).slice(0, 1024);
         throw `STS endpoint response was not ok (status: ${response.status}, body: ${errorBody}).`;
     }
 
