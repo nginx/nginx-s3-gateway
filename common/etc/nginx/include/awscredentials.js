@@ -289,7 +289,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEcsRoleCredentials(uri);
         } catch (e) {
-            utils.debug_log(r, 'Could not load ECS task role credentials: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not load ECS task role credentials: ${e}`);
             r.return(500);
             return;
         }
@@ -298,7 +298,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchWebIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, 'Could not assume role using web identity: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not assume role using web identity: ${e}`);
             r.return(500);
             return;
         }
@@ -307,7 +307,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEKSPodIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, 'Could not assume role using EKS pod identity: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not assume role using EKS pod identity: ${e}`);
             r.return(500);
             return;
         }
@@ -315,7 +315,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEC2RoleCredentials(r);
         } catch (e) {
-            utils.debug_log(r, 'Could not load EC2 task role credentials: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not load EC2 task role credentials: ${e}`);
             r.return(500);
             return;
         }
@@ -331,6 +331,20 @@ async function fetchCredentials(r) {
 }
 
 /**
+ * Throws when a credentials-endpoint response has a non-2xx status so that
+ * error response bodies are never parsed as credentials.
+ *
+ * @param resp {Response} response object returned by ngx.fetch
+ * @param endpointName {string} human-readable endpoint name for the error
+ * @private
+ */
+function _checkResponseOk(resp, endpointName) {
+    if (!resp.ok) {
+        throw `${endpointName} response was not ok (status: ${resp.status}).`;
+    }
+}
+
+/**
  * Get the credentials needed to generate AWS signatures from the ECS
  * (Elastic Container Service) metadata endpoint.
  *
@@ -340,9 +354,7 @@ async function fetchCredentials(r) {
  */
 async function _fetchEcsRoleCredentials(credentialsUri) {
     const resp = await ngx.fetch(credentialsUri);
-    if (!resp.ok) {
-        throw `ECS credentials endpoint response was not ok (status: ${resp.status}).`;
-    }
+    _checkResponseOk(resp, 'ECS credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -362,7 +374,14 @@ async function _fetchEcsRoleCredentials(credentialsUri) {
  * @private
  */
 async function _fetchEC2RoleCredentials(r) {
+    /* Standard AWS SDK setting: when true, never fall back to IMDSv1 -
+       credential retrieval fails closed when an IMDSv2 token cannot be
+       obtained.
+       See: https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-credentials.html */
+    const imdsV1Disabled = utils.parseBoolean(
+        process.env['AWS_EC2_METADATA_V1_DISABLED'] || 'false');
     let tokenResp = null;
+    let imdsV1FallbackReason = null;
     try {
         tokenResp = await ngx.fetch(EC2_IMDS_TOKEN_ENDPOINT, {
             headers: {
@@ -376,6 +395,11 @@ async function _fetchEC2RoleCredentials(r) {
            whose HttpPutResponseHopLimit is too low for the gateway's network
            position (e.g. running inside a container behind a bridge network),
            where the token response is dropped but IMDSv1 GETs succeed. */
+        if (imdsV1Disabled) {
+            throw `IMDSv2 token request failed (${e}) and IMDSv1 fallback ` +
+                'is disabled by AWS_EC2_METADATA_V1_DISABLED.';
+        }
+        imdsV1FallbackReason = `the IMDSv2 token request failed (${e})`;
         utils.debug_log(r, `EC2 IMDS token request failed (${e}), falling back to IMDSv1`);
     }
     /* Fall back to IMDSv1 (no session token) when the IMDSv2 token request is
@@ -388,19 +412,29 @@ async function _fetchEC2RoleCredentials(r) {
     if (tokenResp) {
         if (tokenResp.ok) {
             headers['x-aws-ec2-metadata-token'] = await tokenResp.text();
+        } else if (imdsV1Disabled) {
+            throw `IMDS token endpoint response was not ok (status: ${tokenResp.status}) ` +
+                'and IMDSv1 fallback is disabled by AWS_EC2_METADATA_V1_DISABLED.';
         } else if (tokenResp.status === 403 || tokenResp.status === 404 ||
                    tokenResp.status === 405) {
+            imdsV1FallbackReason = `the IMDS token endpoint returned status ${tokenResp.status}`;
             utils.debug_log(r, `EC2 IMDS token endpoint returned status ${tokenResp.status}, falling back to IMDSv1`);
         } else {
-            throw `IMDS token endpoint response was not ok (status: ${tokenResp.status}).`;
+            _checkResponseOk(tokenResp, 'IMDS token endpoint');
         }
     }
     let resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT, {
         headers: headers,
     });
-    if (!resp.ok) {
-        throw `Security credentials endpoint response was not ok (status: ${resp.status}).`;
+    if (!resp.ok && imdsV1FallbackReason) {
+        /* Without this attribution, an IMDSv2-required instance surfaces only
+           the 401 from the token-less GET, hiding the token failure that
+           caused the downgrade. */
+        throw `Security credentials endpoint response was not ok (status: ${resp.status}) ` +
+            `after falling back to IMDSv1 because ${imdsV1FallbackReason}; ` +
+            'the instance may require IMDSv2.';
     }
+    _checkResponseOk(resp, 'Security credentials endpoint');
     /* This _might_ get multiple possible roles in other scenarios, however,
        EC2 supports attaching one role only.It should therefore be safe to take
        the whole output, even given IMDS _might_ (?) be able to return multiple
@@ -412,9 +446,7 @@ async function _fetchEC2RoleCredentials(r) {
     resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT + credName, {
         headers: headers,
     });
-    if (!resp.ok) {
-        throw `EC2 role credentials endpoint response was not ok (status: ${resp.status}).`;
-    }
+    _checkResponseOk(resp, 'EC2 role credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -433,15 +465,16 @@ async function _fetchEC2RoleCredentials(r) {
  * @private
  */
 async function _fetchEKSPodIdentityCredentials() {
-    const token = fs.readFileSync(process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE']);
+    /* Trim the token so a trailing newline in a hand-created token file does
+       not produce an invalid Authorization header value; tokens themselves
+       never contain whitespace. */
+    const token = fs.readFileSync(process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE']).toString().trim();
     let resp = await ngx.fetch(EKS_POD_IDENTITY_AGENT_CREDENTIALS_ENDPOINT, {
         headers: {
             'Authorization': token,
         },
     });
-    if (!resp.ok) {
-        throw `EKS Pod Identity credentials endpoint response was not ok (status: ${resp.status}).`;
-    }
+    _checkResponseOk(resp, 'EKS Pod Identity credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -488,7 +521,10 @@ async function _fetchWebIdentityCredentials(r) {
         }
     }
 
-    const token = fs.readFileSync(process.env['AWS_WEB_IDENTITY_TOKEN_FILE']);
+    /* Trim the token so a trailing newline in a hand-created token file is
+       not percent-encoded into the token value (STS would reject it); JWTs
+       and OAuth tokens never contain leading or trailing whitespace. */
+    const token = fs.readFileSync(process.env['AWS_WEB_IDENTITY_TOKEN_FILE']).toString().trim();
 
     /* Percent-encode the values - IAM role session names may legally contain
        '+' and '=', and web identity tokens that are not base64url-encoded
