@@ -273,6 +273,8 @@ jobs:
     if: |
       github.ref == 'refs/heads/main'
     permissions:
+      id-token: write
+      contents: read
       packages: write
     services:
       registry:
@@ -313,11 +315,20 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get secrets from Azure
+        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
+        with:
+          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
+          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
+          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
+          secret-names: "docker-username, docker-github-syseng-rw-token"
+          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
+
       - name: Login to Docker Hub
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+          username: ${{ env.DOCKER_HUB_USERNAME }}
+          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
 
       # This second invocation of the build/push should just use the existing build cache.
       - name: Build and push image [oss]
