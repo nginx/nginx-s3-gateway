@@ -32,6 +32,7 @@ jobs:
   build-oss-for-test:
     name: Build NGINX OSS image
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out the codebase
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -58,6 +59,7 @@ jobs:
   test-oss:
     name: Test NGINX OSS image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-oss-for-test
     strategy:
       matrix:
@@ -101,6 +103,7 @@ jobs:
   build-latest-njs-for-test:
     name: Build NGINX OSS image using latest njs commit
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: test-oss
     steps:
       - name: Check out the codebase
@@ -145,6 +148,7 @@ jobs:
   test-latest-njs:
     name: Test NGINX OSS image using latest njs commit
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-latest-njs-for-test
     steps:
       - name: Check out the codebase
@@ -186,6 +190,7 @@ jobs:
   build-unprivileged-for-test:
     name: Build NGINX OSS unprivileged image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: test-oss
     steps:
       - name: Check out the codebase
@@ -230,6 +235,7 @@ jobs:
   test-unprivileged:
     name: Test NGINX OSS unprivileged image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-unprivileged-for-test
     steps:
       - name: Check out the codebase
@@ -272,6 +278,7 @@ jobs:
   tag-and-push:
     name: Tag and push all built and tested NGINX images
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     needs: [test-oss, test-latest-njs, test-unprivileged]
     if: |
       github.ref == 'refs/heads/main'
