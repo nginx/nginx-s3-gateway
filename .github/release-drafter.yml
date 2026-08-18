@@ -1,0 +1,119 @@
+---
+name-template: $RESOLVED_VERSION
+tag-template: $RESOLVED_VERSION
+# Render markdown control characters, @mentions, and #refs in PR titles
+# literally, so titles cannot inject formatting into the notes or ping
+# unrelated users/issues when the release is published.
+change-title-escapes: '\<*_&`#@'
+categories:
+  - title: 💣 Breaking Changes
+    labels:
+      - breaking change
+  - title: 🔔 Deprecation Warnings
+    labels:
+      - deprecation
+  - title: 🚀 Features
+    labels:
+      - enhancement
+  - title: 🐛 Bug Fixes
+    labels:
+      - bug
+  - title: 🧪 Tests
+    labels:
+      - tests
+  - title: 📝 Documentation
+    labels:
+      - documentation
+  - title: 👷 CI/CD
+    labels:
+      - ci
+      - build
+  - title: 🔨 Maintenance
+    labels:
+      - chore
+  - title: ⬆️ Dependencies
+    collapse-after: 15
+    labels:
+      - dependencies
+  # No labels on purpose: a category without labels is release-drafter's
+  # catch-all for PRs that match no other category.
+  - title: Other Changes
+exclude-labels:
+  - skip-changelog
+version-resolver:
+  # Pre-1.0 policy: breaking changes and deprecations bump the minor
+  # version; everything else is a patch. Once 1.0.0 ships, move
+  # "breaking change" to a `major:` mapping.
+  minor:
+    labels:
+      - breaking change
+      - deprecation
+  default: patch
+autolabeler:
+  # PR titles are enforced Conventional Commits (see lint-pr-title.yml), so
+  # titles are matched as anchored `type(scope)!:` prefixes. Branch patterns
+  # are a best-effort fallback for maintainer branches. A `!` breaking marker
+  # routes a PR to `breaking change` instead of its type label.
+  - label: breaking change
+    title:
+      - '/^\w+(\([^)]+\))?!: /'
+    body:
+      - '/BREAKING CHANGE:/'
+  - label: deprecation
+    branch:
+      - '/deprecate\/.+/'
+    title:
+      - '/deprecat/i'
+  - label: enhancement
+    branch:
+      - '/feat\/.+/'
+      - '/feature\/.+/'
+    title:
+      - '/^feat(\([^)]+\))?: /i'
+  - label: bug
+    branch:
+      - '/fix\/.+/'
+      - '/bug\/.+/'
+      - '/bugfix\/.+/'
+    title:
+      - '/^fix(\([^)]+\))?: /i'
+  - label: tests
+    branch:
+      - '/tests?\/.+/'
+    files:
+      - 'test/**'
+    title:
+      - '/^test(\([^)]+\))?: /i'
+  - label: documentation
+    branch:
+      - '/docs?\/.+/'
+      - '/documentation\/.+/'
+    files:
+      - 'docs/**'
+    title:
+      - '/^docs(\([^)]+\))?: /i'
+  - label: ci
+    title:
+      - '/^ci(\([^)]+\))?: /i'
+  # `build(deps...)` PRs are dependency bumps that Dependabot already labels
+  # `dependencies`; exclude them so they do not also land under CI/CD.
+  - label: build
+    title:
+      - '/^build(?!\(deps)(\([^)]+\))?: /i'
+  - label: chore
+    title:
+      - '/^(chore|refactor|style|perf)(\([^)]+\))?: /i'
+replacers:
+  # Strip the Conventional Commit `type(scope)!:` prefix from PR titles in
+  # the notes. Keep the type list in sync with what lint-pr-title.yml accepts.
+  - search: '/^(\* )(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^)]+\))?!?: /gm'
+    replace: '$1'
+template: |
+  ## What's new in the NGINX S3 Gateway $RESOLVED_VERSION!
+
+  $CHANGES
+
+  ## Install & Upgrade
+
+  - Container images and installation instructions are available in the [GitHub Container Registry](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway)
+  - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
