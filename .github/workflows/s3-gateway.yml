@@ -69,7 +69,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
@@ -155,7 +161,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
@@ -242,7 +254,13 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
