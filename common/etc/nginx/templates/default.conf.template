@@ -260,6 +260,16 @@ server {
         # it to be applied within different contexts.
         include /etc/nginx/conf.d/gateway/cors.conf;
 
+        # nginx regex locations beat the `location /` prefix match, so a
+        # direct request to any `*/index.html` path skips the credential
+        # fetch that happens in `location /`. When running with dynamic
+        # credentials (Pod Identity / IRSA / IMDS / ECS task role), that
+        # means /tmp/credentials.json is never written and signatureV4
+        # crashes with a TypeError dereferencing undefined (#518). Run
+        # the same auth_request sub-request here so fetchCredentials
+        # runs before s3gateway.s3auth evaluates $s3auth.
+        auth_request /aws/credentials/retrieve;
+
         # Don't allow any headers from the client - we don't want them messing
         # with S3 at all.
         proxy_pass_request_headers off;
