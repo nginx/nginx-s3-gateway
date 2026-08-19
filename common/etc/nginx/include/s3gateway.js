@@ -395,21 +395,33 @@ function redirectToS3(r) {
 function trailslashControl(r) {
     if (APPEND_SLASH) {
         // For the purposes of understanding whether this is a directory,
-        // consider the uri without query params or anchors
-        let path = r.variables.uri_path.split(/[?#]/)[0];
-
-        // Classify the decoded path so that percent-encoded dots (%2E) are
-        // visible to the extension check, matching the decoded $uri that the
-        // @trailslash rewrite redirects to. If decoding fails (e.g. invalid
-        // UTF-8 sequences that nginx passes through), classify the raw path
-        // rather than letting a URIError turn the 404 into a 500.
-        try {
-            path = decodeURIComponent(path);
-        } catch (e) {
-            // fall back to the raw path
+        // consider the uri without query params or anchors. The $uri_path
+        // map already strips query params from $request_uri, so this is
+        // defensive and otherwise only strips raw anchors. njs
+        // String.split(regex) is disproportionately expensive, so find and
+        // slice instead - this runs on every 404.
+        let path = r.variables.uri_path;
+        const separatorIdx = path.search(/[?#]/);
+        if (separatorIdx !== -1) {
+            path = path.slice(0, separatorIdx);
         }
 
-        if (!_hasExtension(path) && !_isDirectory(path)) {
+        // Classify the percent-decoded path so that encoded dots (%2E) are
+        // visible to the extension check, approximating the decoded $uri
+        // that the @trailslash rewrite redirects to. Decode byte-wise the
+        // way nginx builds $uri: decodeURIComponent() would throw URIError
+        // on sequences nginx accepts (e.g. invalid UTF-8 such as %C3) and
+        // then misclassify any encoded dots elsewhere in the same path.
+        // Unlike $uri, the result is deliberately not normalized
+        // (dot-segments and duplicate slashes are kept) - the decoded path
+        // is used for classification only, never for building the redirect.
+        if (path.indexOf('%') !== -1) {
+            path = path.replace(/%([0-9A-Fa-f]{2})/g, function (_match, hex) {
+                return String.fromCharCode(parseInt(hex, 16));
+            });
+        }
+
+        if (!_isDirectory(path) && !_hasExtension(path)) {
             return r.internalRedirect("@trailslash");
         }
     }

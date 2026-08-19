@@ -135,11 +135,15 @@ transform `/some/path/` to `/some/path/index.html` when retrieving from S3.
 Default of "index.html" can be edited in `s3gateway.js`. 
 It will also redirect `/some/path` to `/some/path/` when S3 returns 404 on 
 `/some/path` if `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` is set. `path` has to 
-look like a possible directory, it must not start with a `.` and not have an 
-extension. Only the final path segment is checked for an extension, so a dot 
-in an intermediate directory (e.g. `/dir.name/file`) does not prevent the 
-redirect. A final segment that begins or ends with a dot (e.g. `/.hidden`, 
-`/reports.`) is treated as having an extension and is not redirected.  
+look like a possible directory: it must not end with a slash, and its final 
+path segment must not contain a dot. Only the final segment is checked, so a 
+dot in an intermediate directory (e.g. `/dir.name/file`) does not prevent 
+the redirect, while any dot in the final segment (e.g. `/file.jpg`, 
+`/releases/v1.2.3`, `/.hidden`, `/reports.`) is treated as a file extension 
+and is not redirected. The path is percent-decoded before this check, so an 
+encoded dot (`%2E`) counts as a dot and an encoded slash (`%2F`) counts as a 
+directory separator (e.g. `/foo%2F` is treated as a directory and is not 
+redirected).  
 
 ### Hosting a Bucket as a Subfolder on an ALB
 
