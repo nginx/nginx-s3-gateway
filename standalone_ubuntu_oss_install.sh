@@ -88,6 +88,16 @@ case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
   *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
 esac
 
+# Normalize to 1/0: cors.conf.template matches "$request_method_1" literally
+# and the LIMIT_METHODS_TO selection below compares against '1', so the
+# documented true/false form would otherwise silently disable CORS. This
+# mirrors the parseBoolean normalization in
+# common/docker-entrypoint.d/01-set-defaults.envsh.
+case "${CORS_ENABLED:-false}" in
+  TRUE | true | True | YES | Yes | 1) CORS_ENABLED=1 ;;
+  *) CORS_ENABLED=0 ;;
+esac
+
 echo "S3 Backend Environment"
 echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
 echo "Origin: ${S3_SERVER_PROTO}://${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
@@ -192,8 +202,9 @@ PROXY_CACHE_VALID_FORBIDDEN=${PROXY_CACHE_VALID_FORBIDDEN:-'30s'}
 PROXY_CACHE_USE_STALE=${PROXY_CACHE_USE_STALE:-'error timeout http_500 http_502 http_503 http_504'}
 # Bypass the local cache when a client sends Cache-Control: no-cache (1=enabled, 0=disabled)
 PROXY_CACHE_BYPASS_NO_CACHE=${PROXY_CACHE_BYPASS_NO_CACHE}
-# Enables or disables CORS for the S3 Gateway (true=enabled, false=disabled)
-CORS_ENABLED=${CORS_ENABLED:-'false'}
+# Enables or disables CORS for the S3 Gateway (1=enabled, 0=disabled;
+# normalized from the documented true/false form above)
+CORS_ENABLED=${CORS_ENABLED}
 # Configure portion of URL to be removed (optional)
 STRIP_LEADING_DIRECTORY_PATH=${STRIP_LEADING_DIRECTORY_PATH:-''}
 # Configure portion of URL to be added to the beginning of the requested path (optional)

@@ -38,7 +38,7 @@ checksum_length=32
 ## remove this once UTF-8 issue solved.
 
 is_windows="0"
-if [ -z "${OS}" ] && [ "${OS}" == "Windows_NT" ]; then
+if [ -n "${OS:-}" ] && [ "${OS}" == "Windows_NT" ]; then
   is_windows="1"
 elif command -v uname > /dev/null; then
   uname_output="$(uname -s)"
@@ -181,7 +181,10 @@ assertHttpRequestEquals() {
       exit ${test_fail_exit_code}
     fi
   else
+    # A typo'd method must fail the suite loudly - silently continuing here
+    # would make every assertion with a bad method vacuously pass.
     e "Method unsupported: [${method}]"
+    exit ${test_fail_exit_code}
   fi
 }
 
@@ -347,12 +350,27 @@ fi
 # GH-551 regression: the regex location for */index.html paths must reject
 # non-read methods at the nginx layer and never proxy them to S3. The
 # limit_except denial (403) is sanitized to 404 by the location's error_page.
-assertHttpRequestEquals "DELETE" "/statichost/index.html" "404"
-assertHttpRequestEquals "PUT" "/statichost/index.html" "404"
-assertHttpRequestEquals "POST" "/statichost/index.html" "404"
-# The object must still exist afterward: the rejected DELETE above must not
-# have reached the bucket.
-assertHttpRequestEquals "GET" "/statichost/index.html" "data/bucket-1/statichost/index.html"
+# A dedicated fixture is used so that (a) a regression's DELETE/PUT cannot
+# corrupt /statichost/index.html, which the static-hosting assertions below
+# depend on and which is never re-seeded between configurations, and (b) the
+# verifying GET cannot be satisfied from a proxy_cache entry warmed by any
+# other assertion (proxy_cache_key is "$request_method$host$uri").
+# Note that only DELETE and PUT give the GET real teeth: a pre-fix gateway
+# also surfaced POST as a sanitized 404 (upstream error via error_page), so
+# the POST assertion pins the sanitized status, not the non-forwarding.
+assertHttpRequestEquals "DELETE" "/gh551-writeguard/index.html" "404"
+assertHttpRequestEquals "PUT" "/gh551-writeguard/index.html" "404"
+assertHttpRequestEquals "POST" "/gh551-writeguard/index.html" "404"
+# The object must still exist afterward with its original content: the
+# rejected DELETE/PUT above must not have reached the bucket.
+assertHttpRequestEquals "GET" "/gh551-writeguard/index.html" "data/bucket-1/gh551-writeguard/index.html"
+
+# The write-method policy for ordinary object paths lives in `location /`:
+# its empty limit_except starves unlisted methods of a content handler, so
+# nginx's static module rejects them and the server-level error_page answers
+# 405 with an Allow header - nothing is ever sent to S3.
+assertHttpRequestEquals "PUT" "a.txt" "405"
+assertHttpRequestEquals "DELETE" "a.txt" "405"
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "GET" "/statichost/" "data/bucket-1/statichost/index.html"

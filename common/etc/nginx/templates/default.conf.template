@@ -109,7 +109,7 @@ server {
     }
 
     location / {
-        # This value is templated in based on the value of $CORS_ENABLED. When
+        # This value is templated in based on the CORS_ENABLED setting. When
         # CORS is enabled, acceptable methods are GET, HEAD, and OPTIONS.
         # Otherwise, they are GET and HEAD.
         limit_except ${LIMIT_METHODS_TO} {}
@@ -277,10 +277,10 @@ server {
         include /etc/nginx/conf.d/gateway/s3listing_location.conf;
     }
 
-    location ~ /index.html$ {
+    location ~ /index\.html$ {
         # Configuration for handling locations ending with /index.html
 
-        # This value is templated in based on the value of $CORS_ENABLED. When
+        # This value is templated in based on the CORS_ENABLED setting. When
         # CORS is enabled, acceptable methods are GET, HEAD, and OPTIONS.
         # Otherwise, they are GET and HEAD.
         # Unlike `location /`, an empty limit_except block is not enough here:
@@ -292,6 +292,11 @@ server {
         limit_except ${LIMIT_METHODS_TO} {
             deny all;
         }
+
+        # Pin the default explicitly: a `satisfy any` inherited from user
+        # customizations (e.g. via s3_server.conf) would let the successful
+        # auth_request below clear the deny's 403 and reopen GH-551.
+        satisfy all;
 
         # Necessary for determining the correct URI to construct.
         set $forIndexPage true;
@@ -355,6 +360,18 @@ server {
         include /etc/nginx/conf.d/gateway/cors.conf;
 
         return 404;
+    }
+
+    location @error500 {
+        # The CORS configuration needs to be imported in several places in order for
+        # it to be applied within different contexts.
+        include /etc/nginx/conf.d/gateway/cors.conf;
+
+        # Target of the internal redirect issued by s3gateway.js loadContent
+        # when the index-page probe returns an unexpected status. Without
+        # this location that redirect fails with "could not find named
+        # location" and surfaces an unhandled 500.
+        return 500;
     }
 
     location @trailslashControl {
