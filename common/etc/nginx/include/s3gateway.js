@@ -526,7 +526,7 @@ function _isDirectory(path) {
  * @private
  */
 function _hasExtension(path) {
-    const hasExtension = /(\/[^\/]*)*(\/[^\/]*\.[^.\/]*)$/;
+    const hasExtension = /\/[^\/]*\.[^.\/]*$/;
     return hasExtension.test(path);
 }
 
