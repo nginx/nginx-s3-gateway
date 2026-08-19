@@ -136,7 +136,9 @@ Default of "index.html" can be edited in `s3gateway.js`.
 It will also redirect `/some/path` to `/some/path/` when S3 returns 404 on 
 `/some/path` if `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` is set. `path` has to 
 look like a possible directory, it must not start with a `.` and not have an 
-extension.  
+extension. Only the final path segment is checked for an extension, so a dot 
+in an intermediate directory (e.g. `/dir.name/file`) does not prevent the 
+redirect.  
 
 ### Hosting a Bucket as a Subfolder on an ALB
 

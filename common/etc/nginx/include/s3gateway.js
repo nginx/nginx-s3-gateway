@@ -398,8 +398,7 @@ function trailslashControl(r) {
         // consider the uri without query params or anchors
         const path = r.variables.uri_path.split(/[?#]/)[0];
 
-        const hasExtension = /(\/[^\/]*)*(\/[^\/]*\.[^.\/]*)$/;
-        if (!hasExtension.test(path)  && !_isDirectory(path)){
+        if (!_hasExtension(path)  && !_isDirectory(path)){
             return r.internalRedirect("@trailslash");
         }
     }
@@ -518,6 +517,20 @@ function _isDirectory(path) {
 }
 
 /**
+ * Determines if the last segment of a path contains a file extension. Only
+ * the final segment is considered, so a dot in an intermediate directory
+ * (e.g. /foo.foo/bar) does not count as an extension.
+ *
+ * @param path {string} path to parse
+ * @returns {boolean} true if the last path segment has an extension
+ * @private
+ */
+function _hasExtension(path) {
+    const hasExtension = /(\/[^\/]*)*(\/[^\/]*\.[^.\/]*)$/;
+    return hasExtension.test(path);
+}
+
+/**
  * Checks to see if the given environment variable is present. If not, an error
  * is thrown.
  * @param envVarName {string} environment variable to check for
@@ -546,5 +559,6 @@ export default {
     _s3ReqParamsForSigV4,
     _encodeURIComponent,
     _escapeURIPath,
+    _hasExtension,
     _isHeaderToBeStripped
 };

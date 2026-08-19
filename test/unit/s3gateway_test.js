@@ -244,6 +244,46 @@ function testIsHeaderToBeAllowed() {
     }
 }
 
+function testHasExtension() {
+    printHeader('testHasExtension');
+
+    // Only a dot in the final path segment counts as an extension. Dots in
+    // intermediate directories must not suppress the trailing-slash redirect
+    // (see issue #522).
+    const pathsWithExtension = [
+        '/ramen.jpg',
+        '/a/c/ramen.jpg',
+        '/foo.foo/bar.baz',
+        '/foo/bar.tar.gz',
+        // Dotfiles and trailing dots are treated as having an extension
+        '/.hidden',
+        '/foo.'
+    ];
+    const pathsWithoutExtension = [
+        '/',
+        '/foo',
+        '/foo/bar',
+        '/foo.foo/',
+        '/foo.foo/bar',
+        '/foo.foo/bar/baz'
+    ];
+
+    pathsWithExtension.forEach(function(path) {
+        console.log(`  ## testHasExtension: ${path}`);
+        if (!s3gateway._hasExtension(path)) {
+            throw `Path [${path}] should be detected as having an extension`;
+        }
+    });
+
+    pathsWithoutExtension.forEach(function(path) {
+        console.log(`  ## testHasExtension: ${path}`);
+        if (s3gateway._hasExtension(path)) {
+            throw `Path [${path}] should not be detected as having ` +
+                'an extension';
+        }
+    });
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
@@ -385,6 +425,7 @@ async function test() {
     testIsHeaderToBeStripped();
     testEditHeaders();
     testEditHeadersHeadDirectory();
+    testHasExtension();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();
