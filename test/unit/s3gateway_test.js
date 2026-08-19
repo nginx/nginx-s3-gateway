@@ -287,8 +287,17 @@ function testHasExtension() {
 function testTrailslashControl() {
     printHeader('testTrailslashControl');
 
-    // Requires APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true in the test
-    // environment so that the redirect branch is reachable.
+    // trailslashControl reads APPEND_SLASH_FOR_POSSIBLE_DIRECTORY into a
+    // module-level const at import time, so the flag must be present in the
+    // unit test runner environment (test.sh sets it in all four docker-run
+    // blocks). Fail fast with a setup error rather than a misleading
+    // assertion failure when it is missing.
+    if (process.env['APPEND_SLASH_FOR_POSSIBLE_DIRECTORY'] !== 'true') {
+        throw 'testTrailslashControl requires ' +
+            'APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true in the unit test ' +
+            'runner environment (see test.sh)';
+    }
+
     const testCases = [
         // Extension-less paths that look like possible directories get the
         // append-slash redirect, even under a dotted directory (issue #522)
@@ -299,9 +308,16 @@ function testTrailslashControl() {
         // Percent-encoded dots are decoded before classification, so this
         // is a file, not a possible directory
         ['/dir/file%2Ejpg', '@error404'],
-        // Undecodable sequences must not throw; the raw path is classified
+        // Sequences that are invalid UTF-8 must not throw; they are decoded
+        // byte-wise the same way nginx builds $uri
         ['/foo%C3', '@trailslash'],
+        // ... including when they appear alongside an encoded dot, which
+        // must still be visible to the extension check
+        ['/dir/file%2Ejpg%C3', '@error404'],
         ['/file.jpg', '@error404'],
+        // An encoded trailing slash decodes to a directory (matching the
+        // decoded $uri), so it is not redirected
+        ['/foo%2F', '@error404'],
         // Directories fall through to the 404 handler
         ['/dir/', '@error404']
     ];
