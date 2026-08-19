@@ -280,6 +280,19 @@ server {
     location ~ /index.html$ {
         # Configuration for handling locations ending with /index.html
 
+        # This value is templated in based on the value of $CORS_ENABLED. When
+        # CORS is enabled, acceptable methods are GET, HEAD, and OPTIONS.
+        # Otherwise, they are GET and HEAD.
+        # Unlike `location /`, an empty limit_except block is not enough here:
+        # nginx explicitly inherits the proxy_pass content handler into
+        # limit_except contexts, so unlisted methods would still be proxied to
+        # S3 with a valid signature (GH-551). deny all rejects them in the
+        # access phase before anything is sent upstream; the resulting 403 is
+        # sanitized to 404 by the error_page directive below.
+        limit_except ${LIMIT_METHODS_TO} {
+            deny all;
+        }
+
         # Necessary for determining the correct URI to construct.
         set $forIndexPage true;
 

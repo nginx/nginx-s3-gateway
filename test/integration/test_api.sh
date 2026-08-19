@@ -169,6 +169,17 @@ assertHttpRequestEquals() {
         e "curl command: ${curl_cmd} -X "GET" -r "${range_start}"-"${range_end}" "${uri}" ${extra_arg} | ${checksum_cmd}"
         exit ${test_fail_exit_code}
     fi
+  elif [ "${method}" = "PUT" ] || [ "${method}" = "POST" ] || [ "${method}" = "DELETE" ]; then
+    # Write methods must be rejected by the gateway, so only the immediate
+    # response code is asserted - deliberately no redirect following.
+    expected_response_code="$3"
+    actual_response_code="$(${curl_cmd} -X "${method}" -o /dev/null -w '%{http_code}' "${uri}")"
+
+    if [ "${expected_response_code}" != "${actual_response_code}" ]; then
+      e "Response code didn't match expectation. Request [${method} ${uri}] Expected [${expected_response_code}] Actual [${actual_response_code}]"
+      e "curl command: ${curl_cmd} -X '${method}' -o /dev/null -w '%{http_code}' '${uri}'"
+      exit ${test_fail_exit_code}
+    fi
   else
     e "Method unsupported: [${method}]"
   fi
@@ -332,6 +343,16 @@ if [ ${is_windows} == "0" ]; then
   assertHttpRequestEquals "GET" 'a/%25%40%21%2A%28%29%3D%24%23%5E%26%7C.txt' 'data/bucket-1/a/%@!*()=$#^&|.txt'
   assertHttpRequestEquals "GET" 'a/%E3%81%93%E3%82%8C%E3%81%AF%E3%80%80This%20is%20ASCII%20%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B%20%20%D7%97%D7%9F%20.txt' "data/bucket-1/a/これは　This is ASCII системы  חן .txt"
 fi
+
+# GH-551 regression: the regex location for */index.html paths must reject
+# non-read methods at the nginx layer and never proxy them to S3. The
+# limit_except denial (403) is sanitized to 404 by the location's error_page.
+assertHttpRequestEquals "DELETE" "/statichost/index.html" "404"
+assertHttpRequestEquals "PUT" "/statichost/index.html" "404"
+assertHttpRequestEquals "POST" "/statichost/index.html" "404"
+# The object must still exist afterward: the rejected DELETE above must not
+# have reached the bucket.
+assertHttpRequestEquals "GET" "/statichost/index.html" "data/bucket-1/statichost/index.html"
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "GET" "/statichost/" "data/bucket-1/statichost/index.html"
