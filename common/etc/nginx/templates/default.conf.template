@@ -320,6 +320,11 @@ server {
     }
 
     location @trailslash {
+        # The CORS configuration needs to be imported in several places in order for
+        # it to be applied within different contexts. Without it, a cross-origin
+        # request that gets this 302 would fail the CORS check outright.
+        include /etc/nginx/conf.d/gateway/cors.conf;
+
         # 302 to request without slashes
         # Adding a ? to the end of the replacement param in `rewrite` prevents it from
         # appending the query string.

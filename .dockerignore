@@ -1,0 +1,9 @@
+# Keep the docker build context small: none of the Dockerfiles COPY these
+# paths (they only COPY oss/, plus/, and common/). node_modules alone is
+# ~250MB and was being sent to the daemon on every build.
+.git
+.bin
+node_modules
+out
+reference
+.shelf

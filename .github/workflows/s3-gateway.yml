@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Required status checks must also run on the merge queue's temporary
+  # branches or queued PRs time out waiting for them and are ejected.
+  merge_group:
   schedule:
     - cron: "0 0 * * 1"
   workflow_dispatch:
@@ -29,15 +32,16 @@ jobs:
   build-oss-for-test:
     name: Build NGINX OSS image
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       - name: Build and export
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.oss
           context: .
@@ -45,7 +49,7 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/oss.tar
 
       - name: Upload artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: oss
           path: ${{ runner.temp }}/oss.tar
@@ -55,20 +59,27 @@ jobs:
   test-oss:
     name: Test NGINX OSS image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-oss-for-test
     strategy:
       matrix:
         path_style: [virtual, virtual-v2]
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -83,7 +94,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -98,18 +109,19 @@ jobs:
   build-latest-njs-for-test:
     name: Build NGINX OSS image using latest njs commit
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: test-oss
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
         with:
           driver: docker
 
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -119,7 +131,7 @@ jobs:
           docker load --input ${{ runner.temp }}/oss.tar
 
       - name: Build and load oss image
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.latest-njs
           context: .
@@ -132,7 +144,7 @@ jobs:
           docker save nginx-s3-gateway:latest-njs-oss > ${{ runner.temp }}/latest-njs.tar
 
       - name: Upload artifact - latest-njs
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: latest-njs
           path: ${{ runner.temp }}/latest-njs.tar
@@ -142,17 +154,24 @@ jobs:
   test-latest-njs:
     name: Test NGINX OSS image using latest njs commit
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-latest-njs-for-test
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -167,7 +186,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: latest-njs
           path: ${{ runner.temp }}
@@ -183,18 +202,19 @@ jobs:
   build-unprivileged-for-test:
     name: Build NGINX OSS unprivileged image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: test-oss
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
         with:
           driver: docker
 
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: oss
           path: ${{ runner.temp }}
@@ -204,7 +224,7 @@ jobs:
           docker load --input ${{ runner.temp }}/oss.tar
 
       - name: Build and load oss image
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.unprivileged
           context: .
@@ -217,7 +237,7 @@ jobs:
           docker save nginx-s3-gateway:unprivileged-oss > ${{ runner.temp }}/unprivileged.tar
 
       - name: Upload artifact - unprivileged
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: unprivileged
           path: ${{ runner.temp }}/unprivileged.tar
@@ -227,17 +247,24 @@ jobs:
   test-unprivileged:
     name: Test NGINX OSS unprivileged image
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     needs: build-unprivileged-for-test
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y curl wait-for-it
+        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
+        # step until the job timeout and knocks PRs out of the merge queue.
+        timeout-minutes: 5
+        run: |
+          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
+          sudo apt-get $APT_OPTS update -qq
+          sudo apt-get $APT_OPTS install -y curl wait-for-it
 
       - name: Restore cached binaries
         id: cache-binaries-restore
-        uses: actions/cache/restore@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: .bin
           key: ${{ runner.os }}-binaries
@@ -252,7 +279,7 @@ jobs:
           chmod +x mc
 
       - name: Download artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
           name: unprivileged
           path: ${{ runner.temp }}
@@ -269,6 +296,7 @@ jobs:
   tag-and-push:
     name: Tag and push all built and tested NGINX images
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     needs: [test-oss, test-latest-njs, test-unprivileged]
     if: |
       github.ref == 'refs/heads/main'
@@ -283,23 +311,23 @@ jobs:
           - 5000:5000
     steps:
       - name: Check out the codebase
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
       - name: Set up Docker Buildx for local image build and push
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
         with:
           driver-opts: network=host
 
       # Do an initial build of the base image and push to a local registry for downstream images because the `docker-container` driver can't find local images with `load`.
       - name: Build and push image [oss] to local registry for downstream
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.oss
           context: .
@@ -309,7 +337,7 @@ jobs:
           tags: localhost:5000/nginx-oss-s3-gateway:oss
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -325,14 +353,14 @@ jobs:
           env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
 
       - name: Login to Docker Hub
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           username: ${{ env.DOCKER_HUB_USERNAME }}
           password: ${{ env.DOCKER_HUB_RW_TOKEN }}
 
       # This second invocation of the build/push should just use the existing build cache.
       - name: Build and push image [oss]
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.oss
           context: .
@@ -346,7 +374,7 @@ jobs:
             nginxinc/nginx-s3-gateway:latest
 
       - name: Build and push image [latest-njs]
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.latest-njs
           context: .
@@ -362,7 +390,7 @@ jobs:
             nginxinc/nginx-s3-gateway:latest-njs-oss
 
       - name: Build and push image [unprivileged]
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.unprivileged
           context: .

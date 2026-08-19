@@ -244,6 +244,105 @@ function testIsHeaderToBeAllowed() {
     }
 }
 
+function testHasExtension() {
+    printHeader('testHasExtension');
+
+    // Only a dot in the final path segment counts as an extension. Dots in
+    // intermediate directories must not suppress the trailing-slash redirect
+    // (see issue #522).
+    const pathsWithExtension = [
+        '/ramen.jpg',
+        '/a/c/ramen.jpg',
+        '/foo.foo/bar.baz',
+        '/foo/bar.tar.gz',
+        // Dotfiles and trailing dots are treated as having an extension
+        '/.hidden',
+        '/foo.'
+    ];
+    const pathsWithoutExtension = [
+        '/',
+        '/foo',
+        '/foo/bar',
+        '/foo.foo/',
+        '/foo.foo/bar',
+        '/foo.foo/bar/baz'
+    ];
+
+    pathsWithExtension.forEach(function(path) {
+        console.log(`  ## testHasExtension: ${path}`);
+        if (!s3gateway._hasExtension(path)) {
+            throw `Path [${path}] should be detected as having an extension`;
+        }
+    });
+
+    pathsWithoutExtension.forEach(function(path) {
+        console.log(`  ## testHasExtension: ${path}`);
+        if (s3gateway._hasExtension(path)) {
+            throw `Path [${path}] should not be detected as having ` +
+                'an extension';
+        }
+    });
+}
+
+function testTrailslashControl() {
+    printHeader('testTrailslashControl');
+
+    // trailslashControl reads APPEND_SLASH_FOR_POSSIBLE_DIRECTORY into a
+    // module-level const at import time, so the flag must be present in the
+    // unit test runner environment (test.sh sets it in all four docker-run
+    // blocks). Fail fast with a setup error rather than a misleading
+    // assertion failure when it is missing.
+    if (process.env['APPEND_SLASH_FOR_POSSIBLE_DIRECTORY'] !== 'true') {
+        throw 'testTrailslashControl requires ' +
+            'APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true in the unit test ' +
+            'runner environment (see test.sh)';
+    }
+
+    const testCases = [
+        // Extension-less paths that look like possible directories get the
+        // append-slash redirect, even under a dotted directory (issue #522)
+        ['/dir.name/file', '@trailslash'],
+        ['/foo/bar', '@trailslash'],
+        // Query params and anchors are ignored for classification
+        ['/foo/bar?baz=1', '@trailslash'],
+        // Percent-encoded dots are decoded before classification, so this
+        // is a file, not a possible directory
+        ['/dir/file%2Ejpg', '@error404'],
+        // Sequences that are invalid UTF-8 must not throw; they are decoded
+        // byte-wise the same way nginx builds $uri
+        ['/foo%C3', '@trailslash'],
+        // ... including when they appear alongside an encoded dot, which
+        // must still be visible to the extension check
+        ['/dir/file%2Ejpg%C3', '@error404'],
+        ['/file.jpg', '@error404'],
+        // An encoded trailing slash decodes to a directory (matching the
+        // decoded $uri), so it is not redirected
+        ['/foo%2F', '@error404'],
+        // Directories fall through to the 404 handler
+        ['/dir/', '@error404']
+    ];
+
+    testCases.forEach(function(testCase) {
+        const uriPath = testCase[0];
+        const expected = testCase[1];
+        let redirectedTo = null;
+        const r = {
+            variables: {
+                uri_path: uriPath
+            },
+            internalRedirect: function(target) {
+                redirectedTo = target;
+            }
+        };
+        console.log(`  ## testTrailslashControl: ${uriPath} => ${expected}`);
+        s3gateway.trailslashControl(r);
+        if (redirectedTo !== expected) {
+            throw `Path [${uriPath}] should have been redirected to ` +
+                `[${expected}] but was [${redirectedTo}]`;
+        }
+    });
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
@@ -385,6 +484,8 @@ async function test() {
     testIsHeaderToBeStripped();
     testEditHeaders();
     testEditHeadersHeadDirectory();
+    testHasExtension();
+    testTrailslashControl();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();

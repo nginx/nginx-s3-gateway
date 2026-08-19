@@ -135,8 +135,15 @@ transform `/some/path/` to `/some/path/index.html` when retrieving from S3.
 Default of "index.html" can be edited in `s3gateway.js`. 
 It will also redirect `/some/path` to `/some/path/` when S3 returns 404 on 
 `/some/path` if `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` is set. `path` has to 
-look like a possible directory, it must not start with a `.` and not have an 
-extension.  
+look like a possible directory: it must not end with a slash, and its final 
+path segment must not contain a dot. Only the final segment is checked, so a 
+dot in an intermediate directory (e.g. `/dir.name/file`) does not prevent 
+the redirect, while any dot in the final segment (e.g. `/file.jpg`, 
+`/releases/v1.2.3`, `/.hidden`, `/reports.`) is treated as a file extension 
+and is not redirected. The path is percent-decoded before this check, so an 
+encoded dot (`%2E`) counts as a dot and an encoded slash (`%2F`) counts as a 
+directory separator (e.g. `/foo%2F` is treated as a directory and is not 
+redirected).  
 
 ### Hosting a Bucket as a Subfolder on an ALB
 
@@ -346,6 +353,18 @@ aws ec2 modify-instance-metadata-options --instance-id <instance id> \
 After that has been run we can start the container normally and omit the
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` environment variables.
 
+Note: when the IMDSv2 token request fails with a network error or is rejected
+with a 403/404/405 status, the gateway automatically retries without a session
+token (IMDSv1), matching AWS SDK behavior. This lets the gateway work on
+instances where the hop limit was not raised, but only when the instance still
+allows IMDSv1 (`HttpTokens=optional`); each credential refresh then waits for
+the token request to time out first. Instances enforcing IMDSv2
+(`HttpTokens=required`) still require the hop limit change above.
+
+To disable the IMDSv1 fallback entirely so that credential retrieval fails
+closed when an IMDSv2 token cannot be obtained, set the standard AWS SDK
+environment variable `AWS_EC2_METADATA_V1_DISABLED=true`.
+
 ### Running in ECS with an IAM Policy
 
 The commands below all reference the [`deployments/ecs/cloudformation/s3gateway.cf`](/deployments/ecs/cloudformation/s3gateway.yaml) file. This file will need to be
@@ -483,7 +502,7 @@ An alternative way to use the container image on an EKS cluster is to use a serv
 - Configuring a [Kubernetes service account to assume an IAM role with EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-association.html)
 - [Configure your pods, Deployments, etc to use the Service Account](https://docs.aws.amazon.com/eks/latest/userguide/pod-configuration.html)
 - As soon as the pods/deployments are updated, you will see the couple of Env Variables listed below in the pods.
-  - `AWS_CONTAINER_CREDENTIALS_FULL_URI` - Contains the Uri of the EKS Pod Identity Agent that will provide the credentials 
+  - `AWS_CONTAINER_CREDENTIALS_FULL_URI` - Contains the URI of the EKS Pod Identity Agent that will provide the credentials 
   - `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`  - Contains the token which will be used to create temporary credentials using the EKS Pod Identity Agent.
 
 The minimal set of resources to deploy is the same than for [Running on EKS with IAM roles for service accounts](#running-on-eks-with-iam-roles-for-service-accounts), except there is no need to annotate the service account:

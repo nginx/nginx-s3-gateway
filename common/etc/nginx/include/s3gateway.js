@@ -395,11 +395,33 @@ function redirectToS3(r) {
 function trailslashControl(r) {
     if (APPEND_SLASH) {
         // For the purposes of understanding whether this is a directory,
-        // consider the uri without query params or anchors
-        const path = r.variables.uri_path.split(/[?#]/)[0];
+        // consider the uri without query params or anchors. The $uri_path
+        // map already strips query params from $request_uri, so this is
+        // defensive and otherwise only strips raw anchors. njs
+        // String.split(regex) is disproportionately expensive, so find and
+        // slice instead - this runs on every 404.
+        let path = r.variables.uri_path;
+        const separatorIdx = path.search(/[?#]/);
+        if (separatorIdx !== -1) {
+            path = path.slice(0, separatorIdx);
+        }
 
-        const hasExtension = /\/[^.\/]+\.[^.]+$/;
-        if (!hasExtension.test(path)  && !_isDirectory(path)){
+        // Classify the percent-decoded path so that encoded dots (%2E) are
+        // visible to the extension check, approximating the decoded $uri
+        // that the @trailslash rewrite redirects to. Decode byte-wise the
+        // way nginx builds $uri: decodeURIComponent() would throw URIError
+        // on sequences nginx accepts (e.g. invalid UTF-8 such as %C3) and
+        // then misclassify any encoded dots elsewhere in the same path.
+        // Unlike $uri, the result is deliberately not normalized
+        // (dot-segments and duplicate slashes are kept) - the decoded path
+        // is used for classification only, never for building the redirect.
+        if (path.indexOf('%') !== -1) {
+            path = path.replace(/%([0-9A-Fa-f]{2})/g, function (_match, hex) {
+                return String.fromCharCode(parseInt(hex, 16));
+            });
+        }
+
+        if (!_isDirectory(path) && !_hasExtension(path)) {
             return r.internalRedirect("@trailslash");
         }
     }
@@ -518,6 +540,22 @@ function _isDirectory(path) {
 }
 
 /**
+ * Determines if the final segment of a path contains a dot, which the
+ * gateway treats as a file extension. Only the final segment is considered,
+ * so a dot in an intermediate directory (e.g. /foo.foo/bar) does not count
+ * as an extension. Dotfiles (/.hidden) and segments with a trailing dot
+ * (/foo.) do count as having an extension, and the final segment must be
+ * preceded by a slash (a bare 'foo.jpg' returns false).
+ *
+ * @param path {string} path to parse
+ * @returns {boolean} true if the last path segment has an extension
+ * @private
+ */
+function _hasExtension(path) {
+    return /\/[^\/]*\.[^.\/]*$/.test(path);
+}
+
+/**
  * Checks to see if the given environment variable is present. If not, an error
  * is thrown.
  * @param envVarName {string} environment variable to check for
@@ -546,5 +584,6 @@ export default {
     _s3ReqParamsForSigV4,
     _encodeURIComponent,
     _escapeURIPath,
+    _hasExtension,
     _isHeaderToBeStripped
 };

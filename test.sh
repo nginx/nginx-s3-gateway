@@ -374,6 +374,7 @@ runUnitTestWithOutSessionToken() {
         -e "S3_SERVER_PORT=443"               \
         -e "S3_REGION=test-1"                 \
         -e "AWS_SIGS_VERSION=4"               \
+        -e "APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true" \
         --entrypoint /usr/bin/njs             \
         nginx-s3-gateway -m -p '/etc/nginx' /var/tmp/"${test_code}"
     else
@@ -394,6 +395,7 @@ runUnitTestWithOutSessionToken() {
         -e "S3_SERVER_PORT=443"               \
         -e "S3_REGION=test-1"                 \
         -e "AWS_SIGS_VERSION=4"               \
+        -e "APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true" \
         --entrypoint /usr/bin/njs             \
         nginx-s3-gateway -t module -p '/etc/nginx' /var/tmp/"${test_code}"
   fi
@@ -422,6 +424,7 @@ runUnitTestWithSessionToken() {
         -e "S3_SERVER_PORT=443"               \
         -e "S3_REGION=test-1"                 \
         -e "AWS_SIGS_VERSION=4"               \
+        -e "APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true" \
         --entrypoint /usr/bin/njs             \
         nginx-s3-gateway -m -p '/etc/nginx' /var/tmp/"${test_code}"
     else
@@ -443,6 +446,7 @@ runUnitTestWithSessionToken() {
         -e "S3_SERVER_PORT=443"               \
         -e "S3_REGION=test-1"                 \
         -e "AWS_SIGS_VERSION=4"               \
+        -e "APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true" \
         --entrypoint /usr/bin/njs             \
         nginx-s3-gateway -t module -p '/etc/nginx' /var/tmp/"${test_code}"
   fi

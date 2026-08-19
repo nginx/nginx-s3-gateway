@@ -196,8 +196,11 @@ function writeCredentials(r, credentials) {
         return;
     }
 
-    if (!credentials) {
-        throw `Cannot write invalid credentials: ${JSON.stringify(credentials)}`;
+    /* Guard against caching malformed credentials (such as an error response
+       body that was mistakenly parsed as credentials) - field values are
+       deliberately not logged so that secrets cannot leak into logs. */
+    if (!credentials || !credentials.accessKeyId || !credentials.secretAccessKey) {
+        throw 'Cannot write invalid credentials: missing accessKeyId or secretAccessKey';
     }
 
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
@@ -286,7 +289,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEcsRoleCredentials(uri);
         } catch (e) {
-            utils.debug_log(r, 'Could not load ECS task role credentials: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not load ECS task role credentials: ${e}`);
             r.return(500);
             return;
         }
@@ -295,7 +298,7 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchWebIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, 'Could not assume role using web identity: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not assume role using web identity: ${e}`);
             r.return(500);
             return;
         }
@@ -304,15 +307,15 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEKSPodIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, 'Could not assume role using EKS pod identity: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not assume role using EKS pod identity: ${e}`);
             r.return(500);
             return;
         }
     } else {
         try {
-            credentials = await _fetchEC2RoleCredentials();
+            credentials = await _fetchEC2RoleCredentials(r);
         } catch (e) {
-            utils.debug_log(r, 'Could not load EC2 task role credentials: ' + JSON.stringify(e));
+            utils.debug_log(r, `Could not load EC2 task role credentials: ${e}`);
             r.return(500);
             return;
         }
@@ -328,6 +331,20 @@ async function fetchCredentials(r) {
 }
 
 /**
+ * Throws when a credentials-endpoint response has a non-2xx status so that
+ * error response bodies are never parsed as credentials.
+ *
+ * @param resp {Response} response object returned by ngx.fetch
+ * @param endpointName {string} human-readable endpoint name for the error
+ * @private
+ */
+function _checkResponseOk(resp, endpointName) {
+    if (!resp.ok) {
+        throw `${endpointName} response was not ok (status: ${resp.status}).`;
+    }
+}
+
+/**
  * Get the credentials needed to generate AWS signatures from the ECS
  * (Elastic Container Service) metadata endpoint.
  *
@@ -337,9 +354,7 @@ async function fetchCredentials(r) {
  */
 async function _fetchEcsRoleCredentials(credentialsUri) {
     const resp = await ngx.fetch(credentialsUri);
-    if (!resp.ok) {
-        throw 'Credentials endpoint response was not ok.';
-    }
+    _checkResponseOk(resp, 'ECS credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -354,22 +369,72 @@ async function _fetchEcsRoleCredentials(credentialsUri) {
  * Get the credentials needed to generate AWS signatures from the EC2
  * metadata endpoint.
  *
+ * @param r {NginxHTTPRequest} HTTP request object
  * @returns {Promise<Credentials>}
  * @private
  */
-async function _fetchEC2RoleCredentials() {
-    const tokenResp = await ngx.fetch(EC2_IMDS_TOKEN_ENDPOINT, {
-        headers: {
-            'x-aws-ec2-metadata-token-ttl-seconds': '21600',
-        },
-        method: 'PUT',
-    });
-    const token = await tokenResp.text();
+async function _fetchEC2RoleCredentials(r) {
+    /* Standard AWS SDK setting: when true, never fall back to IMDSv1 -
+       credential retrieval fails closed when an IMDSv2 token cannot be
+       obtained.
+       See: https://docs.aws.amazon.com/sdkref/latest/guide/feature-imds-credentials.html */
+    const imdsV1Disabled = utils.parseBoolean(
+        process.env['AWS_EC2_METADATA_V1_DISABLED'] || 'false');
+    let tokenResp = null;
+    let imdsV1FallbackReason = null;
+    try {
+        tokenResp = await ngx.fetch(EC2_IMDS_TOKEN_ENDPOINT, {
+            headers: {
+                'x-aws-ec2-metadata-token-ttl-seconds': '21600',
+            },
+            method: 'PUT',
+        });
+    } catch (e) {
+        /* A network error or timeout on the token request falls back to
+           IMDSv1 below, matching AWS SDK behavior. This covers instances
+           whose HttpPutResponseHopLimit is too low for the gateway's network
+           position (e.g. running inside a container behind a bridge network),
+           where the token response is dropped but IMDSv1 GETs succeed. */
+        if (imdsV1Disabled) {
+            throw `IMDSv2 token request failed (${e}) and IMDSv1 fallback ` +
+                'is disabled by AWS_EC2_METADATA_V1_DISABLED.';
+        }
+        imdsV1FallbackReason = `the IMDSv2 token request failed (${e})`;
+        utils.debug_log(r, `EC2 IMDS token request failed (${e}), falling back to IMDSv1`);
+    }
+    /* Fall back to IMDSv1 (no session token) when the IMDSv2 token request is
+       rejected with 403/404/405, matching AWS SDK behavior with IMDSv1-only
+       metadata services such as older metadata emulators. Other failure
+       statuses (e.g. 429/5xx throttling on an IMDSv2-required instance) are
+       fatal so that the root cause is surfaced instead of the misleading 401
+       a token-less request would produce. */
+    const headers = {};
+    if (tokenResp) {
+        if (tokenResp.ok) {
+            headers['x-aws-ec2-metadata-token'] = await tokenResp.text();
+        } else if (imdsV1Disabled) {
+            throw `IMDS token endpoint response was not ok (status: ${tokenResp.status}) ` +
+                'and IMDSv1 fallback is disabled by AWS_EC2_METADATA_V1_DISABLED.';
+        } else if (tokenResp.status === 403 || tokenResp.status === 404 ||
+                   tokenResp.status === 405) {
+            imdsV1FallbackReason = `the IMDS token endpoint returned status ${tokenResp.status}`;
+            utils.debug_log(r, `EC2 IMDS token endpoint returned status ${tokenResp.status}, falling back to IMDSv1`);
+        } else {
+            _checkResponseOk(tokenResp, 'IMDS token endpoint');
+        }
+    }
     let resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT, {
-        headers: {
-            'x-aws-ec2-metadata-token': token,
-        },
+        headers: headers,
     });
+    if (!resp.ok && imdsV1FallbackReason) {
+        /* Without this attribution, an IMDSv2-required instance surfaces only
+           the 401 from the token-less GET, hiding the token failure that
+           caused the downgrade. */
+        throw `Security credentials endpoint response was not ok (status: ${resp.status}) ` +
+            `after falling back to IMDSv1 because ${imdsV1FallbackReason}; ` +
+            'the instance may require IMDSv2.';
+    }
+    _checkResponseOk(resp, 'Security credentials endpoint');
     /* This _might_ get multiple possible roles in other scenarios, however,
        EC2 supports attaching one role only.It should therefore be safe to take
        the whole output, even given IMDS _might_ (?) be able to return multiple
@@ -379,10 +444,9 @@ async function _fetchEC2RoleCredentials() {
         throw 'No credentials available for EC2 instance';
     }
     resp = await ngx.fetch(EC2_IMDS_SECURITY_CREDENTIALS_ENDPOINT + credName, {
-        headers: {
-            'x-aws-ec2-metadata-token': token,
-        },
+        headers: headers,
     });
+    _checkResponseOk(resp, 'EC2 role credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -401,12 +465,16 @@ async function _fetchEC2RoleCredentials() {
  * @private
  */
 async function _fetchEKSPodIdentityCredentials() {
-    const token = fs.readFileSync(process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE']);
+    /* Trim the token so a trailing newline in a hand-created token file does
+       not produce an invalid Authorization header value; tokens themselves
+       never contain whitespace. */
+    const token = fs.readFileSync(process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE']).toString().trim();
     let resp = await ngx.fetch(EKS_POD_IDENTITY_AGENT_CREDENTIALS_ENDPOINT, {
         headers: {
             'Authorization': token,
         },
     });
+    _checkResponseOk(resp, 'EKS Pod Identity credentials endpoint');
     const creds = await resp.json();
 
     return {
@@ -453,9 +521,16 @@ async function _fetchWebIdentityCredentials(r) {
         }
     }
 
-    const token = fs.readFileSync(process.env['AWS_WEB_IDENTITY_TOKEN_FILE']);
+    /* Trim the token so a trailing newline in a hand-created token file is
+       not percent-encoded into the token value (STS would reject it); JWTs
+       and OAuth tokens never contain leading or trailing whitespace. */
+    const token = fs.readFileSync(process.env['AWS_WEB_IDENTITY_TOKEN_FILE']).toString().trim();
 
-    const params = `Version=2011-06-15&Action=AssumeRoleWithWebIdentity&RoleArn=${arn}&RoleSessionName=${name}&WebIdentityToken=${token}`;
+    /* Percent-encode the values - IAM role session names may legally contain
+       '+' and '=', and web identity tokens that are not base64url-encoded
+       JWTs (e.g. OAuth access tokens) may contain characters that corrupt
+       query-string parsing when left unencoded. */
+    const params = `Version=2011-06-15&Action=AssumeRoleWithWebIdentity&RoleArn=${encodeURIComponent(arn)}&RoleSessionName=${encodeURIComponent(name)}&WebIdentityToken=${encodeURIComponent(token)}`;
 
     const response = await ngx.fetch(sts_endpoint + "?" + params, {
         headers: {
@@ -463,6 +538,13 @@ async function _fetchWebIdentityCredentials(r) {
         },
         method: 'GET',
     });
+    if (!response.ok) {
+        /* Cap the amount of the error body kept so that an unexpectedly large
+           error document cannot balloon the thrown message; real STS error
+           bodies are far smaller than this. */
+        const errorBody = (await response.text()).slice(0, 1024);
+        throw `STS endpoint response was not ok (status: ${response.status}, body: ${errorBody}).`;
+    }
 
     const resp = await response.json();
     const creds = resp.AssumeRoleWithWebIdentityResponse.AssumeRoleWithWebIdentityResult.Credentials;
