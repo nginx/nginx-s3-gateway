@@ -396,10 +396,20 @@ function trailslashControl(r) {
     if (APPEND_SLASH) {
         // For the purposes of understanding whether this is a directory,
         // consider the uri without query params or anchors
-        const path = r.variables.uri_path.split(/[?#]/)[0];
+        let path = r.variables.uri_path.split(/[?#]/)[0];
 
-        const hasExtension = /\/[^.\/]+\.[^.]+$/;
-        if (!hasExtension.test(path)  && !_isDirectory(path)){
+        // Classify the decoded path so that percent-encoded dots (%2E) are
+        // visible to the extension check, matching the decoded $uri that the
+        // @trailslash rewrite redirects to. If decoding fails (e.g. invalid
+        // UTF-8 sequences that nginx passes through), classify the raw path
+        // rather than letting a URIError turn the 404 into a 500.
+        try {
+            path = decodeURIComponent(path);
+        } catch (e) {
+            // fall back to the raw path
+        }
+
+        if (!_hasExtension(path) && !_isDirectory(path)) {
             return r.internalRedirect("@trailslash");
         }
     }
@@ -518,6 +528,22 @@ function _isDirectory(path) {
 }
 
 /**
+ * Determines if the final segment of a path contains a dot, which the
+ * gateway treats as a file extension. Only the final segment is considered,
+ * so a dot in an intermediate directory (e.g. /foo.foo/bar) does not count
+ * as an extension. Dotfiles (/.hidden) and segments with a trailing dot
+ * (/foo.) do count as having an extension, and the final segment must be
+ * preceded by a slash (a bare 'foo.jpg' returns false).
+ *
+ * @param path {string} path to parse
+ * @returns {boolean} true if the last path segment has an extension
+ * @private
+ */
+function _hasExtension(path) {
+    return /\/[^\/]*\.[^.\/]*$/.test(path);
+}
+
+/**
  * Checks to see if the given environment variable is present. If not, an error
  * is thrown.
  * @param envVarName {string} environment variable to check for
@@ -546,5 +572,6 @@ export default {
     _s3ReqParamsForSigV4,
     _encodeURIComponent,
     _escapeURIPath,
+    _hasExtension,
     _isHeaderToBeStripped
 };
