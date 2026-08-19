@@ -138,7 +138,8 @@ It will also redirect `/some/path` to `/some/path/` when S3 returns 404 on
 look like a possible directory, it must not start with a `.` and not have an 
 extension. Only the final path segment is checked for an extension, so a dot 
 in an intermediate directory (e.g. `/dir.name/file`) does not prevent the 
-redirect.  
+redirect. A final segment that begins or ends with a dot (e.g. `/.hidden`, 
+`/reports.`) is treated as having an extension and is not redirected.  
 
 ### Hosting a Bucket as a Subfolder on an ALB
 

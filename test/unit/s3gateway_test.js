@@ -284,6 +284,49 @@ function testHasExtension() {
     });
 }
 
+function testTrailslashControl() {
+    printHeader('testTrailslashControl');
+
+    // Requires APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true in the test
+    // environment so that the redirect branch is reachable.
+    const testCases = [
+        // Extension-less paths that look like possible directories get the
+        // append-slash redirect, even under a dotted directory (issue #522)
+        ['/dir.name/file', '@trailslash'],
+        ['/foo/bar', '@trailslash'],
+        // Query params and anchors are ignored for classification
+        ['/foo/bar?baz=1', '@trailslash'],
+        // Percent-encoded dots are decoded before classification, so this
+        // is a file, not a possible directory
+        ['/dir/file%2Ejpg', '@error404'],
+        // Undecodable sequences must not throw; the raw path is classified
+        ['/foo%C3', '@trailslash'],
+        ['/file.jpg', '@error404'],
+        // Directories fall through to the 404 handler
+        ['/dir/', '@error404']
+    ];
+
+    testCases.forEach(function(testCase) {
+        const uriPath = testCase[0];
+        const expected = testCase[1];
+        let redirectedTo = null;
+        const r = {
+            variables: {
+                uri_path: uriPath
+            },
+            internalRedirect: function(target) {
+                redirectedTo = target;
+            }
+        };
+        console.log(`  ## testTrailslashControl: ${uriPath} => ${expected}`);
+        s3gateway.trailslashControl(r);
+        if (redirectedTo !== expected) {
+            throw `Path [${uriPath}] should have been redirected to ` +
+                `[${expected}] but was [${redirectedTo}]`;
+        }
+    });
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
@@ -426,6 +469,7 @@ async function test() {
     testEditHeaders();
     testEditHeadersHeadDirectory();
     testHasExtension();
+    testTrailslashControl();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();
