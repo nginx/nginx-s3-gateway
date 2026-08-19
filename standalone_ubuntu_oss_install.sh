@@ -74,12 +74,19 @@ if [ $failed -gt 0 ]; then
 fi
 
 if [ "${1}" == "" ]; then
-  branch="master"
+  branch="main"
 else
   branch="${1}"
 fi
 echo "Installing using github '${branch}' branch"
 
+# Normalize to 1/0: the fail-closed map in default.conf.template only
+# enables the cache bypass for the exact value '1'; anything else
+# disables it.
+case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
+  TRUE | true | True | YES | Yes | 1) PROXY_CACHE_BYPASS_NO_CACHE=1 ;;
+  *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
+esac
 
 echo "S3 Backend Environment"
 echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
@@ -97,6 +104,7 @@ echo "Proxy Caching Time for Valid Response: ${PROXY_CACHE_VALID_OK}"
 echo "Proxy Caching Time for Not Found Response: ${PROXY_CACHE_VALID_NOTFOUND}"
 echo "Proxy Caching Time for Forbidden Response: ${PROXY_CACHE_VALID_FORBIDDEN}"
 echo "Proxy Cache Using Stale: ${PROXY_CACHE_USE_STALE}"
+echo "Proxy Cache Bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
@@ -182,6 +190,8 @@ PROXY_CACHE_VALID_NOTFOUND=${PROXY_CACHE_VALID_NOTFOUND:-'1m'}
 PROXY_CACHE_VALID_FORBIDDEN=${PROXY_CACHE_VALID_FORBIDDEN:-'30s'}
 # Proxy cache using stale data when error occurs
 PROXY_CACHE_USE_STALE=${PROXY_CACHE_USE_STALE:-'error timeout http_500 http_502 http_503 http_504'}
+# Bypass the local cache when a client sends Cache-Control: no-cache (1=enabled, 0=disabled)
+PROXY_CACHE_BYPASS_NO_CACHE=${PROXY_CACHE_BYPASS_NO_CACHE}
 # Enables or disables CORS for the S3 Gateway (true=enabled, false=disabled)
 CORS_ENABLED=${CORS_ENABLED:-'false'}
 # Configure portion of URL to be removed (optional)

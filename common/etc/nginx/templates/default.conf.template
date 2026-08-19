@@ -26,6 +26,25 @@ map $uri_full_path $uri_path {
     default $PREFIX_LEADING_DIRECTORY_PATH$uri_full_path;
 }
 
+# Detects a 'no-cache' token in the client's Cache-Control request header
+# (sent by browsers on a hard refresh). Token-aware so that substrings of
+# other tokens (e.g. 'x-no-cache-y') do not match. NGINX 1.23.0+ joins
+# repeated Cache-Control headers into one comma-separated value.
+map $http_cache_control $req_cc_no_cache {
+    default                       0;
+    "~*(^|,)\s*no-cache\s*(,|$)"  1;
+}
+
+# PROXY_CACHE_BYPASS_NO_CACHE is normalized to 1/0 by 01-set-defaults.envsh
+# (container) or standalone_ubuntu_oss_install.sh. proxy_cache_bypass treats
+# ANY non-empty value other than '0' as truthy, so this composite match fails
+# closed: only the exact value '1:1' enables a bypass; unnormalized values
+# like 'false' or 'yes' disable it.
+map "${PROXY_CACHE_BYPASS_NO_CACHE}:$req_cc_no_cache" $cache_bypass_no_cache {
+    default  0;
+    "1:1"    1;
+}
+
 # S3_HOST_HEADER is set in the startup script
 # (either ./common/docker-entrypoint.sh or ./standalone_ubuntu_oss_install.sh)
 # based on the S3_STYLE configuration option.
@@ -67,6 +86,13 @@ server {
     proxy_cache_lock on;
     proxy_cache_use_stale ${PROXY_CACHE_USE_STALE};
     proxy_cache_key "$request_method$host$uri";
+    # Bypass the local cache and re-fetch from S3 when the client sends
+    # Cache-Control: no-cache and PROXY_CACHE_BYPASS_NO_CACHE is enabled.
+    # Opt-in because client-controlled cache busting can be abused to drive
+    # up S3 request costs. The fresh response still refreshes the cache.
+    # Inherited by every location that defines no proxy_cache_bypass of its
+    # own, including @s3 and @s3_sliced.
+    proxy_cache_bypass $cache_bypass_no_cache;
 
     # If you need to support proxying range request, refer to this article:
     # https://www.nginx.com/blog/smart-efficient-byte-range-caching-nginx/
@@ -121,6 +147,11 @@ server {
         proxy_cache s3_cache_slices;
         proxy_cache_valid 200 302 206 ${PROXY_CACHE_VALID_OK};
         proxy_cache_key "$request_method$host$uri$slice_range";
+        # proxy_cache_bypass is inherited from the server level. A bypassing
+        # ranged request re-fetches only the slices its Range covers, so a
+        # changed object can leave other slices at the previous version until
+        # they expire (the slice module rejects mixed-version responses with
+        # an 'etag mismatch in slice response' error).
 
         slice             ${PROXY_CACHE_SLICE_SIZE};
         proxy_set_header   Range $slice_range;
