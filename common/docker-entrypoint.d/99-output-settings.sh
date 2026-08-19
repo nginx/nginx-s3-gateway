@@ -33,4 +33,5 @@ S3 Backend Environment:
   CORS Enabled: ${CORS_ENABLED}
   CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}
   Proxy cache using stale setting: ${PROXY_CACHE_USE_STALE}
+  Proxy cache bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}
 EOM

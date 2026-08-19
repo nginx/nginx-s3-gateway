@@ -126,6 +126,21 @@ if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   fi
 fi
 
+# PROXY_CACHE_BYPASS_NO_CACHE is optional (unset and empty default to
+# false), but when it is set it must be a spelling that parseBoolean
+# recognizes. parseBoolean treats every unrecognized value - including the
+# lowercase 'yes' - as false, so a typo would otherwise silently disable the
+# cache bypass feature.
+if [ -n "${PROXY_CACHE_BYPASS_NO_CACHE:-}" ]; then
+  case "${PROXY_CACHE_BYPASS_NO_CACHE}" in
+    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
+    *)
+      >&2 echo "PROXY_CACHE_BYPASS_NO_CACHE contains an invalid value (${PROXY_CACHE_BYPASS_NO_CACHE}). Valid values: true, false"
+      failed=1
+      ;;
+  esac
+fi
+
 
 if [ $failed -gt 0 ]; then
   exit 1

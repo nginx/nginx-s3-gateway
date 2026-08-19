@@ -297,6 +297,40 @@ integration_test() {
   fi
 }
 
+integration_test_cache_bypass() {
+  bypass_setting=$1  # "false" or "true" - passed through compose to the gateway
+  # The assertion set follows the setting so that the two can never be passed
+  # as a mismatched pair.
+  if [ "${bypass_setting}" = "true" ]; then
+    bypass_phase="enabled"
+  else
+    bypass_phase="disabled"
+  fi
+
+  printf "\033[34;1m▶\033[0m"
+  printf "\e[1m Integration test suite with PROXY_CACHE_BYPASS_NO_CACHE=%s\e[22m\n" "${bypass_setting}"
+
+  p "Starting Docker Compose Environment"
+  # The six standard configuration values are pinned to a known baseline
+  # (the v4 signatures, no-listing configuration) so that URL rewriting
+  # configured by the STRIP/PREFIX_LEADING_DIRECTORY_PATH passes cannot leak
+  # in. Changing the environment makes compose recreate the gateway
+  # container, which discards the proxy cache so that each phase starts with
+  # an empty cache.
+  # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" compose up -d
+
+  if [ "${wait_for_it_installed}" ]; then
+    if [ -x "${wait_for_it_cmd}" ]; then
+      "${wait_for_it_cmd}" -h "${nginx_server_host}" -p "${nginx_server_port}"
+    fi
+  fi
+
+  p "Starting cache bypass tests (phase: ${bypass_phase})"
+  echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${mc_cmd}\" \"${minio_name}\" \"${minio_bucket}\""
+  bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
+}
+
 finish() {
   result=$?
 
@@ -529,5 +563,15 @@ integration_test 4 0 0 0 "/tostrip" "/b"
 
 p "Testing API with AWS Signature V2 and prefix leading directory path"
 integration_test 2 0 0 0 "" "/b"
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing proxy cache bypass with PROXY_CACHE_BYPASS_NO_CACHE=false (default)"
+integration_test_cache_bypass "false"
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing proxy cache bypass with PROXY_CACHE_BYPASS_NO_CACHE=true"
+integration_test_cache_bypass "true"
 
 p "All integration tests complete"

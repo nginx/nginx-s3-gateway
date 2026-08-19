@@ -98,3 +98,8 @@ fi
 if [ "${PROXY_CACHE_USE_STALE+x}" = "" ]; then
   export PROXY_CACHE_USE_STALE="error timeout http_500 http_502 http_503 http_504"
 fi
+
+# Normalize PROXY_CACHE_BYPASS_NO_CACHE so the fail-closed map in
+# default.conf.template only ever sees '1' or '0'.
+PROXY_CACHE_BYPASS_NO_CACHE="$(parseBoolean "${PROXY_CACHE_BYPASS_NO_CACHE:-false}")"
+export PROXY_CACHE_BYPASS_NO_CACHE

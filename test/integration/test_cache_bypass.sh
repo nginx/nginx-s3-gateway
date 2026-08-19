@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+
+#
+#  Copyright 2026 F5, Inc.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+
+# Integration tests for the PROXY_CACHE_BYPASS_NO_CACHE feature. The gateway
+# must already be running with the feature configured; this script only
+# issues requests and mutates objects in the MinIO backend to prove whether
+# a request with Cache-Control: no-cache bypasses the local proxy cache.
+#
+# The test relies on PROXY_CACHE_VALID_OK being long (1h in the test compose
+# file) so that a primed cache entry stays fresh for the duration of the run,
+# making "stale body served" a deterministic assertion.
+
+set -o errexit   # abort on nonzero exit status
+set -o pipefail  # don't hide errors within pipes
+
+test_server=$1
+test_dir=$2
+phase=$3
+mc_cmd=$4
+minio_alias=$5
+minio_bucket=$6
+
+test_fail_exit_code=2
+no_dep_exit_code=3
+checksum_length=32
+
+set -o nounset   # abort on unbound variable
+
+e() {
+  >&2 echo "$1"
+}
+
+if [ -z "${test_server}" ]; then
+  e "missing first parameter: test server location (eg http://localhost:80)"
+  exit ${no_dep_exit_code}
+fi
+
+if [ -z "${test_dir}" ]; then
+  e "missing second parameter: path to test data directory"
+  exit ${no_dep_exit_code}
+fi
+
+if [ "${phase}" != "disabled" ] && [ "${phase}" != "enabled" ]; then
+  e "third parameter must be 'disabled' or 'enabled', got: [${phase}]"
+  exit ${no_dep_exit_code}
+fi
+
+if ! [ -x "${mc_cmd}" ]; then
+  e "required dependency not found: mc not found at [${mc_cmd}] or not executable"
+  exit ${no_dep_exit_code}
+fi
+
+if [ -z "${minio_alias}" ]; then
+  e "missing fifth parameter: mc alias of the MinIO backend"
+  exit ${no_dep_exit_code}
+fi
+
+if [ -z "${minio_bucket}" ]; then
+  e "missing sixth parameter: name of the MinIO bucket"
+  exit ${no_dep_exit_code}
+fi
+
+curl_cmd="$(command -v curl || true)"
+if ! [ -x "${curl_cmd}" ]; then
+  e "required dependency not found: curl not found in the path or not executable"
+  exit ${no_dep_exit_code}
+fi
+curl_cmd="${curl_cmd} --connect-timeout 3 --max-time 30 --no-progress-meter"
+
+# Allow for MacOS which does not support "md5sum"
+# but has "md5 -r" which can be substituted
+checksum_cmd="$(command -v md5sum || command -v md5 || true)"
+
+if ! [ -x "${checksum_cmd}" ]; then
+  e "required dependency not found: md5sum not found in the path or not executable"
+  exit ${no_dep_exit_code}
+fi
+
+file_convert_command="$(command -v dd || true)"
+
+if ! [ -x "${file_convert_command}" ]; then
+  e "required dependency not found: dd not found in the path or not executable"
+  exit ${no_dep_exit_code}
+fi
+
+# If we are using the `md5` executable
+# then use the -r flag which makes it behave the same as `md5sum`
+# this is done after the `-x` check for ability to execute
+# since it will not pass with the flag
+if [[ $checksum_cmd =~ \/md5$ ]]; then
+  checksum_cmd="${checksum_cmd} -r"
+fi
+
+fixture_dir="${test_dir}/data/${minio_bucket}/cache-bypass"
+
+# Asserts that a GET of <url_path>, optionally sent with a Cache-Control
+# request header, returns a body identical to <local_file>.
+# assertGetEquals <url_path> <local_file> <cache_control_value_or_empty> <label>
+assertGetEquals() {
+  path="$1"
+  expected_file="$2"
+  cache_control="$3"
+  label="$4"
+  uri="${test_server}${path}"
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Cache bypass [${label}]: GET ${path} (Cache-Control: ${cache_control:-<none>})"
+
+  checksum_output="$(${checksum_cmd} "${expected_file}")"
+  expected_checksum="${checksum_output:0:${checksum_length}}"
+
+  if [ -n "${cache_control}" ]; then
+    curl_checksum_output="$(${curl_cmd} -H "Cache-Control: ${cache_control}" "${uri}" | ${checksum_cmd})"
+  else
+    curl_checksum_output="$(${curl_cmd} "${uri}" | ${checksum_cmd})"
+  fi
+  actual_checksum="${curl_checksum_output:0:${checksum_length}}"
+
+  if [ "${expected_checksum}" != "${actual_checksum}" ]; then
+    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
+    e "curl command: ${curl_cmd} -H 'Cache-Control: ${cache_control}' '${uri}' | ${checksum_cmd}"
+    exit ${test_fail_exit_code}
+  fi
+}
+
+# Same as assertGetEquals but for a byte-range request, which the gateway
+# routes to the @s3_sliced location backed by the separate slice cache.
+# assertRangeGetEquals <url_path> <local_file> <start> <end> <cache_control_value_or_empty> <label>
+assertRangeGetEquals() {
+  path="$1"
+  expected_file="$2"
+  range_start="$3"
+  range_end="$4"
+  cache_control="$5"
+  label="$6"
+  uri="${test_server}${path}"
+  byte_count=$((range_end - range_start + 1)) # add one since we read through the last byte
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Cache bypass [${label}]: GET ${path} bytes ${range_start}-${range_end} (Cache-Control: ${cache_control:-<none>})"
+
+  file_checksum="$(${file_convert_command} if="${expected_file}" bs=1 skip="${range_start}" count="${byte_count}" 2>/dev/null | ${checksum_cmd})"
+  expected_checksum="${file_checksum:0:${checksum_length}}"
+
+  if [ -n "${cache_control}" ]; then
+    curl_checksum_output="$(${curl_cmd} -H "Cache-Control: ${cache_control}" -r "${range_start}"-"${range_end}" "${uri}" | ${checksum_cmd})"
+  else
+    curl_checksum_output="$(${curl_cmd} -r "${range_start}"-"${range_end}" "${uri}" | ${checksum_cmd})"
+  fi
+  actual_checksum="${curl_checksum_output:0:${checksum_length}}"
+
+  if [ "${expected_checksum}" != "${actual_checksum}" ]; then
+    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Range: ${range_start}-${range_end} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
+    e "curl command: ${curl_cmd} -H 'Cache-Control: ${cache_control}' -r ${range_start}-${range_end} '${uri}' | ${checksum_cmd}"
+    exit ${test_fail_exit_code}
+  fi
+}
+
+# Overwrites an object in the MinIO backend with the contents of a local
+# file, without touching the gateway's cache.
+# overwriteObject <local_src_file> <object_key>
+overwriteObject() {
+  local_src="$1"
+  object_key="$2"
+  echo "  Overwriting object ${minio_bucket}/${object_key} with contents of $(basename "${local_src}")"
+  "${mc_cmd}" cp "${local_src}" "${minio_alias}/${minio_bucket}/${object_key}" > /dev/null
+}
+
+# Check to see if HTTP server is available
+set +o errexit
+# Allow curl command to fail with a non-zero exit code for this block because
+# we want to use it to test to see if the server is actually up.
+for (( i=1; i<=3; i++ )); do
+  # Add the -v flag to the curl command below to debug why curl is failing
+  response="$(${curl_cmd} -s -o /dev/null -w '%{http_code}' --head "${test_server}")"
+  if [ "${response}" != "000" ]; then
+    break
+  fi
+  wait_time="$((i * 2))"
+  e "Failed to access ${test_server} - trying again in ${wait_time} seconds, try ${i}/3"
+  sleep ${wait_time}
+done
+set -o errexit
+
+if [ "${response}" = "000" ]; then
+  e "unable to reach the test server at [${test_server}] - is the gateway running?"
+  exit ${no_dep_exit_code}
+fi
+
+if [ "${phase}" = "disabled" ]; then
+  # With PROXY_CACHE_BYPASS_NO_CACHE=false (the default), a request with
+  # Cache-Control: no-cache must NOT bypass the cache.
+  assertGetEquals "/cache-bypass/disabled.txt" "${fixture_dir}/disabled.txt" "" "prime cache"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/disabled.txt"
+  assertGetEquals "/cache-bypass/disabled.txt" "${fixture_dir}/disabled.txt" "no-cache" "no-cache ignored when feature off"
+  assertGetEquals "/cache-bypass/disabled.txt" "${fixture_dir}/disabled.txt" "" "cache entry untouched"
+
+  # The slice cache must ignore the header as well. @s3_sliced only receives
+  # proxy_cache_bypass through server-level inheritance, so cover the
+  # feature-off contract for byte-range requests explicitly: a stray
+  # location-level bypass directive would otherwise never fail a test.
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "" "prime slice cache"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/sliced.txt"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "no-cache" "no-cache ignored by slice cache when feature off"
+
+  # Restore the overwritten objects so that the enabled phase and any rerun
+  # against a warm MinIO start from the checked-in fixture content.
+  overwriteObject "${fixture_dir}/disabled.txt" "cache-bypass/disabled.txt"
+  overwriteObject "${fixture_dir}/sliced.txt" "cache-bypass/sliced.txt"
+else
+  # With PROXY_CACHE_BYPASS_NO_CACHE=true, only a request whose
+  # Cache-Control header contains a syntactically valid no-cache token
+  # bypasses the cache; the fresh response must refresh the cache entry.
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "" "prime cache"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/enabled.txt"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "" "normal requests still cached"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "x-no-cache-y" "no-cache substring must not match"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "max-age=0" "other directives must not match"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/updated.txt" "no-cache" "no-cache bypasses the cache"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/updated.txt" "" "bypass refreshed the cache entry"
+  overwriteObject "${fixture_dir}/enabled.txt" "cache-bypass/enabled.txt"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "max-age=0, no-cache" "no-cache token in a directive list bypasses"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "" "bypass refreshed the cache entry again"
+
+  # Byte-range requests are served from the separate slice cache in the
+  # @s3_sliced location, which inherits proxy_cache_bypass from the
+  # server level.
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "" "prime slice cache"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/sliced.txt"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "" "slice cache still serves cached bytes"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 0 9 "no-cache" "no-cache bypasses the slice cache"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 0 9 "" "bypass refreshed the slice cache"
+
+  # Restore the overwritten object and bypass once more so that both MinIO
+  # and the slice cache end the phase holding the checked-in fixture content,
+  # keeping reruns against a warm gateway/MinIO deterministic.
+  overwriteObject "${fixture_dir}/sliced.txt" "cache-bypass/sliced.txt"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "no-cache" "restored object re-primed into the slice cache"
+fi
+
+echo "  Cache bypass tests (phase: ${phase}) passed"
