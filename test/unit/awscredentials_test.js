@@ -37,6 +37,18 @@ const IMDS_TOKEN_URL = 'http://169.254.169.254/latest/api/token';
 const IMDS_SECURITY_CREDS_URL = 'http://169.254.169.254/latest/meta-data/iam/security-credentials/';
 
 /**
+ * Relative URI assigned to AWS_CONTAINER_CREDENTIALS_RELATIVE_URI by tests
+ * exercising the ECS credential provider path.
+ */
+const ECS_CREDS_RELATIVE_URI = '/example';
+
+/**
+ * Full ECS credentials endpoint URL the module is expected to fetch: the
+ * fixed ECS credential base joined with the relative URI above.
+ */
+const ECS_CREDS_URL = `http://169.254.170.2${ECS_CREDS_RELATIVE_URI}`;
+
+/**
  * Deletes every provider-selection env var so that each test opts into
  * exactly one credential provider path.
  */
@@ -250,7 +262,7 @@ async function testFetchCredentialsRefreshesExpiredCache() {
     var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
     var tempFile = tempFilePath('credentials-unit-test-expired-cache', '.json');
     var recordedUrl = null;
-    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     /* Seed the cache with credentials whose expiration is in the past so that
        the freshness short-circuit must not fire. Guards against the expiry
        check comparing to a stale timestamp instead of a live clock. */
@@ -277,7 +289,7 @@ async function testFetchCredentialsRefreshesExpiredCache() {
         process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
 
-        if (recordedUrl !== 'http://169.254.170.2/example') {
+        if (recordedUrl !== ECS_CREDS_URL) {
             throw 'Expired cached credentials were not refreshed. ' +
                 `Recorded refresh URL: ${recordedUrl}`;
         }
@@ -293,7 +305,7 @@ async function testFetchCredentialsUsesFreshCache() {
     clearProviderEnv();
     var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
     var tempFile = tempFilePath('credentials-unit-test-fresh-cache', '.json');
-    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     /* Expiration far enough in the future to stay comfortably beyond the
        4.5-minute early-refresh offset applied to the expiration. */
     fs.writeFileSync(tempFile, JSON.stringify({
@@ -302,15 +314,34 @@ async function testFetchCredentialsUsesFreshCache() {
         sessionToken: 'A_FRESH_SECURITY_TOKEN',
         expiration: '2100-01-01T00:00:00Z',
     }));
+    /* Record instead of throwing from the stub: a throw here would be
+       swallowed by fetchCredentials' try/catch and resurface only as an
+       unexplained 500, hiding the real cause of a regression. */
+    var recordedUrl = null;
     globalThis.ngx.fetch = function (url) {
-        throw 'Fresh cached credentials must not be refreshed. ' +
-            `Attempted fetch URL: ${url}`;
+        recordedUrl = url;
+
+        return Promise.resolve({
+            ok: true,
+            json: function () {
+                return Promise.resolve(MOCK_AWS_CREDS_RESPONSE);
+            }
+        });
     };
-    var r = makeExpect200Request();
+    var state = {};
+    var r = makeRecordingRequest(state);
 
     try {
         process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
+
+        if (recordedUrl !== null) {
+            throw 'Fresh cached credentials must not be refreshed. ' +
+                `Attempted fetch URL: ${recordedUrl}`;
+        }
+        if (state.returnedCode !== 200) {
+            throw 'Expected 200 status code, got: ' + state.returnedCode;
+        }
     } finally {
         restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
@@ -324,7 +355,7 @@ async function testEcsCredentialRetrieval() {
     var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
     var tempFile = tempFilePath('credentials-unit-test-ecs-happy', '.json');
     var recordedUrl = null;
-    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     globalThis.ngx.fetch = function (url) {
         console.log(' fetching mock credentials');
         recordedUrl = url;
@@ -342,7 +373,7 @@ async function testEcsCredentialRetrieval() {
         process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
 
-        if (recordedUrl !== 'http://169.254.170.2/example') {
+        if (recordedUrl !== ECS_CREDS_URL) {
             throw `No or wrong ECS credentials fetch URL recorded: ${recordedUrl}`;
         }
     } finally {

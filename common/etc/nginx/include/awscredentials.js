@@ -566,10 +566,14 @@ async function _fetchWebIdentityCredentials(r) {
 }
 
 /**
- * Get the current timestamp. This timestamp will be used across functions in
- * order for there to be no variations in signatures.
+ * Get the timestamp used across functions in order for there to be no
+ * variations in signatures.
  *
- * @returns {Date} The current moment as a timestamp
+ * The returned value is the module-level NOW constant, which is stable per
+ * njs VM context rather than the current wall-clock moment. Never use it for
+ * freshness or expiry decisions - see the note on NOW.
+ *
+ * @returns {Date} signature-stable timestamp for the current VM context
  */
 function Now() {
     return NOW;
