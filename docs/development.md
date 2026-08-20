@@ -71,8 +71,11 @@ $ make test                  # NGINX OSS (default)
 $ make test NGINX_TYPE=plus  # NGINX Plus
 ```
 
-NGINX Plus builds require your NGINX repository certificates in the
-`plus/etc/ssl/nginx` directory and a `license.jwt`.
+NGINX Plus builds require your NGINX repository certificates
+(`nginx-repo.crt` and `nginx-repo.key`) in the `plus/etc/ssl/nginx`
+directory, a `docker login private-registry.nginx.com` (the Plus base image
+is pulled from NGINX's private registry), and a `license.jwt` in the
+repository root or at `/etc/nginx/license.jwt` for the integration tests.
 
 Other useful targets:
 
