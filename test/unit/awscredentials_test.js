@@ -244,6 +244,80 @@ function testReadAndWriteCredentialsFromKeyValStore() {
     }
 }
 
+async function testFetchCredentialsRefreshesExpiredCache() {
+    printHeader('testFetchCredentialsRefreshesExpiredCache');
+    clearProviderEnv();
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var tempFile = tempFilePath('credentials-unit-test-expired-cache', '.json');
+    var recordedUrl = null;
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
+    /* Seed the cache with credentials whose expiration is in the past so that
+       the freshness short-circuit must not fire. Guards against the expiry
+       check comparing to a stale timestamp instead of a live clock. */
+    fs.writeFileSync(tempFile, JSON.stringify({
+        accessKeyId: 'AN_EXPIRED_ACCESS_KEY_ID',
+        secretAccessKey: 'AN_EXPIRED_SECRET_ACCESS_KEY',
+        sessionToken: 'AN_EXPIRED_SECURITY_TOKEN',
+        expiration: '2017-05-17T15:09:54Z',
+    }));
+    globalThis.ngx.fetch = function (url) {
+        console.log(' fetching mock credentials to replace the expired cache');
+        recordedUrl = url;
+
+        return Promise.resolve({
+            ok: true,
+            json: function () {
+                return Promise.resolve(MOCK_AWS_CREDS_RESPONSE);
+            }
+        });
+    };
+    var r = makeExpect200Request();
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
+        await awscred.fetchCredentials(r);
+
+        if (recordedUrl !== 'http://169.254.170.2/example') {
+            throw 'Expired cached credentials were not refreshed. ' +
+                `Recorded refresh URL: ${recordedUrl}`;
+        }
+    } finally {
+        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+        removeIfExists(tempFile);
+    }
+}
+
+async function testFetchCredentialsUsesFreshCache() {
+    printHeader('testFetchCredentialsUsesFreshCache');
+    clearProviderEnv();
+    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
+    var tempFile = tempFilePath('credentials-unit-test-fresh-cache', '.json');
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
+    /* Expiration far enough in the future to stay comfortably beyond the
+       4.5-minute early-refresh offset applied to the expiration. */
+    fs.writeFileSync(tempFile, JSON.stringify({
+        accessKeyId: 'A_FRESH_ACCESS_KEY_ID',
+        secretAccessKey: 'A_FRESH_SECRET_ACCESS_KEY',
+        sessionToken: 'A_FRESH_SECURITY_TOKEN',
+        expiration: '2100-01-01T00:00:00Z',
+    }));
+    globalThis.ngx.fetch = function (url) {
+        throw 'Fresh cached credentials must not be refreshed. ' +
+            `Attempted fetch URL: ${url}`;
+    };
+    var r = makeExpect200Request();
+
+    try {
+        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
+        await awscred.fetchCredentials(r);
+    } finally {
+        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+        removeIfExists(tempFile);
+    }
+}
+
 async function testEcsCredentialRetrieval() {
     printHeader('testEcsCredentialRetrieval');
     clearProviderEnv();
@@ -809,6 +883,8 @@ function testWriteInvalidCredentials() {
 async function test() {
     await testEc2CredentialRetrieval();
     await testEcsCredentialRetrieval();
+    await testFetchCredentialsRefreshesExpiredCache();
+    await testFetchCredentialsUsesFreshCache();
     await testEKSPodIdentityCredentialRetrieval();
     await testEKSPodIdentityCredentialRetrievalNon200Response();
     await testEc2CredentialRetrievalNon200Response();

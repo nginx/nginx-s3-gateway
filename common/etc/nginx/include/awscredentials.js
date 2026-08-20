@@ -34,6 +34,11 @@ const fs = require('fs');
 /**
  * The current moment as a timestamp. This timestamp will be used across
  * functions in order for there to be no variations in signatures.
+ *
+ * This constant exists solely for signature-timestamp stability and is stable
+ * per njs VM context, not per wall-clock moment. Never use it for freshness
+ * or expiry decisions: if module scope persists across requests (e.g. the
+ * QuickJS engine with context reuse), it freezes at context-creation time.
  * @type {Date}
  */
 const NOW = new Date();
@@ -273,7 +278,10 @@ async function fetchCredentials(r) {
         // In some situations (including EC2 and Fargate) current.expiration will be an RFC 3339 string - see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#instance-metadata-security-credentials
         const expireAt = typeof current.expiration == 'number' ? current.expiration * 1000 : current.expiration
         const exp = new Date(expireAt).getTime() - maxValidityOffsetMs;
-        if (NOW.getTime() < exp) {
+        /* Use a live clock rather than NOW: NOW is stable per njs VM context
+           for signature consistency, so it goes stale for expiry checks
+           whenever module scope outlives a single request. */
+        if (new Date().getTime() < exp) {
             r.return(200);
             return;
         }
