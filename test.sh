@@ -257,6 +257,31 @@ integration_test_data() {
   "${docker_cmd}" diff "$minio_name"
 }
 
+integration_test_listen_directives() {
+  p "Verifying rendered listen directives"
+  if [ ${unprivileged} -eq 1 ]; then
+    expected_listen_port=8080
+  else
+    expected_listen_port=80
+  fi
+  rendered_conf="$(compose exec -T nginx-s3-gateway cat /etc/nginx/conf.d/default.conf)"
+  if ! echo "${rendered_conf}" | grep -q "listen[[:space:]]*${expected_listen_port};"; then
+    e "rendered default.conf is missing the IPv4 listen directive"
+    exit "$test_fail_exit_code"
+  fi
+  # 02-ipv6-enable.sh injects the IPv6 listen directive only when the
+  # container kernel supports IPv6, so assert against the same condition.
+  if compose exec -T nginx-s3-gateway test -f /proc/net/if_inet6; then
+    if ! echo "${rendered_conf}" | grep -q "listen[[:space:]]*\[::\]:${expected_listen_port};"; then
+      e "container kernel supports IPv6 but rendered default.conf has no IPv6 listen directive"
+      exit "$test_fail_exit_code"
+    fi
+  elif echo "${rendered_conf}" | grep -q "\[::\]"; then
+    e "container kernel lacks IPv6 but rendered default.conf has an IPv6 listen directive"
+    exit "$test_fail_exit_code"
+  fi
+}
+
 integration_test() {
   printf "\033[34;1m▶\033[0m"
   printf "\e[1m Integration test suite for v%s signatures\e[22m\n" "$1"
@@ -501,6 +526,14 @@ runUnitTestWithSessionToken "awssig2_test.js"
 runUnitTestWithSessionToken "awssig4_test.js"
 runUnitTestWithSessionToken "s3gateway_test.js"
 
+p "Testing IPv6 entrypoint script"
+if [ ${unprivileged} -eq 1 ]; then
+  entrypoint_test_port=8080
+else
+  entrypoint_test_port=80
+fi
+bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${entrypoint_test_port}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to flags given to the integration test runner
 # integration_test 2 0 0 0
@@ -517,6 +550,8 @@ integration_test_data
 
 p "Testing API with AWS Signature V2 and allow directory listing off"
 integration_test 2 0 0 0 "" ""
+
+integration_test_listen_directives
 
 compose stop nginx-s3-gateway # Restart with new config
 
