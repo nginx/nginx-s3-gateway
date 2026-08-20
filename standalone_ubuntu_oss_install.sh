@@ -230,6 +230,18 @@ CORS_ENABLED=${CORS_ENABLED}
 STRIP_LEADING_DIRECTORY_PATH=${STRIP_LEADING_DIRECTORY_PATH:-''}
 # Configure portion of URL to be added to the beginning of the requested path (optional)
 PREFIX_LEADING_DIRECTORY_PATH=${PREFIX_LEADING_DIRECTORY_PATH:-''}
+# Flag (true/false) enabling the return of the index page for directory requests
+PROVIDE_INDEX_PAGE=${PROVIDE_INDEX_PAGE:-'false'}
+# Flag (true/false) enabling a 302 redirect with a / appended for possible directories
+APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=${APPEND_SLASH_FOR_POSSIBLE_DIRECTORY:-'false'}
+# Flag (true/false) returning a 404 instead of an empty directory listing
+FOUR_O_FOUR_ON_EMPTY_BUCKET=${FOUR_O_FOUR_ON_EMPTY_BUCKET:-'false'}
+# Semicolon-delimited list of response header prefixes to strip (lower-case)
+HEADER_PREFIXES_TO_STRIP=${HEADER_PREFIXES_TO_STRIP:-''}
+# Semicolon-delimited list of response header prefixes allowed through (lower-case)
+HEADER_PREFIXES_ALLOWED=${HEADER_PREFIXES_ALLOWED:-''}
+# Flag (true/false) disabling the IMDSv1 fallback for EC2 credential retrieval
+AWS_EC2_METADATA_V1_DISABLED=${AWS_EC2_METADATA_V1_DISABLED:-'false'}
 EOF
 
 # By enabling CORS, we also need to enable the OPTIONS method which
@@ -394,7 +406,20 @@ EOF
   fi
 fi
 
+# Keep this list in sync with the env directives in
+# common/etc/nginx/nginx.conf - a variable missing here is stripped from the
+# nginx worker processes and becomes invisible to the njs modules, silently
+# disabling the option it controls.
 cat >> /etc/nginx/nginx.conf << 'EOF'
+env AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+env AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE;
+env AWS_ROLE_ARN;
+env AWS_ROLE_SESSION_NAME;
+env AWS_STS_REGIONAL_ENDPOINTS;
+env STS_ENDPOINT;
+env AWS_REGION;
+env AWS_WEB_IDENTITY_TOKEN_FILE;
+env AWS_EC2_METADATA_V1_DISABLED;
 env S3_BUCKET_NAME;
 env S3_SERVER;
 env S3_SERVER_PORT;
@@ -405,6 +430,22 @@ env DEBUG;
 env S3_STYLE;
 env S3_SERVICE;
 env ALLOW_DIRECTORY_LIST;
+env PROVIDE_INDEX_PAGE;
+env APPEND_SLASH_FOR_POSSIBLE_DIRECTORY;
+env DIRECTORY_LISTING_PATH_PREFIX;
+env PROXY_CACHE_MAX_SIZE;
+env PROXY_CACHE_INACTIVE;
+env PROXY_CACHE_SLICE_SIZE;
+env PROXY_CACHE_VALID_OK;
+env PROXY_CACHE_VALID_NOTFOUND;
+env PROXY_CACHE_VALID_FORBIDDEN;
+env PROXY_CACHE_USE_STALE;
+env PROXY_CACHE_BYPASS_NO_CACHE;
+env HEADER_PREFIXES_TO_STRIP;
+env HEADER_PREFIXES_ALLOWED;
+env FOUR_O_FOUR_ON_EMPTY_BUCKET;
+env STRIP_LEADING_DIRECTORY_PATH;
+env PREFIX_LEADING_DIRECTORY_PATH;
 
 events {
     worker_connections  1024;

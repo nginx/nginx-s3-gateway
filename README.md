@@ -86,10 +86,13 @@ Dockerfile.latest-njs            Dockerfile that inherits from the last build of
 Dockerfile.unprivileged          Dockerfiles that inherits from the last build of the gateway and
                                  makes the necessary modifications to allow running the container
                                  as a non root, unprivileged user.
+GNUmakefile                      entry point for all build, test, and lint workflows - run
+                                 `make help` for the full target list
 package.json                     Node.js package file used only for generating JSDoc
 settings.example                 Docker env file example
 standalone_ubuntu_oss_install.sh install script that will install the gateway as a Systemd service
-test.sh                          test launcher
+test.sh                          legacy test launcher, superseded by `make test` - do not
+                                 invoke directly
 ```
 
 ## Development
