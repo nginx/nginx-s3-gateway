@@ -46,6 +46,10 @@ entrypoint_log() {
     fi
 }
 
+# Single source of truth for what counts as an IPv6 listen directive; used
+# by the detection greps and the removal sed below so they cannot drift.
+IPV6_LISTEN_RE='^[[:space:]]*listen[[:space:]].*\[::\]'
+
 if [ ! -f "$DEFAULT_CONF_TEMPLATE" ]; then
     entrypoint_log "$ME: info: $DEFAULT_CONF_TEMPLATE does not exist, skipping IPv6 listen enablement"
     exit 0
@@ -71,20 +75,28 @@ case "${IPV6_ENABLED:-}" in
 esac
 
 if [ "$ipv6_wanted" -eq 0 ]; then
-    if grep -q '^[[:space:]]*listen[[:space:]].*\[::\]' "$DEFAULT_CONF_TEMPLATE"; then
-        if [ -n "${IPV6_ENABLED:-}" ]; then
-            # Explicit opt-out is the kill switch for templates that already
-            # carry IPv6 listeners (docker-commit'd images, custom templates).
-            if sed -i '/^[[:space:]]*listen[[:space:]].*\[::\]/d' "$DEFAULT_CONF_TEMPLATE" 2>/dev/null; then
-                entrypoint_log "$ME: info: IPV6_ENABLED is false, removed IPv6 listen directives from $DEFAULT_CONF_TEMPLATE"
-            else
-                entrypoint_log "$ME: warn: can not modify $DEFAULT_CONF_TEMPLATE (read-only file system?) - IPv6 listen directives remain"
-            fi
-        else
-            entrypoint_log "$ME: warn: kernel has no IPv6 support but $DEFAULT_CONF_TEMPLATE contains an IPv6 listen directive - NGINX may fail to start"
-        fi
-    else
+    if ! grep -q "$IPV6_LISTEN_RE" "$DEFAULT_CONF_TEMPLATE"; then
         entrypoint_log "$ME: info: IPv6 disabled, keeping IPv4-only listen configuration"
+        exit 0
+    fi
+
+    if [ -n "${IPV6_ENABLED:-}" ]; then
+        reason="IPV6_ENABLED is false"
+    else
+        reason="kernel has no IPv6 support"
+    fi
+
+    # Remove IPv6 listen directives whether disabled explicitly (the kill
+    # switch for docker-commit'd images and custom templates) or by
+    # auto-detection: a previous IPv6-capable boot of this container may
+    # have injected the directive below, and leaving it in place would make
+    # NGINX fail to bind [::] at startup - the exact GH-499 symptom this
+    # script exists to prevent. The directive is re-added on the next
+    # IPv6-capable start.
+    if sed -i "/${IPV6_LISTEN_RE}/d" "$DEFAULT_CONF_TEMPLATE" 2>/dev/null; then
+        entrypoint_log "$ME: info: $reason, removed IPv6 listen directives from $DEFAULT_CONF_TEMPLATE"
+    else
+        entrypoint_log "$ME: warn: $reason but can not modify $DEFAULT_CONF_TEMPLATE (read-only file system?) - IPv6 listen directives remain and NGINX may fail to start"
     fi
     exit 0
 fi
@@ -92,7 +104,7 @@ fi
 # Idempotency: on container restart the entrypoint runs again against the
 # already-edited template. Also respects custom templates with their own
 # IPv6 listeners.
-if grep -q '^[[:space:]]*listen[[:space:]].*\[::\]' "$DEFAULT_CONF_TEMPLATE"; then
+if grep -q "$IPV6_LISTEN_RE" "$DEFAULT_CONF_TEMPLATE"; then
     entrypoint_log "$ME: info: IPv6 listen directive already present in $DEFAULT_CONF_TEMPLATE, skipping"
     exit 0
 fi
@@ -102,15 +114,29 @@ fi
 # 'listen 8080;' at build time, and custom templates may use other ports.
 port=$(sed -n 's/^[[:space:]]*listen[[:space:]]\{1,\}\([0-9]\{1,\}\);[[:space:]]*$/\1/p' "$DEFAULT_CONF_TEMPLATE" | head -n 1)
 if [ -z "$port" ]; then
-    entrypoint_log "$ME: info: no plain 'listen <port>;' directive found in $DEFAULT_CONF_TEMPLATE, skipping IPv6 listen enablement"
+    if [ -n "${IPV6_ENABLED:-}" ]; then
+        # An explicit opt-in must not be defeated silently at info level
+        # (00-check-for-required-env.sh validates IPV6_ENABLED for the same
+        # reason).
+        entrypoint_log "$ME: warn: IPV6_ENABLED is true but no plain 'listen <port>;' directive was found in $DEFAULT_CONF_TEMPLATE - IPv6 listener NOT enabled"
+    else
+        entrypoint_log "$ME: info: no plain 'listen <port>;' directive found in $DEFAULT_CONF_TEMPLATE, skipping IPv6 listen enablement"
+    fi
     exit 0
 fi
 
 # Insert an IPv6 twin after every plain 'listen <port>;' line, preserving
-# indentation and spacing via backrefs. A sed failure (read-only file
-# system) downgrades to IPv4-only instead of aborting the entrypoint.
-if ! sed -i 's/^\([[:space:]]*\)listen\([[:space:]]\{1,\}\)\([0-9]\{1,\}\);[[:space:]]*$/&\n\1listen\2[::]:\3;/' "$DEFAULT_CONF_TEMPLATE" 2>/dev/null; then
-    entrypoint_log "$ME: info: can not modify $DEFAULT_CONF_TEMPLATE (read-only file system?), keeping IPv4-only listen configuration"
+# indentation and spacing via backrefs. The escaped literal newline in the
+# replacement is POSIX sed syntax (GNU '\n' is not portable). A sed failure
+# (read-only file system) downgrades to IPv4-only instead of aborting the
+# entrypoint.
+if ! sed -i 's/^\([[:space:]]*\)listen\([[:space:]]\{1,\}\)\([0-9]\{1,\}\);[[:space:]]*$/&\
+\1listen\2[::]:\3;/' "$DEFAULT_CONF_TEMPLATE" 2>/dev/null; then
+    if [ -n "${IPV6_ENABLED:-}" ]; then
+        entrypoint_log "$ME: warn: IPV6_ENABLED is true but can not modify $DEFAULT_CONF_TEMPLATE (read-only file system?) - IPv6 listener NOT enabled"
+    else
+        entrypoint_log "$ME: info: can not modify $DEFAULT_CONF_TEMPLATE (read-only file system?), keeping IPv4-only listen configuration"
+    fi
     exit 0
 fi
 

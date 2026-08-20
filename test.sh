@@ -130,6 +130,15 @@ else
   startup_message="${startup_message} in privileged mode"
 fi
 
+# The unprivileged image rewrites 'listen 80;' to 'listen 8080;' at build
+# time (Dockerfile.unprivileged); every listen-related assertion keys off
+# this single value.
+if [ ${unprivileged} -eq 1 ]; then
+  gateway_listen_port=8080
+else
+  gateway_listen_port=80
+fi
+
 e "${startup_message}"
 
 set -o nounset   # abort on unbound variable
@@ -259,11 +268,7 @@ integration_test_data() {
 
 integration_test_listen_directives() {
   p "Verifying rendered listen directives"
-  if [ ${unprivileged} -eq 1 ]; then
-    expected_listen_port=8080
-  else
-    expected_listen_port=80
-  fi
+  expected_listen_port="${gateway_listen_port}"
   rendered_conf="$(compose exec -T nginx-s3-gateway cat /etc/nginx/conf.d/default.conf)"
   if ! echo "${rendered_conf}" | grep -q "listen[[:space:]]*${expected_listen_port};"; then
     e "rendered default.conf is missing the IPv4 listen directive"
@@ -527,12 +532,7 @@ runUnitTestWithSessionToken "awssig4_test.js"
 runUnitTestWithSessionToken "s3gateway_test.js"
 
 p "Testing IPv6 entrypoint script"
-if [ ${unprivileged} -eq 1 ]; then
-  entrypoint_test_port=8080
-else
-  entrypoint_test_port=80
-fi
-bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${entrypoint_test_port}"
+bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${gateway_listen_port}"
 
 ### INTEGRATION TESTS
 # The arguments correspond to flags given to the integration test runner

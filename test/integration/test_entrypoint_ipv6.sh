@@ -30,7 +30,9 @@ set -o pipefail  # don't hide errors within pipes
 docker_cmd=$1
 expected_port=$2
 
-"${docker_cmd}" run --rm -e EXPECTED_PORT="${expected_port}" \
+# MSYS_NO_PATHCONV=1 added to resolve automatic path conversion
+# https://github.com/docker/for-win/issues/6754#issuecomment-629702199
+MSYS_NO_PATHCONV=1 "${docker_cmd}" run --rm -e EXPECTED_PORT="${expected_port}" \
   --entrypoint /bin/sh nginx-s3-gateway -c '
 set -e
 script=/docker-entrypoint.d/02-ipv6-enable.sh
@@ -70,7 +72,16 @@ if grep -q "\[::\]" "$tpl"; then fail "IPV6_ENABLED=false still injected IPv6"; 
 IPV6_ENABLED=true sh "$script" "$tpl" /nonexistent/if_inet6
 grep -q "listen[[:space:]]*\[::\]:${EXPECTED_PORT};" "$tpl" || fail "IPV6_ENABLED=true did not inject IPv6"
 
-# 7. Template without a plain listen anchor is conservatively left untouched.
+# 7. Auto-detected lack of IPv6 removes a previously injected IPv6 listen
+#    directive (container restarted after the host lost IPv6 support), so
+#    NGINX does not crash trying to bind [::] - the GH-499 symptom.
+sh "$script" "$tpl" /etc/os-release
+grep -q "\[::\]" "$tpl" || fail "precondition: IPv6 listen directive was not injected"
+sh "$script" "$tpl" /nonexistent/if_inet6
+if grep -q "\[::\]" "$tpl"; then fail "auto-detected IPv6-less kernel left IPv6 listen directives in place"; fi
+grep -q "listen[[:space:]]*${EXPECTED_PORT};" "$tpl" || fail "auto-detected removal lost the IPv4 listen directive"
+
+# 8. Template without a plain listen anchor is conservatively left untouched.
 printf "server {\n    include foo.conf;\n}\n" > "$tpl"
 sh "$script" "$tpl" /etc/os-release
 if grep -q "\[::\]" "$tpl"; then fail "injected IPv6 without an IPv4 listen anchor"; fi
