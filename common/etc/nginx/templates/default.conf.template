@@ -58,8 +58,13 @@ js_set $awsSessionToken awscredentials.sessionToken;
 js_set $s3uri s3gateway.s3uri;
 
 server {
+    # The IPv6 listen directive is added at container start by
+    # /docker-entrypoint.d/02-ipv6-enable.sh when the runtime kernel supports
+    # IPv6 (or IPV6_ENABLED forces it). The template stays IPv4-only so it is
+    # always a valid configuration on its own: kernels booted with
+    # ipv6.disable=1 cannot bind IPv6 sockets (GH-499), and standalone
+    # installs never run the entrypoint scripts.
     listen       80;
-    listen       [::]:80;
     include /etc/nginx/conf.d/gateway/server_variables.conf;
 
     # Don't display the NGINX version number because we don't want to reveal

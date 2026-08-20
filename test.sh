@@ -130,6 +130,15 @@ else
   startup_message="${startup_message} in privileged mode"
 fi
 
+# The unprivileged image rewrites 'listen 80;' to 'listen 8080;' at build
+# time (Dockerfile.unprivileged); every listen-related assertion keys off
+# this single value.
+if [ ${unprivileged} -eq 1 ]; then
+  gateway_listen_port=8080
+else
+  gateway_listen_port=80
+fi
+
 e "${startup_message}"
 
 set -o nounset   # abort on unbound variable
@@ -255,6 +264,27 @@ integration_test_data() {
   done
   echo "Docker diff output:"
   "${docker_cmd}" diff "$minio_name"
+}
+
+integration_test_listen_directives() {
+  p "Verifying rendered listen directives"
+  expected_listen_port="${gateway_listen_port}"
+  rendered_conf="$(compose exec -T nginx-s3-gateway cat /etc/nginx/conf.d/default.conf)"
+  if ! echo "${rendered_conf}" | grep -q "listen[[:space:]]*${expected_listen_port};"; then
+    e "rendered default.conf is missing the IPv4 listen directive"
+    exit "$test_fail_exit_code"
+  fi
+  # 02-ipv6-enable.sh injects the IPv6 listen directive only when the
+  # container kernel supports IPv6, so assert against the same condition.
+  if compose exec -T nginx-s3-gateway test -f /proc/net/if_inet6; then
+    if ! echo "${rendered_conf}" | grep -q "listen[[:space:]]*\[::\]:${expected_listen_port};"; then
+      e "container kernel supports IPv6 but rendered default.conf has no IPv6 listen directive"
+      exit "$test_fail_exit_code"
+    fi
+  elif echo "${rendered_conf}" | grep -q "\[::\]"; then
+    e "container kernel lacks IPv6 but rendered default.conf has an IPv6 listen directive"
+    exit "$test_fail_exit_code"
+  fi
 }
 
 integration_test() {
@@ -501,6 +531,9 @@ runUnitTestWithSessionToken "awssig2_test.js"
 runUnitTestWithSessionToken "awssig4_test.js"
 runUnitTestWithSessionToken "s3gateway_test.js"
 
+p "Testing IPv6 entrypoint script"
+bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${gateway_listen_port}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to flags given to the integration test runner
 # integration_test 2 0 0 0
@@ -517,6 +550,8 @@ integration_test_data
 
 p "Testing API with AWS Signature V2 and allow directory listing off"
 integration_test 2 0 0 0 "" ""
+
+integration_test_listen_directives
 
 compose stop nginx-s3-gateway # Restart with new config
 

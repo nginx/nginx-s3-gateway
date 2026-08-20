@@ -15,6 +15,15 @@
 #  limitations under the License.
 #
 
+# The IPv6 listen directive is injected by 02-ipv6-enable.sh only when the
+# kernel supports IPv6 or IPV6_ENABLED forces it (GH-499), so report the
+# effective rendered state rather than a configuration value.
+if grep -q '^[[:space:]]*listen[[:space:]].*\[::\]' /etc/nginx/conf.d/default.conf 2>/dev/null; then
+  ipv6_listen="enabled"
+else
+  ipv6_listen="disabled"
+fi
+
 cat <<EOM
 S3 Backend Environment:
   Service: ${S3_SERVICE:-s3}
@@ -24,6 +33,7 @@ S3 Backend Environment:
   Addressing Style: ${S3_STYLE}
   AWS Signatures Version: v${AWS_SIGS_VERSION}
   DNS Resolvers: ${DNS_RESOLVERS}
+  IPv6 Listen: ${ipv6_listen}
   Directory Listing Enabled: ${ALLOW_DIRECTORY_LIST}
   Directory Listing Path Prefix: ${DIRECTORY_LISTING_PATH_PREFIX}
   Provide Index Pages Enabled: ${PROVIDE_INDEX_PAGE}

@@ -141,6 +141,20 @@ if [ -n "${PROXY_CACHE_BYPASS_NO_CACHE:-}" ]; then
   esac
 fi
 
+# IPV6_ENABLED is optional (unset and empty mean auto-detection from kernel
+# IPv6 support), but when it is set it must be a recognized spelling: an
+# unrecognized value would silently fall through to auto-detection in
+# 02-ipv6-enable.sh, defeating the explicit override.
+if [ -n "${IPV6_ENABLED:-}" ]; then
+  case "${IPV6_ENABLED}" in
+    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
+    *)
+      >&2 echo "IPV6_ENABLED contains an invalid value (${IPV6_ENABLED}). Valid values: true, false, or unset for auto-detection"
+      failed=1
+      ;;
+  esac
+fi
+
 
 if [ $failed -gt 0 ]; then
   exit 1
