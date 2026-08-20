@@ -534,6 +534,9 @@ runUnitTestWithSessionToken "s3gateway_test.js"
 p "Testing IPv6 entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${gateway_listen_port}"
 
+p "Testing settings output entrypoint script"
+bash "${test_dir}/integration/test_entrypoint_output_settings.sh" "${docker_cmd}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to flags given to the integration test runner
 # integration_test 2 0 0 0
