@@ -98,9 +98,30 @@ case "${CORS_ENABLED:-false}" in
   *) CORS_ENABLED=0 ;;
 esac
 
+# This is the primary logic to determine the s3 host used for the
+# upstream (the actual proxying action) as well as the `Host` header
+#
+# It is currently slightly more complex than necessary because we are transitioning
+# to a new logic which is defined by "virtual-v2". "virtual-v2" is the recommended setting
+# for all deployments.
+
+# S3_UPSTREAM needs the port specified. The port must
+# correspond to https/http in the proxy_pass directive.
+if [ "${S3_STYLE}" == "virtual-v2" ]; then
+  S3_UPSTREAM="${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
+  S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
+elif [ "${S3_STYLE}" == "path" ]; then
+  S3_UPSTREAM="${S3_SERVER}:${S3_SERVER_PORT}"
+  S3_HOST_HEADER="${S3_SERVER}:${S3_SERVER_PORT}"
+else
+  S3_UPSTREAM="${S3_SERVER}:${S3_SERVER_PORT}"
+  S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}"
+fi
+
 echo "S3 Backend Environment"
 echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
-echo "Origin: ${S3_SERVER_PROTO}://${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
+echo "Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}"
+echo "Host Header: ${S3_HOST_HEADER}"
 echo "Region: ${S3_REGION}"
 echo "Addressing Style: ${S3_STYLE}"
 echo "AWS Signatures Version: v${AWS_SIGS_VERSION}"
@@ -227,31 +248,12 @@ LIMIT_METHODS_TO_CSV="GET, HEAD"
 EOF
 fi
 
-# This is the primary logic to determine the s3 host used for the
-# upstream (the actual proxying action) as well as the `Host` header
-#
-# It is currently slightly more complex than necessary because we are transitioning
-# to a new logic which is defined by "virtual-v2". "virtual-v2" is the recommended setting
-# for all deployments.
-
-# S3_UPSTREAM needs the port specified. The port must
-# correspond to https/http in the proxy_pass directive.
-if [ "${S3_STYLE}" == "virtual-v2" ]; then
-  cat >> "/etc/nginx/environment" << EOF
-S3_UPSTREAM="${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
-S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}"
+# S3_UPSTREAM and S3_HOST_HEADER are computed from S3_STYLE before the
+# settings banner above so the logged origin matches the effective values.
+cat >> "/etc/nginx/environment" << EOF
+S3_UPSTREAM="${S3_UPSTREAM}"
+S3_HOST_HEADER="${S3_HOST_HEADER}"
 EOF
-elif [ "${S3_STYLE}" == "path" ]; then
-  cat >> "/etc/nginx/environment" << EOF
-S3_UPSTREAM="${S3_SERVER}:${S3_SERVER_PORT}"
-S3_HOST_HEADER="${S3_SERVER}:${S3_SERVER_PORT}"
-EOF
-else
-  cat >> "/etc/nginx/environment" << EOF
-S3_UPSTREAM="${S3_SERVER}:${S3_SERVER_PORT}"
-S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}"
-EOF
-fi
 
 set -o nounset   # abort on unbound variable
 

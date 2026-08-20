@@ -24,11 +24,16 @@ else
   ipv6_listen="disabled"
 fi
 
+# S3_UPSTREAM and S3_HOST_HEADER are computed per S3_STYLE by
+# 01-set-defaults.envsh (sourced by the entrypoint before this script runs),
+# so report those rather than assuming the virtual-host form - path style
+# keeps the bucket out of the hostname entirely (GH-367).
 cat <<EOM
 S3 Backend Environment:
   Service: ${S3_SERVICE:-s3}
   Access Key ID: ${AWS_ACCESS_KEY_ID}
-  Origin: ${S3_SERVER_PROTO}://${S3_BUCKET_NAME}.${S3_SERVER}:${S3_SERVER_PORT}
+  Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}
+  Host Header: ${S3_HOST_HEADER}
   Region: ${S3_REGION}
   Addressing Style: ${S3_STYLE}
   AWS Signatures Version: v${AWS_SIGS_VERSION}
