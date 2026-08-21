@@ -51,11 +51,12 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (checkmake + shellcheck)
+    name: Lint (checkmake + shellcheck + rumdl)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       CHECKMAKE_VERSION: v0.3.2
+      RUMDL_VERSION: 0.2.58
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -78,6 +79,12 @@ jobs:
       # has to apply whether checkmake was restored or freshly installed.
       - name: Add the Go bin directory to PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # rumdl is also not preinstalled. Installed from npm (which ships the
+      # prebuilt binary, so there is nothing to compile and nothing to cache)
+      # and pinned so a new release cannot fail this job on unchanged docs.
+      - name: Install rumdl
+        run: npm install --global "rumdl@${RUMDL_VERSION}"
 
       - name: Lint
         run: make lint

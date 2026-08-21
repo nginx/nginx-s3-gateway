@@ -69,7 +69,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -95,7 +95,7 @@ check-tools: ## Verify required build and test tooling is present
 	if ! command -v md5sum > /dev/null 2>&1 && ! command -v md5 > /dev/null 2>&1; then \
 		echo "MISSING (required): md5sum (or md5 on macOS)"; ok=0; \
 	fi; \
-	for tool in npx checkmake shellcheck; do \
+	for tool in npx checkmake shellcheck rumdl; do \
 		command -v "$$tool" > /dev/null 2>&1 || echo "missing (optional, needed for lint/docs): $$tool"; \
 	done; \
 	for tool in hadolint jq; do \
@@ -246,7 +246,7 @@ retest-unprivileged: check-nginx-type check-tools ## Test the current image in u
 
 ##@ Lint
 
-lint: makefile-check shellcheck ## Run all linters (checkmake + shellcheck)
+lint: makefile-check shellcheck lint-md ## Run all linters (checkmake + shellcheck + rumdl)
 	@echo "All lints passed"
 
 makefile-check: ## Lint this Makefile with checkmake
@@ -255,6 +255,12 @@ makefile-check: ## Lint this Makefile with checkmake
 shellcheck: ## Lint shell scripts (pre-existing findings excluded, see SHELLCHECK_EXCLUDES)
 	cd "$(BASE_DIR)" && shellcheck --severity=warning \
 		--exclude=$(SHELLCHECK_EXCLUDES) $(SHELL_SCRIPTS)
+
+lint-md: ## Lint Markdown docs with rumdl (report only, config in .rumdl.toml)
+	cd "$(BASE_DIR)" && rumdl check .
+
+fmt-md: ## Apply rumdl's automatic Markdown formatting fixes in place
+	cd "$(BASE_DIR)" && rumdl fmt .
 
 hadolint: ## Lint Dockerfiles with hadolint when installed (opt-in, not part of lint)
 	@if command -v hadolint > /dev/null 2>&1; then \
