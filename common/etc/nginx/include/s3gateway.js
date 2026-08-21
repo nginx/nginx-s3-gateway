@@ -64,12 +64,6 @@ const APPEND_SLASH = utils.parseBoolean(process.env['APPEND_SLASH_FOR_POSSIBLE_D
  * */
 const FOUR_O_FOUR_ON_EMPTY_BUCKET = utils.parseBoolean(process.env['FOUR_O_FOUR_ON_EMPTY_BUCKET']);
 /**
- * Flag indicating why type of S3 URI to use. Valid values are 'virtual' and
- * 'path'. If not set, 'virtual' is assumed.
- * @type {string}
- * */
-const S3_STYLE = process.env['S3_STYLE'];
-/**
  * Additional header prefixes to strip from the response before sending to the
  * client. This is useful for removing headers that may contain sensitive
  * information.
@@ -283,9 +277,14 @@ function _s3ReqParamsForSigV4(r, bucket, host) {
  */
 function s3BaseUri(r) {
     const bucket = process.env['S3_BUCKET_NAME'];
+    // Valid S3_STYLE values are 'virtual', 'virtual-v2' and 'path'; anything
+    // else behaves as virtual-style. Read per call (like S3_BUCKET_NAME
+    // above) rather than into an import-time const so unit tests can
+    // exercise both addressing styles within a single run.
+    const s3Style = process.env['S3_STYLE'];
     let basePath;
 
-    if (S3_STYLE === 'path') {
+    if (s3Style === 'path') {
         utils.debug_log(r, 'Using path style uri : ' + '/' + bucket);
         basePath = '/' + bucket;
     } else {
@@ -299,30 +298,45 @@ function s3BaseUri(r) {
  * Returns the s3 path given the incoming request
  *
  * @param r {NginxHTTPRequest} HTTP request
+ * @param opts {Object} Additional options for assembling the s3 URI
+ * @param opts.preserveBasePath {boolean} If true, do not prepend the bucket
+ *   name for path-style configurations. This produces a URI addressed to
+ *   this gateway - which prepends the bucket name itself when proxying to
+ *   S3 - rather than a URI addressed directly to S3.
  * @returns {string} uri for s3 request
  */
-function s3uri(r) {
-    let uriPath = r.variables.uri_path;
-    const basePath = s3BaseUri(r);
+function s3uri(r, opts) {
+    if (!opts) {
+        opts = { preserveBasePath: false };
+    }
+
+    let basePath;
     let path;
+    let uriPath = r.variables.uri_path;
+
+    if (opts.preserveBasePath) {
+        basePath = '';
+    } else {
+        basePath = s3BaseUri(r);
+    }
 
     // Create query parameters only if directory listing is enabled.
     if (ALLOW_LISTING && !utils.parseBoolean(r.variables.forIndexPage)) {
         const queryParams = _s3DirQueryParams(uriPath, r.method);
         if (queryParams.length > 0) {
-            path = basePath + '?' + queryParams;
+            path = `${basePath}?${queryParams}`;
         } else {
-            path = _escapeURIPath(basePath + uriPath);
+            path = _escapeURIPath(`${basePath}${uriPath}`);
         }
     } else {
         // This is a path that will resolve to an index page
         if (PROVIDE_INDEX_PAGE  && _isDirectory(uriPath) ) {
             uriPath += INDEX_PAGE;
         }
-        path = _escapeURIPath(basePath + uriPath);
+        path = _escapeURIPath(`${basePath}${uriPath}`);
     }
 
-    utils.debug_log(r, 'S3 Request URI: ' + r.method + ' ' + path);
+    utils.debug_log(r, `S3 Request URI: ${r.method} ${path}`);
     return path;
 }
 
@@ -440,7 +454,14 @@ async function loadContent(r) {
         r.internalRedirect("@s3Directory");
         return;
     }
-    const uri = s3uri(r);
+    // This URI is addressed to the gateway itself, not to S3: both the
+    // loopback probe below and the internalRedirect on success re-enter
+    // this server's `location ~ /index\.html$`, which prepends the bucket
+    // name when proxying path-style requests to S3. Including the bucket
+    // name here as well would duplicate it in the upstream request (GH-210),
+    // so ask for the gateway-relative path instead.
+    const uri = s3uri(r, { preserveBasePath: true });
+
     let reply = await ngx.fetch(
         `http://127.0.0.1:80${uri}`
     );

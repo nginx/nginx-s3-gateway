@@ -343,6 +343,76 @@ function testTrailslashControl() {
     });
 }
 
+/**
+ * Restores an env var to a previously saved value. Deletes the variable when
+ * the saved value is undefined - assigning undefined would re-create the key
+ * with an undefined value, which breaks 'in'-based presence checks.
+ */
+function restoreEnv(name, value) {
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+}
+
+function testS3uri() {
+    printHeader('testS3uri');
+
+    const savedStyle = process.env['S3_STYLE'];
+    const bucket = process.env['S3_BUCKET_NAME'];
+
+    function makeRequest(uriPath) {
+        const r = {
+            "method": "GET",
+            "variables": {
+                "uri_path": uriPath,
+                "forIndexPage": "true"
+            }
+        };
+        r.log = function(msg) {
+            console.log(msg);
+        };
+        return r;
+    }
+
+    function check(style, opts, uriPath, expected) {
+        process.env['S3_STYLE'] = style;
+        const actual = s3gateway.s3uri(makeRequest(uriPath), opts);
+        if (actual !== expected) {
+            throw `Unexpected s3uri result for S3_STYLE=${style} ` +
+                `uri_path=${uriPath}` +
+                `\nActual:   [${actual}]` +
+                `\nExpected: [${expected}]`;
+        }
+    }
+
+    try {
+        // Virtual-hosted styles never carry the bucket name in the path, so
+        // preserveBasePath is a no-op for them.
+        check('virtual-v2', undefined, '/a/c/ramen.jpg', '/a/c/ramen.jpg');
+        check('virtual-v2', { preserveBasePath: true }, '/a/c/ramen.jpg',
+            '/a/c/ramen.jpg');
+
+        // Path style prepends the bucket name by default...
+        check('path', undefined, '/a/c/ramen.jpg',
+            `/${bucket}/a/c/ramen.jpg`);
+        // ...but not for gateway-relative URIs such as the loadContent()
+        // index page probe, which re-enters the gateway and would otherwise
+        // gain the bucket name a second time (GH-210).
+        check('path', { preserveBasePath: true }, '/a/c/ramen.jpg',
+            '/a/c/ramen.jpg');
+
+        // Directory URIs, shaped like the requests loadContent() probes
+        // with. The runner env leaves PROVIDE_INDEX_PAGE unset, so no index
+        // page suffix is appended here.
+        check('path', undefined, '/a/c/', `/${bucket}/a/c/`);
+        check('path', { preserveBasePath: true }, '/a/c/', '/a/c/');
+    } finally {
+        restoreEnv('S3_STYLE', savedStyle);
+    }
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
@@ -486,6 +556,7 @@ async function test() {
     testEditHeadersHeadDirectory();
     testHasExtension();
     testTrailslashControl();
+    testS3uri();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();
