@@ -197,7 +197,21 @@ for (( i=1; i<=3; i++ )); do
 done
 set -o errexit
 
-if [ "${response}" = "000" ]; then
+# The retry loop's last probe is six seconds stale once the final backoff
+# sleep finishes, so probe once more before giving up: a slow-starting
+# gateway that became ready during the last sleep must not be reported as
+# down. An empty response means curl exited without probing (usage error or
+# killed by a signal), so re-probe for that case as well.
+if [ "${response}" = "000" ] || [ -z "${response}" ]; then
+  response="$(${curl_cmd} -s -o /dev/null -w '%{http_code}' --head "${test_server}" || true)"
+fi
+
+# Without this guard an unreachable server kills the script via errexit at
+# the first assertion's curl - a bare curl exit code blamed on whichever
+# assertion happened to run first - instead of one clear diagnostic and the
+# documented exit code. Mirrors the guard in test_api.sh; keep the two in
+# sync.
+if [ "${response}" = "000" ] || [ -z "${response}" ]; then
   e "unable to reach the test server at [${test_server}] - is the gateway running?"
   exit ${no_dep_exit_code}
 fi
