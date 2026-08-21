@@ -1,4 +1,5 @@
-FROM nginx-plus-s3-gateway
+# The :plus tag is produced by `make build NGINX_TYPE=plus` (see docs/getting_started.md)
+FROM nginx-s3-gateway:plus
 
 ENV OWASP_RULESET_VERSION "v3.3.0"
 ENV OWASP_RULESET_CHECKSUM "1f4002b5cf941a9172b6250cea7e3465a85ef6ee"

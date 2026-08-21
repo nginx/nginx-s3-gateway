@@ -92,3 +92,25 @@ Other useful targets:
 * `make lint` — run the linters (checkmake + shellcheck).
 
 Run `make help` for the full target list.
+
+### Adding tests
+
+Unit tests live in `test/unit/` and run under the njs CLI inside the built
+image. New files are discovered automatically: `test/run_unit_tests.sh` runs
+every `test/unit/*_test.js` file twice — once with and once without
+`AWS_SESSION_TOKEN` — so no wiring is needed. Environment variables that a
+module under test reads at import time belong in the `unit_test_env` list in
+that runner.
+
+Integration tests live in `test/integration/` and are driven by
+`test/run_integration_tests.sh`, which starts the compose environment
+(`test/docker-compose.yaml`), seeds MinIO with the fixtures in `test/data/`,
+and invokes the test scripts across a matrix of gateway configurations. New
+shell scripts under `test/` and `test/integration/` are picked up by
+`make lint` automatically and must pass `shellcheck --severity=warning`.
+
+The make targets guard against image/target mismatches: the variant targets
+(`retest-latest-njs`, `retest-unprivileged`) verify the floating
+`nginx-s3-gateway` tag actually points at the matching variant image, and the
+non-variant targets verify the inverse, failing with an actionable error
+instead of a confusing test failure.
