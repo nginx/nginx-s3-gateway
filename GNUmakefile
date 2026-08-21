@@ -23,9 +23,8 @@ OPEN_CMD          ?= $(shell command -v xdg-open 2> /dev/null || echo open)
 # NOTE: comments must stay on their own line -- GNU make keeps the whitespace
 # before an inline `#` as part of the value, which corrupts docker tags.
 
-# Docker CLI used by the build/clean targets. Caveat: the retest* targets
-# delegate to test.sh, which always uses `docker` from PATH, so pointing this
-# at another CLI (e.g. podman) only affects builds, not the test flows.
+# Docker CLI used by the build, test, and clean targets. Passed through to
+# the test runner scripts under test/.
 DOCKER            ?= docker
 
 # NGINX flavor to build and test: oss or plus
@@ -42,32 +41,35 @@ DOCS_DIR          ?= reference
 # The floating image tag. NOT tunable (override keeps even command-line
 # assignments from changing it): Dockerfile.latest-njs and
 # Dockerfile.unprivileged build FROM this literal name, and
-# test/docker-compose.yaml and test.sh's unit tests run it by this literal
-# name. Parameterize those files before turning this into a knob.
+# test/docker-compose.yaml runs it by this literal name. Parameterize those
+# files before turning this into a knob.
 override IMAGE_NAME := nginx-s3-gateway
 
-# Must match test_compose_project in test.sh
+# Passed through to test/run_integration_tests.sh (which defaults to the
+# same value), so the suite and the `clean` teardown share one project name.
 COMPOSE_PROJECT   := ngt
 COMPOSE_FILE      := $(BASE_DIR)test/docker-compose.yaml
 PLUS_CRT          := $(BASE_DIR)plus/etc/ssl/nginx/nginx-repo.crt
 PLUS_KEY          := $(BASE_DIR)plus/etc/ssl/nginx/nginx-repo.key
 DOCKERFILES       := Dockerfile.oss Dockerfile.plus Dockerfile.latest-njs Dockerfile.unprivileged
-# Wildcards (not `git ls-files`) so new entrypoint/integration scripts are
-# linted automatically while lint still works without git or a .git directory
+# Wildcards (not `git ls-files`) so new entrypoint/test-runner/integration
+# scripts are linted automatically while lint still works without git or a .git directory
 # (release tarballs, docker contexts). Anchored to BASE_DIR and converted back
 # to repo-relative paths because the shellcheck recipe cds into BASE_DIR.
 SHELL_SCRIPTS     := test.sh \
                      standalone_ubuntu_oss_install.sh \
+                     $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)test/*.sh)) \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)test/integration/*.sh)) \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)common/docker-entrypoint.d/*.sh)) \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)common/docker-entrypoint.d/*.envsh))
 
-# Pre-existing shellcheck findings in scripts this Makefile must not modify.
-# Burn this list down when test.sh is refactored into make-native pieces.
-SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2120,SC2140
+# Pre-existing shellcheck findings in scripts this Makefile must not modify:
+# SC2027/SC2034/SC2140 in test/integration/test_api.sh and SC2068 in the sh
+# entrypoint/standalone install scripts. New scripts must lint clean.
+SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -145,9 +147,9 @@ build-plus: check-plus-creds ## Build the NGINX Plus gateway image (requires ngi
 # Each variant recipe first pins the floating tag back to the clean
 # :$(NGINX_TYPE) base image, so variants never layer on top of each other --
 # including when both variant targets run in one make invocation, where the
-# phony `build` prerequisite is deduplicated and runs only once.
-# Note: test.sh invoked with both --latest-njs and --unprivileged stacks the
-# two variants; CI never exercises that combination and neither does this file.
+# phony `build` prerequisite is deduplicated and runs only once. Stacking the
+# two variants on one image is deliberately unsupported (CI never exercised
+# that combination when the legacy test.sh still allowed it).
 build-latest-njs: build ## Layer the latest njs build onto the NGINX_TYPE image
 	$(DOCKER) tag $(IMAGE_NAME):$(NGINX_TYPE) $(IMAGE_NAME)
 	cd "$(BASE_DIR)" && $(DOCKER) build -f Dockerfile.latest-njs \
@@ -184,30 +186,63 @@ test-matrix-plus: ## Run the same matrix against NGINX Plus (certs + license.jwt
 
 ##@ Test (no rebuild)
 
-# Single source for the test.sh invocation contract. CI=true makes test.sh
-# skip its internal docker build and run against whatever image is currently
-# tagged as the floating IMAGE_NAME tag; S3_STYLE reaches the integration
-# environment through docker-compose interpolation.
-RUN_TESTS = cd "$(BASE_DIR)" && CI=true S3_STYLE="$(S3_STYLE)" ./test.sh --type $(NGINX_TYPE)
+# Single source for the runner invocation contracts (see the script headers
+# in test/ for the full environment documentation). Both run against whatever
+# image is currently tagged as the floating IMAGE_NAME tag; S3_STYLE reaches
+# the integration environment through docker-compose interpolation. The
+# variant retest targets flip the runners' NJS_LATEST/UNPRIVILEGED knobs
+# (default 0) with an env prefix on the recipe line.
+RUN_UNIT_TESTS = DOCKER="$(DOCKER)" IMAGE_NAME="$(IMAGE_NAME)" \
+	"$(BASE_DIR)test/run_unit_tests.sh"
+RUN_INTEGRATION_TESTS = DOCKER="$(DOCKER)" NGINX_TYPE="$(NGINX_TYPE)" \
+	S3_STYLE="$(S3_STYLE)" COMPOSE_PROJECT="$(COMPOSE_PROJECT)" \
+	"$(BASE_DIR)test/run_integration_tests.sh"
 
-retest: check-nginx-type ## Test the currently tagged image without rebuilding
-	$(RUN_TESTS)
+# Inverse of VARIANT_GUARD below: the non-variant targets must not drive a
+# floating tag that is actually the named variant image, or the run fails
+# bafflingly instead of with this error (unit tests pass the stable
+# `-t module` flag the latest-njs CLI dropped; integration maps host 8989 to
+# port 80 while the unprivileged image listens on 8080). Checked per runner:
+# unit tests only care about the njs flavor, integration only about the port.
+NONVARIANT_GUARD = @variant_id="$$($(DOCKER) image inspect -f '{{.Id}}' $(IMAGE_NAME):$(1)-$(NGINX_TYPE) 2> /dev/null || true)"; \
+	floating_id="$$($(DOCKER) image inspect -f '{{.Id}}' $(IMAGE_NAME) 2> /dev/null || true)"; \
+	if [ -n "$$variant_id" ] && [ "$$floating_id" = "$$variant_id" ]; then \
+	echo "ERROR: '$(IMAGE_NAME)' currently points at the $(1)-$(NGINX_TYPE) variant image; run 'make build' first (or 'make retest-$(1)')"; exit 2; fi
 
-# Guard the variant retests: --latest-njs/--unprivileged change how test.sh
-# drives the image (njs -m unit-test flag, port 8080), so running them against
+test-unit: ## Run only the njs unit tests against the currently tagged image
+	$(call NONVARIANT_GUARD,latest-njs)
+	$(RUN_UNIT_TESTS)
+
+test-integration: check-nginx-type check-tools ## Run only the integration suite against the currently tagged image
+	$(call NONVARIANT_GUARD,unprivileged)
+	$(RUN_INTEGRATION_TESTS)
+
+# check-tools fails fast on a missing integration dependency (mc, curl,
+# compose, md5sum) before the unit suite spends a minute in docker, matching
+# the up-front dependency checks the legacy test.sh ran at startup.
+retest: check-nginx-type check-tools ## Test the currently tagged image without rebuilding
+	$(call NONVARIANT_GUARD,latest-njs)
+	$(call NONVARIANT_GUARD,unprivileged)
+	$(RUN_UNIT_TESTS)
+	$(RUN_INTEGRATION_TESTS)
+
+# Guard the variant retests: NJS_LATEST/UNPRIVILEGED change how the runners
+# drive the image (njs -m unit-test flag, port 8080), so running them against
 # a non-variant floating tag produces baffling failures instead of this error.
 VARIANT_GUARD = @variant_id="$$($(DOCKER) image inspect -f '{{.Id}}' $(IMAGE_NAME):$(1)-$(NGINX_TYPE) 2> /dev/null || true)"; \
 	floating_id="$$($(DOCKER) image inspect -f '{{.Id}}' $(IMAGE_NAME) 2> /dev/null || true)"; \
 	{ [ -n "$$variant_id" ] && [ "$$floating_id" = "$$variant_id" ]; } || { \
 	echo "ERROR: '$(IMAGE_NAME)' is not the $(1)-$(NGINX_TYPE) variant image; run 'make build-$(1)' (or 'make test-$(1)') first"; exit 2; }
 
-retest-latest-njs: check-nginx-type ## Test the current image with latest-njs semantics, no rebuild
+retest-latest-njs: check-nginx-type check-tools ## Test the current image with latest-njs semantics, no rebuild
 	$(call VARIANT_GUARD,latest-njs)
-	$(RUN_TESTS) --latest-njs
+	NJS_LATEST=1 $(RUN_UNIT_TESTS)
+	$(RUN_INTEGRATION_TESTS)
 
-retest-unprivileged: check-nginx-type ## Test the current image in unprivileged mode, no rebuild
+retest-unprivileged: check-nginx-type check-tools ## Test the current image in unprivileged mode, no rebuild
 	$(call VARIANT_GUARD,unprivileged)
-	$(RUN_TESTS) --unprivileged
+	$(RUN_UNIT_TESTS)
+	UNPRIVILEGED=1 $(RUN_INTEGRATION_TESTS)
 
 ##@ Lint
 
@@ -230,9 +265,8 @@ hadolint: ## Lint Dockerfiles with hadolint when installed (opt-in, not part of 
 
 ##@ Documentation
 
-# NOTE: jsdoc exits non-zero on template warnings; the legacy `|| true`
-# suppression is retained so doc generation stays best-effort. Revisit
-# during the test.sh refactor phase.
+# NOTE: jsdoc exits non-zero on template warnings; the `|| true` suppression
+# keeps doc generation best-effort so warnings never fail `make all`.
 docs: ## Generate JSDoc reference documentation into DOCS_DIR
 	cd "$(BASE_DIR)" && npx jsdoc -c jsdoc/conf.json -d "$(DOCS_DIR)" || true
 
@@ -246,8 +280,9 @@ jsdoc: docs ## Back-compat alias for docs (previous Makefile's target name)
 # The DOCS_DIR guard rejects empty, absolute, parent-traversal, and
 # trailing-slash values so the rm -rf can never escape the repository (a
 # trailing slash would make rm follow a symlinked DOCS_DIR into its target).
-# The teardown mirrors test.sh's compose() invocation, including its
-# docker-compose fallback, and also removes the mc alias test.sh registers.
+# The teardown mirrors the compose() invocation in
+# test/run_integration_tests.sh, including its docker-compose fallback, and
+# also removes the mc alias that script registers.
 clean: ## Remove generated docs and tear down the test compose environment
 	@case "$(DOCS_DIR)" in \
 		""|.|..|/*|*..*|*/) echo "ERROR: refusing to rm -rf suspicious DOCS_DIR '$(DOCS_DIR)'"; exit 1;; \

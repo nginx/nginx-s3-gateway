@@ -56,8 +56,10 @@ additional modules.
 ## Testing
 
 The `GNUmakefile` (GNU Make 4.x) is the only supported interface for build and
-test workflows. The legacy `test.sh` script still exists underneath, but it is
-being migrated away from — do not invoke it directly.
+test workflows. The test logic lives in `test/run_unit_tests.sh` and
+`test/run_integration_tests.sh`, which make drives; the legacy `test.sh`
+script is deprecated and only forwards to the equivalent make targets — do
+not invoke it directly.
 
 Automated tests require `docker`, `docker compose`, `curl`, `md5sum` (or `md5`
 on macOS), and `mc` (the
@@ -82,6 +84,8 @@ Other useful targets:
 * `make retest` — rerun tests against the already-built image. Note that unit
   tests import the njs modules baked into the image, so after editing
   `common/etc/nginx/include/*.js` use `make test` to rebuild first.
+* `make test-unit` / `make test-integration` — run just the unit or just the
+  integration half of the suite against the already-built image.
 * `make test-latest-njs` / `make test-unprivileged` — build and test the
   image variants.
 * `make test-matrix` — reproduce the CI matrix locally.

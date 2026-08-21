@@ -26,15 +26,19 @@ as Docker images.
 ## Build, test, lint
 
 The `GNUmakefile` (GNU Make 4.x) is the **only supported interface** for build
-and test workflows. The legacy `test.sh` script still exists underneath, but we
-are migrating away from it — never invoke or recommend `./test.sh` directly.
-Run `make help` for the full target list, `make check-tools` to verify
-prerequisites (docker, docker compose, curl, mc/MinIO client).
+and test workflows. The test logic lives in `test/run_unit_tests.sh` and
+`test/run_integration_tests.sh`, which make drives; the legacy `test.sh` is a
+deprecated wrapper that only forwards to the equivalent make targets — never
+invoke or recommend it. Run `make help` for the full target list,
+`make check-tools` to verify prerequisites (docker, docker compose, curl,
+mc/MinIO client).
 
 - `make build` — build the gateway image (`NGINX_TYPE=oss` default, or `plus`).
 - `make test` — build, then run the full unit + integration suite.
 - `make retest` — rerun tests against the already-built image (fast iteration,
   but see the staleness warning below).
+- `make test-unit` / `make test-integration` — run just one half of the suite
+  against the already-built image.
 - `make test-matrix` — reproduce the CI matrix locally.
 - `make lint` — checkmake + shellcheck.
 - `make docs` — generate JSDoc reference documentation.
@@ -153,8 +157,9 @@ Per the nginx docs, nginx objects are not available in the CLI: there is no
 `ngx`, no request object `r`, and no nginx variables. Everything
 nginx-provided must be hand-mocked.
 
-- **Run tests only through make** (`make test` / `make retest`). Under the
-  hood each test file currently runs via
+- **Run tests only through make** (`make test` / `make retest` /
+  `make test-unit`). Under the hood `test/run_unit_tests.sh` runs each test
+  file via
   `docker run --entrypoint /usr/bin/njs nginx-s3-gateway -t module -p '/etc/nginx' /var/tmp/<file>`
   with a fixed env list (`AWS_ACCESS_KEY_ID=unit_test`,
   `S3_BUCKET_NAME=unit_test`, `DEBUG=true`, `S3_REGION=test-1`,
@@ -193,12 +198,11 @@ nginx-provided must be hand-mocked.
 - **Testing private functions**: add them to the module's `export default`
   under the standing comment "These functions do not need to be exposed, but
   they are exposed so that unit tests can run against them."
-- **Wiring a new test file**: the runner enumerates files explicitly — no
-  glob. Until the make-native migration is complete this means editing
-  `test.sh`: add `runUnitTestWithOutSessionToken "<file>"` /
-  `runUnitTestWithSessionToken "<file>"` calls, and add any new env var to all
-  four docker-run blocks (both functions × both njs-flag branches). This is a
-  transitional necessity, not an endorsement of test.sh.
+- **Wiring a new test file**: automatic — `test/run_unit_tests.sh` globs
+  `test/unit/*_test.js`, so a new `<name>_test.js` file is discovered and run
+  in both session-token modes without any wiring. Env vars that the module
+  under test reads at import time go in the single `unit_test_env` list in
+  that runner.
 
 ## Adding a configuration option (env var)
 
@@ -211,7 +215,7 @@ A new environment variable is never just a code change. The full checklist:
    `common/docker-entrypoint.d/00-check-for-required-env.sh`.
 4. Add it to the env list in `standalone_ubuntu_oss_install.sh`.
 5. Add a pass-through entry in `test/docker-compose.yaml`; if unit tests need
-   it, add it to the unit-test runner env blocks too.
+   it, add it to the `unit_test_env` list in `test/run_unit_tests.sh` too.
 6. Add integration coverage — new settings without tests are historically
    blocked in review.
 
@@ -234,7 +238,8 @@ A new environment variable is never just a code change. The full checklist:
 - Conventional Commits format (`fix:`, `feat:`, `ci:`, `build:` ...), imperative
   mood, subject ≤72 chars — changelogs are generated from these.
 - Shell scripts must pass `shellcheck --severity=warning`; new scripts under
-  `test/integration/` and `common/docker-entrypoint.d/` are linted automatically.
+  `test/` (the runners), `test/integration/`, and `common/docker-entrypoint.d/`
+  are linted automatically.
 - checkmake lints the GNUmakefile and does not follow backslash continuations —
   keep `.PHONY` declarations on a single line.
 - Config/behavior changes usually need matching updates in both `oss/` and

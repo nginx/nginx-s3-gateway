@@ -91,8 +91,8 @@ GNUmakefile                      entry point for all build, test, and lint workf
 package.json                     Node.js package file used only for generating JSDoc
 settings.example                 Docker env file example
 standalone_ubuntu_oss_install.sh install script that will install the gateway as a Systemd service
-test.sh                          legacy test launcher, superseded by `make test` - do not
-                                 invoke directly
+test.sh                          deprecated wrapper that forwards to the equivalent make
+                                 targets - do not invoke directly
 ```
 
 ## Development

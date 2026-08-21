@@ -289,13 +289,13 @@ function testTrailslashControl() {
 
     // trailslashControl reads APPEND_SLASH_FOR_POSSIBLE_DIRECTORY into a
     // module-level const at import time, so the flag must be present in the
-    // unit test runner environment (test.sh sets it in all four docker-run
-    // blocks). Fail fast with a setup error rather than a misleading
-    // assertion failure when it is missing.
+    // unit test runner environment (the unit_test_env list in
+    // test/run_unit_tests.sh sets it). Fail fast with a setup error rather
+    // than a misleading assertion failure when it is missing.
     if (process.env['APPEND_SLASH_FOR_POSSIBLE_DIRECTORY'] !== 'true') {
         throw 'testTrailslashControl requires ' +
             'APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=true in the unit test ' +
-            'runner environment (see test.sh)';
+            'runner environment (see test/run_unit_tests.sh)';
     }
 
     const testCases = [

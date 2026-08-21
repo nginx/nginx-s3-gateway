@@ -11,8 +11,6 @@ on:
   schedule:
     - cron: "0 0 * * 1"
   workflow_dispatch:
-env:
-  CI: true
 permissions: read-all
 
 # Job progression.  We make sure that the base image [oss] builds and passes tests before kicking off the other builds
@@ -29,6 +27,23 @@ permissions: read-all
 # As a last step (only if run from main) multi-architecture images are built and pushed to Docker Hub and the GitHub Container Registry
 
 jobs:
+  lint:
+    name: Lint (checkmake + shellcheck)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # shellcheck is preinstalled on the GitHub runners; checkmake is not.
+      - name: Install checkmake
+        run: |
+          go install github.com/checkmake/checkmake/cmd/checkmake@v0.3.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: make lint
+
   build-oss-for-test:
     name: Build NGINX OSS image
     runs-on: ubuntu-24.04
@@ -104,7 +119,7 @@ jobs:
           docker load --input ${{ runner.temp }}/oss.tar
 
       - name: Run tests - stable njs version
-        run: S3_STYLE=${{ matrix.path_style }} ./test.sh --type oss
+        run: make retest NGINX_TYPE=oss S3_STYLE=${{ matrix.path_style }}
 
   build-latest-njs-for-test:
     name: Build NGINX OSS image using latest njs commit
@@ -197,7 +212,7 @@ jobs:
           docker tag nginx-s3-gateway:latest-njs-oss nginx-s3-gateway
 
       - name: Run tests - latest njs version
-        run: ./test.sh --latest-njs --type oss
+        run: make retest-latest-njs NGINX_TYPE=oss
 
   build-unprivileged-for-test:
     name: Build NGINX OSS unprivileged image
@@ -290,7 +305,7 @@ jobs:
           docker tag nginx-s3-gateway:unprivileged-oss nginx-s3-gateway
 
       - name: Run tests - unprivileged
-        run: ./test.sh --unprivileged --type oss
+        run: make retest-unprivileged NGINX_TYPE=oss
 
 # As a last step (only if run from main) multi-architecture images are built and pushed to Docker Hub and the GitHub Container Registry
   tag-and-push:
