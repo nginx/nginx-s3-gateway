@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 NGINX S3 Gateway configures NGINX (OSS or Plus) as an authenticating, caching
 proxy in front of S3-compatible object stores. There is no application server:
-the "code" is NGINX configuration plus njs (NGINX JavaScript) modules, packaged
+the "code" is NGINX configuration plus [njs (NGINX JavaScript)](https://github.com/nginx/njs) modules, packaged
 as Docker images.
 
 ## Layout
@@ -40,7 +40,9 @@ mc/MinIO client).
 - `make test-unit` / `make test-integration` — run just one half of the suite
   against the already-built image.
 - `make test-matrix` — reproduce the CI matrix locally.
-- `make lint` — checkmake + shellcheck.
+- `make lint` — checkmake + shellcheck + rumdl (Markdown).
+- `make lint-md` / `make fmt-md` — report or auto-fix Markdown issues with
+  `rumdl` (config in `.rumdl.toml`) without running the other linters.
 - `make docs` — generate JSDoc reference documentation.
 
 Notes:
@@ -231,7 +233,9 @@ A new environment variable is never just a code change. The full checklist:
   keep the syntax POSIX. Use spaces, not commas, to separate values in
   env-var lists.
 - No whitespace or reformatting churn in PRs: revert changes outside the lines
-  you mean to touch, and disable markdown autoformatters.
+  you mean to touch. The one sanctioned exception is Markdown: `rumdl` (config
+  in `.rumdl.toml`, run via `make lint-md` / `make fmt-md`) is the project's
+  formatter for `.md` files, so its changes are expected, not churn.
 
 ## Git and PR conventions
 

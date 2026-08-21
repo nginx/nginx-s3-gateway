@@ -1,0 +1,34 @@
+# rumdl configuration -- https://rumdl.dev
+#
+# Markdown lint/format rules for this repo's prose docs. Run via `make lint-md`
+# (report) and `make fmt-md` (apply fixes).
+
+[global]
+# .opencode/ holds the local rule digests (kept verbatim, mirrored to .claude
+# via symlink); node_modules is dependency noise.
+exclude = [".opencode", ".claude", "node_modules"]
+
+# GitHub issue/PR templates conventionally open with a task-oriented heading
+# (e.g. "### Proposed changes"), not a document-level H1 -- MD041 doesn't fit.
+disable = ["MD041"]
+
+# House style: prose wraps at 120 columns. Deliberately-formatted code
+# examples and tables routinely run past that and must not be reflowed, so
+# MD013 skips them.
+[MD013]
+line-length = 120
+code-blocks = false
+tables = false
+
+# Align table columns in source so the pipes line up in raw form and in diffs.
+[MD060]
+enabled = true
+style = "aligned"
+
+# House style: dash bullets (`-`), matching the majority of existing docs.
+[MD004]
+style = "dash"
+
+# <br> is the only way to force a line break inside a table cell.
+[MD033]
+allowed-elements = ["br"]

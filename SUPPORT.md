@@ -4,15 +4,20 @@
 
 We use GitHub for tracking bugs and feature requests related to this project.
 
-Don't know how something in this project works? Curious if this project can achieve your desired functionality? Please open an issue on GitHub with the label `question`. Alternatively, start a GitHub discussion!
+Don't know how something in this project works? Curious if this project can achieve your desired functionality?
+Please open an issue on GitHub with the label `question`. Alternatively, start a GitHub discussion!
 
 ## NGINX Specific Questions and/or Issues
 
-This isn't the right place to get support for NGINX specific questions, but the following resources are available below. Thanks for your understanding!
+This isn't the right place to get support for NGINX specific questions, but the following resources are
+available below. Thanks for your understanding!
 
 ### Community Forum
 
-We have a community [forum](https://community.nginx.org/)! If you have any questions and/or issues, try checking out the [`Troubleshooting`](https://community.nginx.org/c/troubleshooting/8) and [`How do I...?`](https://community.nginx.org/c/how-do-i/9) categories. Both fellow community members and NGINXers might be able to help you! :)
+We have a community [forum](https://community.nginx.org/)! If you have any questions and/or issues, try checking
+out the [`Troubleshooting`](https://community.nginx.org/c/troubleshooting/8) and
+[`How do I...?`](https://community.nginx.org/c/how-do-i/9) categories. Both fellow community members and NGINXers
+might be able to help you! :)
 
 ### Documentation
 
@@ -26,8 +31,10 @@ Want to get in touch with the NGINX development team directly? Try using the rel
 
 ## Contributing
 
-Please see the [contributing guide](/CONTRIBUTING.md) or the [Getting Started](/README.md#getting-started) guide, for guidelines on how to best contribute to this project.
+Please see the [contributing guide](/CONTRIBUTING.md) or the [Getting Started](/README.md#getting-started) guide,
+for guidelines on how to best contribute to this project.
 
 ## Community Support
 
-This project does **not** offer commercial support. Community support is offered on a best effort basis through either GitHub issues/PRs/discussions or through any of our active communities.
+This project does **not** offer commercial support. Community support is offered on a best effort basis through
+either GitHub issues/PRs/discussions or through any of our active communities.
