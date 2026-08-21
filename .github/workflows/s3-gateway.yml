@@ -13,304 +13,128 @@ on:
   workflow_dispatch:
 permissions: read-all
 
-# Job progression.  We make sure that the base image [oss] builds and passes tests before kicking off the other builds
-#                                ┌──────────────────┐        ┌────────────────┐      ┌────────────────┐
-# ┌─────────┐     ┌─────────┬────► Build Latest NJS ├────────►Test Latest NJS ├─────►│Push Latest NJS │
-# │Build OSS├────►│Test OSS │    └──────────────────┘        └────────────────┘      └────────────────┘
-# └─────────┘     └──┬──────┤
-#                    │      │    ┌──────────────────┐       ┌──────────────────┐     ┌─────────────────┐
-#                    │      └────►Build Unprivileged├───────►Test Unprivileged ├────►│Push Unprivileged│
-#                    │           └──────────────────┘       └──────────────────┘     ├────────┬────────┘
-#                    │                                                               ├────────┤
-#                    └──────────────────────────────────────────────────────────────►│Push OSS│
-#                                                                                    └────────┘
-# As a last step (only if run from main) multi-architecture images are built and pushed to Docker Hub and the GitHub Container Registry
+# Supersede a PR's in-flight run when it is pushed to again. Deliberately
+# scoped to pull_request only: for main, the merge queue, and the weekly
+# schedule the group key is the ref (unique per queued PR), and those runs
+# either publish images or gate a merge, so they must always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Job graph. Every test job builds the image it tests, so the three test
+# tracks are fully independent and run concurrently:
+#
+#   ┌──────┐
+#   │ Lint │
+#   └──────┘
+#   ┌────────────────────────────────────────┐
+#   │ Test OSS  (matrix: virtual, virtual-v2)├──┐
+#   └────────────────────────────────────────┘  │
+#   ┌────────────────────────────────────────┐  │  ┌──────────────────────────┐
+#   │ Test OSS + latest njs                  ├──┼─►│ Tag and push (main only) │
+#   └────────────────────────────────────────┘  │  └──────────────────────────┘
+#   ┌────────────────────────────────────────┐  │
+#   │ Test OSS unprivileged                  ├──┘
+#   └────────────────────────────────────────┘
+#
+# This replaces a previous six-job pipeline that built the OSS base once,
+# shipped it between jobs as an uploaded tar, and gated the two variant
+# builds on the OSS tests passing. Both mechanisms cost more than they saved:
+# the OSS image builds in ~10s, which is less than the upload + download +
+# `docker load` round trip it replaced, and the test-OSS gate serialized
+# ~100s onto the critical path of every PR to conserve runner minutes that
+# are free on a public repository.
+#
+# Each job's single test step is a `make` target -- the same entry point
+# `make ci` uses locally -- so a green CI run and a green local run exercise
+# the same code path rather than two similar ones that can drift.
 
 jobs:
   lint:
     name: Lint (checkmake + shellcheck)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      CHECKMAKE_VERSION: v0.3.2
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       # shellcheck is preinstalled on the GitHub runners; checkmake is not.
+      # Cached because `go install` compiles it from source, which is most of
+      # this job's runtime.
+      - name: Restore cached checkmake
+        id: cache-checkmake
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/go/bin/checkmake
+          key: ${{ runner.os }}-checkmake-${{ env.CHECKMAKE_VERSION }}
+
       - name: Install checkmake
-        run: |
-          go install github.com/checkmake/checkmake/cmd/checkmake@v0.3.2
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        if: steps.cache-checkmake.outputs.cache-hit != 'true'
+        run: go install github.com/checkmake/checkmake/cmd/checkmake@${{ env.CHECKMAKE_VERSION }}
+
+      # Separate step because GITHUB_PATH only affects later steps, and this
+      # has to apply whether checkmake was restored or freshly installed.
+      - name: Add the Go bin directory to PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Lint
         run: make lint
 
-  build-oss-for-test:
-    name: Build NGINX OSS image
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out the codebase
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-
-      - name: Build and export
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          file: Dockerfile.oss
-          context: .
-          tags: nginx-s3-gateway , nginx-s3-gateway:oss
-          outputs: type=docker,dest=${{ runner.temp }}/oss.tar
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: oss
-          path: ${{ runner.temp }}/oss.tar
-          retention-days: 1
-          if-no-files-found: error
-
   test-oss:
     name: Test NGINX OSS image
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: build-oss-for-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
+      # Report both addressing styles instead of cancelling the second one as
+      # soon as the first fails; they exercise different signing paths and the
+      # legs run concurrently, so nothing is saved by stopping early.
+      fail-fast: false
       matrix:
         path_style: [virtual, virtual-v2]
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install dependencies
-        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
-        # step until the job timeout and knocks PRs out of the merge queue.
-        timeout-minutes: 5
-        run: |
-          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
-          sudo apt-get $APT_OPTS update -qq
-          sudo apt-get $APT_OPTS install -y curl wait-for-it
-
-      - name: Restore cached binaries
-        id: cache-binaries-restore
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: .bin
-          key: ${{ runner.os }}-binaries
-
       - name: Install MinIO Client
-        run: |
-          mkdir .bin || exit 0
-          cd .bin
-          curl --insecure --retry 6 --fail --location --output mc.RELEASE.2023-06-19T19-31-19Z "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z"
-          curl --insecure --retry 6 --fail --silent --location "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z.sha256sum" | sha256sum --check -
-          mv mc.RELEASE.2023-06-19T19-31-19Z mc
-          chmod +x mc
+        uses: ./.github/actions/install-mc
 
-      - name: Download artifact
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: oss
-          path: ${{ runner.temp }}
-
-      - name: Load image
-        run: |
-          docker load --input ${{ runner.temp }}/oss.tar
-
-      - name: Run tests - stable njs version
-        run: make retest NGINX_TYPE=oss S3_STYLE=${{ matrix.path_style }}
-
-  build-latest-njs-for-test:
-    name: Build NGINX OSS image using latest njs commit
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: test-oss
-    steps:
-      - name: Check out the codebase
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-        with:
-          driver: docker
-
-      - name: Download artifact
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: oss
-          path: ${{ runner.temp }}
-
-      - name: Load image
-        run: |
-          docker load --input ${{ runner.temp }}/oss.tar
-
-      - name: Build and load oss image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          file: Dockerfile.latest-njs
-          context: .
-          tags: nginx-s3-gateway:latest-njs-oss
-          load: true
-
-      # Save manually here since we need to use `docker` buildx but that can't output a file that upload-artifact likes.
-      - name: Export image to a tar
-        run: |
-          docker save nginx-s3-gateway:latest-njs-oss > ${{ runner.temp }}/latest-njs.tar
-
-      - name: Upload artifact - latest-njs
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: latest-njs
-          path: ${{ runner.temp }}/latest-njs.tar
-          retention-days: 1
-          if-no-files-found: error
+      - name: Build and test - stable njs version
+        run: make test NGINX_TYPE=oss S3_STYLE=${{ matrix.path_style }}
 
   test-latest-njs:
     name: Test NGINX OSS image using latest njs commit
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: build-latest-njs-for-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install dependencies
-        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
-        # step until the job timeout and knocks PRs out of the merge queue.
-        timeout-minutes: 5
-        run: |
-          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
-          sudo apt-get $APT_OPTS update -qq
-          sudo apt-get $APT_OPTS install -y curl wait-for-it
-
-      - name: Restore cached binaries
-        id: cache-binaries-restore
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: .bin
-          key: ${{ runner.os }}-binaries
 
       - name: Install MinIO Client
-        run: |
-          mkdir .bin || exit 0
-          cd .bin
-          curl --insecure --retry 6 --fail --location --output mc.RELEASE.2023-06-19T19-31-19Z "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z"
-          curl --insecure --retry 6 --fail --silent --location "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z.sha256sum" | sha256sum --check -
-          mv mc.RELEASE.2023-06-19T19-31-19Z mc
-          chmod +x mc
+        uses: ./.github/actions/install-mc
 
-      - name: Download artifact
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: latest-njs
-          path: ${{ runner.temp }}
-
-      - name: Load image
-        run: |
-          docker load --input ${{ runner.temp }}/latest-njs.tar
-          docker tag nginx-s3-gateway:latest-njs-oss nginx-s3-gateway
-
-      - name: Run tests - latest njs version
-        run: make retest-latest-njs NGINX_TYPE=oss
-
-  build-unprivileged-for-test:
-    name: Build NGINX OSS unprivileged image
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: test-oss
-    steps:
-      - name: Check out the codebase
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-        with:
-          driver: docker
-
-      - name: Download artifact
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: oss
-          path: ${{ runner.temp }}
-
-      - name: Load image
-        run: |
-          docker load --input ${{ runner.temp }}/oss.tar
-
-      - name: Build and load oss image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          file: Dockerfile.unprivileged
-          context: .
-          tags: nginx-s3-gateway:unprivileged-oss
-          load: true
-
-      # Save manually here since we need to use `docker` buildx but that can't output a file that upload-artifact likes.
-      - name: Export image to a tar
-        run: |
-          docker save nginx-s3-gateway:unprivileged-oss > ${{ runner.temp }}/unprivileged.tar
-
-      - name: Upload artifact - unprivileged
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: unprivileged
-          path: ${{ runner.temp }}/unprivileged.tar
-          retention-days: 1
-          if-no-files-found: error
+      - name: Build and test - latest njs version
+        run: make test-latest-njs NGINX_TYPE=oss
 
   test-unprivileged:
     name: Test NGINX OSS unprivileged image
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs: build-unprivileged-for-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install dependencies
-        # Network timeouts + retries: a wedged apt mirror otherwise hangs this
-        # step until the job timeout and knocks PRs out of the merge queue.
-        timeout-minutes: 5
-        run: |
-          APT_OPTS="-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3"
-          sudo apt-get $APT_OPTS update -qq
-          sudo apt-get $APT_OPTS install -y curl wait-for-it
-
-      - name: Restore cached binaries
-        id: cache-binaries-restore
-        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: .bin
-          key: ${{ runner.os }}-binaries
-
       - name: Install MinIO Client
-        run: |
-          mkdir .bin || exit 0
-          cd .bin
-          curl --insecure --retry 6 --fail --location --output mc.RELEASE.2023-06-19T19-31-19Z "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z"
-          curl --insecure --retry 6 --fail --silent --location "https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive/mc.RELEASE.2023-06-19T19-31-19Z.sha256sum" | sha256sum --check -
-          mv mc.RELEASE.2023-06-19T19-31-19Z mc
-          chmod +x mc
+        uses: ./.github/actions/install-mc
 
-      - name: Download artifact
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
-        with:
-          name: unprivileged
-          path: ${{ runner.temp }}
-
-      - name: Load image
-        run: |
-          docker load --input ${{ runner.temp }}/unprivileged.tar
-          docker tag nginx-s3-gateway:unprivileged-oss nginx-s3-gateway
-
-      - name: Run tests - unprivileged
-        run: make retest-unprivileged NGINX_TYPE=oss
+      - name: Build and test - unprivileged
+        run: make test-unprivileged NGINX_TYPE=oss
 
 # As a last step (only if run from main) multi-architecture images are built and pushed to Docker Hub and the GitHub Container Registry
   tag-and-push:
     name: Tag and push all built and tested NGINX images
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     needs: [test-oss, test-latest-njs, test-unprivileged]
     if: |

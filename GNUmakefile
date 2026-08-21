@@ -98,7 +98,7 @@ check-tools: ## Verify required build and test tooling is present
 	for tool in npx checkmake shellcheck; do \
 		command -v "$$tool" > /dev/null 2>&1 || echo "missing (optional, needed for lint/docs): $$tool"; \
 	done; \
-	for tool in wait-for-it hadolint jq; do \
+	for tool in hadolint jq; do \
 		command -v "$$tool" > /dev/null 2>&1 || echo "missing (optional): $$tool"; \
 	done; \
 	if [ "$$ok" -eq 1 ]; then echo "All required tools are present"; else exit 3; fi
