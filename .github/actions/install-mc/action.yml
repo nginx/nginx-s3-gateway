@@ -1,0 +1,31 @@
+---
+name: Install MinIO Client
+description: >
+  Installs the pinned MinIO client (mc) into ./.bin, where the GNUmakefile's
+  check-tools target and test/run_integration_tests.sh both look for it.
+inputs:
+  release:
+    description: >
+      mc release artifact to install. Must be the full artifact name, because
+      the published .sha256sum file references the binary by that name and
+      `sha256sum --check` matches on it.
+    required: false
+    default: mc.RELEASE.2023-06-19T19-31-19Z
+runs:
+  using: composite
+  steps:
+    # Downloaded rather than cached: the release is ~25 MB and arrives from
+    # MinIO's CDN in about a second, which is no slower than an actions/cache
+    # round trip and cannot serve a stale binary.
+    - name: Install MinIO Client
+      shell: bash
+      env:
+        MC_RELEASE: ${{ inputs.release }}
+      run: |
+        mkdir -p .bin
+        cd .bin
+        base_url="https://dl.min.io/client/mc/release/linux-$(dpkg --print-architecture)/archive"
+        curl --retry 6 --fail --location --output "${MC_RELEASE}" "${base_url}/${MC_RELEASE}"
+        curl --retry 6 --fail --silent --location "${base_url}/${MC_RELEASE}.sha256sum" | sha256sum --check -
+        mv "${MC_RELEASE}" mc
+        chmod +x mc

@@ -145,10 +145,40 @@ else
 fi
 e "Using MinIO Client: ${mc_cmd}"
 
-wait_for_it_cmd="$(command -v wait-for-it || true)"
-if ! [ -x "${wait_for_it_cmd}" ]; then
-  e "wait-for-it command not available, consider installing to prevent race conditions"
-fi
+# Blocks until the gateway answers an HTTP request, replacing the external
+# wait-for-it dependency.
+#
+# Two problems with the previous arrangement. wait-for-it was an optional
+# tool, so on a host that lacked it these waits silently became no-ops. And
+# even where it was installed it only proved the *published* port was open:
+# docker binds the host side of a port mapping as soon as the container
+# starts, so a TCP connect succeeds while nginx inside is still booting. The
+# downstream suites each carry their own 2s/4s/6s backoff loop to absorb that
+# gap, and it fired on nearly every configuration change - 13 times in a
+# representative CI run, all of it pure sleep.
+#
+# Polling the same HEAD request those suites use closes the gap for real:
+# curl reports 000 until nginx accepts and answers, so this returns only once
+# a request would actually succeed, and the downstream backoffs stop firing.
+#
+# Exits non-zero on timeout so callers abort under errexit rather than
+# proceeding against a gateway that never came up.
+gateway_wait_timeout=15
+wait_for_gateway() {
+  poll_limit=$((gateway_wait_timeout * 5))
+  for (( poll=0; poll<poll_limit; poll++ )); do
+    # `|| true` because curl exits non-zero (while still printing 000) until
+    # the gateway answers, which errexit would otherwise treat as fatal.
+    gateway_status="$("${curl_cmd}" -s -o /dev/null -w '%{http_code}' \
+      --head --max-time 2 "${test_server}" || true)"
+    if [ "${gateway_status}" != "000" ]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  e "timed out after ${gateway_wait_timeout}s waiting for the gateway at ${test_server}"
+  return 1
+}
 
 compose() {
   # Hint to docker-compose the internal port to map for the container
@@ -256,9 +286,7 @@ integration_test() {
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=$1 ALLOW_DIRECTORY_LIST=$2 PROVIDE_INDEX_PAGE=$3 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=$4 STRIP_LEADING_DIRECTORY_PATH=$5 PREFIX_LEADING_DIRECTORY_PATH=$6 compose up -d
 
-  if [ -x "${wait_for_it_cmd}" ]; then
-    "${wait_for_it_cmd}" -h "${nginx_server_host}" -p "${nginx_server_port}"
-  fi
+  wait_for_gateway
 
   p "Starting HTTP API tests (v$1 signatures)"
   echo "  test/integration/test_api.sh \"$test_server\" \"$test_dir\" $1 $2 $3 $4 $5 $6"
@@ -300,9 +328,7 @@ integration_test_cache_bypass() {
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" compose up -d
 
-  if [ -x "${wait_for_it_cmd}" ]; then
-    "${wait_for_it_cmd}" -h "${nginx_server_host}" -p "${nginx_server_port}"
-  fi
+  wait_for_gateway
 
   p "Starting cache bypass tests (phase: ${bypass_phase})"
   echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${mc_cmd}\" \"${minio_name}\" \"${minio_bucket}\""
