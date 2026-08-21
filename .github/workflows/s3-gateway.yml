@@ -131,49 +131,66 @@ jobs:
       - name: Build and test - unprivileged
         run: make test-unprivileged NGINX_TYPE=oss
 
-# As a last step (only if run from main) multi-architecture images are built and pushed to Docker Hub and the GitHub Container Registry
-  tag-and-push:
-    name: Tag and push all built and tested NGINX images
+
+# Publishing (main only). Multi-architecture images go to both Docker Hub and
+# the GitHub Container Registry.
+#
+# The base and unprivileged images are apt installs, file copies and sed
+# edits, which cross-build for arm64 under QEMU in well under a minute, so
+# both are still built for all platforms in a single job.
+#
+# Dockerfile.latest-njs is different: it compiles njs and the NGINX dynamic
+# modules from source. Emulating that for arm64 cost 657s against 42s for the
+# same step on native amd64 - a 16x penalty that was 11 of the publish path's
+# 13 minutes. It is therefore built once per architecture on a native runner
+# (arm64 hosted runners are free for public repositories and carry the same
+# 4 cores as the amd64 ones), pushed by digest, and stitched into a manifest
+# list by `docker buildx imagetools create`.
+#
+#   publish-base ──┬─ publish-unprivileged
+#    (oss, every   │
+#     platform)    ├─ publish-latest-njs (amd64) ─┐
+#                  │                              ├─ publish-latest-njs-manifest
+#                  └─ publish-latest-njs (arm64) ─┘
+#
+# Downstream jobs consume the base by the digest publish-base emitted rather
+# than by tag: an index digest resolves to the right per-architecture child
+# manifest, and it cannot pick up a different concurrent run's base the way a
+# shared :latest tag could. Passing the date the same way keeps every image in
+# a run on one date tag even if the run straddles midnight UTC.
+#
+# This also retires the job-local `registry:2` service and the `network=host`
+# buildx driver option it needed. Those existed because the docker-container
+# driver cannot see images loaded into the local daemon, which forced the base
+# image to be built twice - once into the local registry for downstream
+# builds, once for the real tags. Staging on ghcr costs one push instead.
+
+  publish-base:
+    name: Publish NGINX OSS base image
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     needs: [test-oss, test-latest-njs, test-unprivileged]
-    if: |
-      github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     permissions:
       id-token: write
       contents: read
       packages: write
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      date: ${{ steps.date.outputs.date }}
     steps:
       - name: Check out the codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Get current date
         id: date
-        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
-      - name: Set up Docker Buildx for local image build and push
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
-        with:
-          driver-opts: network=host
-
-      # Do an initial build of the base image and push to a local registry for downstream images because the `docker-container` driver can't find local images with `load`.
-      - name: Build and push image [oss] to local registry for downstream
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
-        with:
-          file: Dockerfile.oss
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          provenance: false
-          tags: localhost:5000/nginx-oss-s3-gateway:oss
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
@@ -197,8 +214,12 @@ jobs:
           username: ${{ env.DOCKER_HUB_USERNAME }}
           password: ${{ env.DOCKER_HUB_RW_TOKEN }}
 
-      # This second invocation of the build/push should just use the existing build cache.
+      # provenance: false keeps the pushed reference a plain manifest list.
+      # With attestations attached, the index also carries provenance
+      # manifests, which `FROM`/--build-context in the downstream njs and
+      # unprivileged builds cannot resolve.
       - name: Build and push image [oss]
+        id: build
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           file: Dockerfile.oss
@@ -212,21 +233,47 @@ jobs:
             nginxinc/nginx-s3-gateway:latest-${{ steps.date.outputs.date }}
             nginxinc/nginx-s3-gateway:latest
 
-      - name: Build and push image [latest-njs]
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+  publish-unprivileged:
+    name: Publish NGINX OSS unprivileged image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: publish-base
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
-          file: Dockerfile.latest-njs
-          context: .
-          build-contexts: |
-            nginx-s3-gateway=docker-image://localhost:5000/nginx-oss-s3-gateway:oss
-          push: true
-          platforms: linux/amd64,linux/arm64
-          provenance: false
-          tags: |
-            ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:latest-njs-oss-${{ steps.date.outputs.date }}
-            ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:latest-njs-oss
-            nginxinc/nginx-s3-gateway:latest-njs-oss-${{ steps.date.outputs.date }}
-            nginxinc/nginx-s3-gateway:latest-njs-oss
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get secrets from Azure
+        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
+        with:
+          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
+          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
+          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
+          secret-names: "docker-username, docker-github-syseng-rw-token"
+          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          username: ${{ env.DOCKER_HUB_USERNAME }}
+          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
 
       - name: Build and push image [unprivileged]
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
@@ -234,12 +281,154 @@ jobs:
           file: Dockerfile.unprivileged
           context: .
           build-contexts: |
-            nginx-s3-gateway=docker-image://localhost:5000/nginx-oss-s3-gateway:oss
+            nginx-s3-gateway=docker-image://ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway@${{ needs.publish-base.outputs.digest }}
           push: true
           platforms: linux/amd64,linux/arm64
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss-${{ steps.date.outputs.date }}
+            ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss
-            nginxinc/nginx-s3-gateway:unprivileged-oss-${{ steps.date.outputs.date }}
+            nginxinc/nginx-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
             nginxinc/nginx-s3-gateway:unprivileged-oss
+
+  # One job per architecture, each on a native runner. Pushed by digest so no
+  # per-architecture tag is published: the digests are collected by the
+  # manifest job below, which is what creates the user-visible tags.
+  publish-latest-njs:
+    name: Publish NGINX OSS latest-njs image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    needs: publish-base
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - name: Check out the codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # No setup-qemu-action: each leg builds only its own architecture, which
+      # is the entire point of splitting this job.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image by digest [latest-njs]
+        id: build
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          file: Dockerfile.latest-njs
+          context: .
+          build-contexts: |
+            nginx-s3-gateway=docker-image://ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway@${{ needs.publish-base.outputs.digest }}
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          outputs: type=image,name=ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway,push-by-digest=true,name-canonical=true,push=true
+
+      # The digest is the filename; the file itself is empty. The manifest job
+      # globs the directory, so it needs no knowledge of how many
+      # architectures were built.
+      - name: Export the digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: digest-latest-njs-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  publish-latest-njs-manifest:
+    name: Publish NGINX OSS latest-njs manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [publish-base, publish-latest-njs]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    env:
+      STAGING_IMAGE: ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Download the per-architecture digests
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          path: /tmp/digests
+          pattern: digest-latest-njs-*
+          merge-multiple: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get secrets from Azure
+        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
+        with:
+          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
+          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
+          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
+          secret-names: "docker-username, docker-github-syseng-rw-token"
+          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          username: ${{ env.DOCKER_HUB_USERNAME }}
+          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
+
+      # imagetools assembles the manifest list from the staged per-architecture
+      # digests and pushes it to every tag. The ghcr tags resolve within the
+      # staging repository, so only the manifest is written; the Docker Hub
+      # tags are in another registry, so the layers are copied there once.
+      - name: Create and push the manifest list
+        working-directory: /tmp/digests
+        env:
+          DATE: ${{ needs.publish-base.outputs.date }}
+        run: |
+          # Each uploaded artifact is an empty file named after the digest it
+          # represents, so the directory listing is the source list.
+          sources=()
+          for digest in *; do
+            sources+=("${STAGING_IMAGE}@sha256:${digest}")
+          done
+          if [ "${#sources[@]}" -eq 0 ]; then
+            echo "::error::no per-architecture digests were staged"
+            exit 1
+          fi
+          echo "Assembling a manifest list from ${#sources[@]} architectures"
+          docker buildx imagetools create \
+            --tag "${STAGING_IMAGE}:latest-njs-oss-${DATE}" \
+            --tag "${STAGING_IMAGE}:latest-njs-oss" \
+            --tag "nginxinc/nginx-s3-gateway:latest-njs-oss-${DATE}" \
+            --tag "nginxinc/nginx-s3-gateway:latest-njs-oss" \
+            "${sources[@]}"
+
+      - name: Show the published manifest
+        run: docker buildx imagetools inspect "${STAGING_IMAGE}:latest-njs-oss"
