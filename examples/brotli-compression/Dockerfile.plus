@@ -1,4 +1,5 @@
-FROM nginx-plus-s3-gateway
+# The :plus tag is produced by `make build NGINX_TYPE=plus` (see docs/getting_started.md)
+FROM nginx-s3-gateway:plus
 
 # Install Brolti from the NGINX Plus repository
 RUN set -eux \

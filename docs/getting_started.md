@@ -272,18 +272,20 @@ docker run --env-file ./settings --publish 8080:8080 --name nginx-s3-gateway \
 
 ### Building the Public Open Source NGINX Container Image
 
-In order to build the NGINX OSS container image, do a `docker build` as follows
-from the project root directory:
+The `GNUmakefile` (GNU Make 4.x) is the supported interface for building the
+gateway. To build the NGINX OSS container image, run the following from the
+project root directory:
 
 ```
-docker build --file Dockerfile.oss --tag nginx-s3-gateway:oss --tag nginx-s3-gateway .
+make build
 ```
 
-Alternatively, if you would like to use the latest version of
-[njs](https://nginx.org/en/docs/njs/), you can build an image from the latest 
-njs source by building this image after building the parent image above:
+This tags the image as `nginx-s3-gateway` and `nginx-s3-gateway:oss` (the
+underlying Dockerfile is `Dockerfile.oss`). Alternatively, if you would like
+to use the latest version of [njs](https://nginx.org/en/docs/njs/), you can
+layer a build of njs from the latest source on top of the image above:
 ```
-docker build --file Dockerfile.oss --tag nginx-s3-gateway --tag nginx-s3-gateway:latest-njs-oss .
+make build-latest-njs
 ```
 
 After building, you can run the image by issuing the following command and 
@@ -297,7 +299,7 @@ docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
 In the same way, if you want to use NGINX OSS container image as a non-root, unprivileged user,
 you can build it as follows:
 ```
-docker build --file Dockerfile.unprivileged --tag nginx-s3-gateway --tag nginx-s3-gateway:unprivileged-oss .
+make build-unprivileged
 ```
 And run the image binding the container port 8080 to 80 in the host like:
 ```
@@ -309,23 +311,25 @@ It is worth noting that due to the way the startup scripts work, even the unpriv
 
 ### Building the NGINX Plus Container Image
 
-In order to build the NGINX Plus container image, you will need to set up the official NGINX
-Plus Docker image repository, as [per the documentation](https://docs.nginx.com/nginx/admin-guide/installing-nginx/installing-nginx-docker/#use-official-nginx-plus-docker-images).
+In order to build the NGINX Plus container image, copy your NGINX Plus
+repository certificate and key (`nginx-repo.crt` and `nginx-repo.key`) into
+the `plus/etc/ssl/nginx/` directory, and set up access to the official NGINX
+Plus Docker image repository (`docker login private-registry.nginx.com`), as
+[per the documentation](https://docs.nginx.com/nginx/admin-guide/installing-nginx/installing-nginx-docker/#use-official-nginx-plus-docker-images).
 
 To build, run the following from the project root directory:
 
 ```
-docker buildx build \
-    --file Dockerfile.plus \
-    --tag nginx-plus-s3-gateway --tag nginx-plus-s3-gateway:plus .
+make build NGINX_TYPE=plus
 ```
 
-Alternatively, if you would like to use the latest version of
-[njs](https://nginx.org/en/docs/njs/) with NGINX Plus, you can build an image
-from the latest njs source by building this image after building the parent 
-image above:
+This tags the image as `nginx-s3-gateway` and `nginx-s3-gateway:plus` (the
+underlying Dockerfile is `Dockerfile.plus`). Alternatively, if you would like
+to use the latest version of [njs](https://nginx.org/en/docs/njs/) with NGINX
+Plus, you can layer a build of njs from the latest source on top of the image
+above:
 ```
-docker build --file Dockerfile.latest-njs --tag nginx-plus-s3-gateway:latest-njs-plus .
+make build-latest-njs NGINX_TYPE=plus
 ```
 
 After building, you can run the image by issuing the following command and
@@ -333,7 +337,7 @@ replacing the path to the `settings` file with a file containing your specific
 environment variables.
 ```
 docker run --env-file ./settings --publish 80:80 --name nginx-plus-s3-gateway \
-    nginx-plus-s3-gateway:plus
+    nginx-s3-gateway:plus
 ```
 
 ## Running Using AWS Instance Profile Credentials

@@ -56,8 +56,10 @@ additional modules.
 ## Testing
 
 The `GNUmakefile` (GNU Make 4.x) is the only supported interface for build and
-test workflows. The legacy `test.sh` script still exists underneath, but it is
-being migrated away from — do not invoke it directly.
+test workflows. The test logic lives in `test/run_unit_tests.sh` and
+`test/run_integration_tests.sh`, which make drives; the legacy `test.sh`
+script is deprecated and only forwards to the equivalent make targets — do
+not invoke it directly.
 
 Automated tests require `docker`, `docker compose`, `curl`, `md5sum` (or `md5`
 on macOS), and `mc` (the
@@ -82,9 +84,33 @@ Other useful targets:
 * `make retest` — rerun tests against the already-built image. Note that unit
   tests import the njs modules baked into the image, so after editing
   `common/etc/nginx/include/*.js` use `make test` to rebuild first.
+* `make test-unit` / `make test-integration` — run just the unit or just the
+  integration half of the suite against the already-built image.
 * `make test-latest-njs` / `make test-unprivileged` — build and test the
   image variants.
 * `make test-matrix` — reproduce the CI matrix locally.
 * `make lint` — run the linters (checkmake + shellcheck).
 
 Run `make help` for the full target list.
+
+### Adding tests
+
+Unit tests live in `test/unit/` and run under the njs CLI inside the built
+image. New files are discovered automatically: `test/run_unit_tests.sh` runs
+every `test/unit/*_test.js` file twice — once with and once without
+`AWS_SESSION_TOKEN` — so no wiring is needed. Environment variables that a
+module under test reads at import time belong in the `unit_test_env` list in
+that runner.
+
+Integration tests live in `test/integration/` and are driven by
+`test/run_integration_tests.sh`, which starts the compose environment
+(`test/docker-compose.yaml`), seeds MinIO with the fixtures in `test/data/`,
+and invokes the test scripts across a matrix of gateway configurations. New
+shell scripts under `test/` and `test/integration/` are picked up by
+`make lint` automatically and must pass `shellcheck --severity=warning`.
+
+The make targets guard against image/target mismatches: the variant targets
+(`retest-latest-njs`, `retest-unprivileged`) verify the floating
+`nginx-s3-gateway` tag actually points at the matching variant image, and the
+non-variant targets verify the inverse, failing with an actionable error
+instead of a confusing test failure.
