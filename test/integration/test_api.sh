@@ -245,7 +245,10 @@ assertHttpRequestEquals "HEAD" "a.txt?some=param&that=should&be=stripped#aaah" "
 assertHttpRequestEquals "HEAD" "b/c/d.txt" "200"
 assertHttpRequestEquals "HEAD" "b/c/../e.txt" "200"
 assertHttpRequestEquals "HEAD" "b/e.txt" "200"
-assertHttpRequestEquals "HEAD" "b//e.txt" "200"
+# Double slashes are preserved in the S3 URI, so this is a distinct missing
+# object rather than an alias for b/e.txt. A cache key based on nginx's
+# normalized $uri would incorrectly reuse the b/e.txt entry here.
+assertHttpRequestEquals "HEAD" "b//e.txt" "404"
 assertHttpRequestEquals "HEAD" "a/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.txt" "200"
 
 # Byte range requests
@@ -315,11 +318,9 @@ fi
 assertHttpRequestEquals "HEAD" "b/" "404"
 assertHttpRequestEquals "HEAD" "/b/c/" "404"
 assertHttpRequestEquals "HEAD" "/soap" "404"
-if [ "${append_slash}" == "1" ] && [ "${index_page}" == "0" ]; then
-assertHttpRequestEquals "HEAD" "b//c" "302"
-else
+# As with b//e.txt above, b//c is a distinct S3 key and must not inherit the
+# normalized /b/c response from another cache entry.
 assertHttpRequestEquals "HEAD" "b//c" "404"
-fi
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "HEAD" "/statichost/" "200"
@@ -376,7 +377,7 @@ fi
 # corrupt /statichost/index.html, which the static-hosting assertions below
 # depend on and which is never re-seeded between configurations, and (b) the
 # verifying GET cannot be satisfied from a proxy_cache entry warmed by any
-# other assertion (proxy_cache_key is "$request_method$host$uri").
+# other assertion (proxy_cache_key includes the effective upstream S3 URI).
 # Note that only DELETE and PUT give the GET real teeth: a pre-fix gateway
 # also surfaced POST as a sanitized 404 (upstream error via error_page), so
 # the POST assertion pins the sanitized status, not the non-forwarding.

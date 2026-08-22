@@ -90,7 +90,10 @@ server {
     proxy_cache_background_update on;
     proxy_cache_lock on;
     proxy_cache_use_stale ${PROXY_CACHE_USE_STALE};
-    proxy_cache_key "$request_method$host$uri";
+    # Cache by the effective S3 request identity, not the viewer-controlled
+    # Host header. The version prefix avoids reusing entries written under the
+    # older viewer-Host-based key after an upgrade.
+    proxy_cache_key "s3gw-v2|$request_method|${S3_SERVER_PROTO}://${S3_UPSTREAM}|$s3_host|$s3uri";
     # Bypass the local cache and re-fetch from S3 when the client sends
     # Cache-Control: no-cache and PROXY_CACHE_BYPASS_NO_CACHE is enabled.
     # Opt-in because client-controlled cache busting can be abused to drive
@@ -151,7 +154,11 @@ server {
     location @s3_sliced {
         proxy_cache s3_cache_slices;
         proxy_cache_valid 200 302 206 ${PROXY_CACHE_VALID_OK};
-        proxy_cache_key "$request_method$host$uri$slice_range";
+        # Must mirror the server-level proxy_cache_key exactly, with only
+        # |$slice_range appended: the tuple cannot be single-sourced through a
+        # server-scope `set`, because that would freeze the lazily evaluated
+        # $s3uri before @s3Directory flips $forIndexPage.
+        proxy_cache_key "s3gw-v2|$request_method|${S3_SERVER_PROTO}://${S3_UPSTREAM}|$s3_host|$s3uri|$slice_range";
         # proxy_cache_bypass is inherited from the server level. A bypassing
         # ranged request re-fetches only the slices its Range covers, so a
         # changed object can leave other slices at the previous version until

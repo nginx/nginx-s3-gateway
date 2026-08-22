@@ -186,6 +186,12 @@ more details see the [official reference](http://nginx.org/en/docs/http/ngx_http
 You may make byte-range requests and normal requests for the same file and NGINX will automatically handle them
 differently. The caches for file chunks and normal file requests are separate on disk.
 
+Cache entries are keyed by the effective S3 request identity, not by the viewer's `Host` header. Requests sent through
+different frontend hostnames, or through different gateway URL aliases that resolve to the same S3 URI after
+`STRIP_LEADING_DIRECTORY_PATH`, `PREFIX_LEADING_DIRECTORY_PATH`, or static-site index handling, share one cache entry.
+This prevents clients from fragmenting the cache by varying `Host` while still keeping different origins, S3 hosts,
+request methods, and byte-range slices separate.
+
 ## Bypassing the Local Cache with Cache-Control: no-cache
 
 By default the gateway ignores the client's `Cache-Control` request header and serves cached objects until the
@@ -198,14 +204,16 @@ fetches a fresh copy from S3. The fresh response also replaces the cache entry i
 requests for that entry are served the updated content. The bypass applies to byte-range requests served from
 the slice cache as well.
 
-A bypassing request only refreshes the cache entries it actually touches. Cache entries are scoped per request method
-and per cache zone: full-body `GET` responses, `HEAD` responses, and each slice of a byte-range response are cached
-independently, so for example a hard-refreshed `GET` does not refresh the `HEAD` entry or any cached slices for the same
-object. In particular, a `no-cache` byte-range request re-fetches only the slices covered by its `Range` header — if the
-object changed in S3, the remaining slices keep the previous version until they expire, and NGINX's slice module aborts
-responses that would mix slices from two object versions (`etag mismatch in slice response` in the error log). A
-bypassing request also cannot fall back to stale content: `PROXY_CACHE_USE_STALE` only applies to requests served
-through the cache, so during an S3 outage a hard refresh returns an error even when a usable cached copy exists.
+A bypassing request only refreshes the canonical S3 cache entries it actually touches. Cache entries are scoped per
+request method and per cache zone: full-body `GET` responses, `HEAD` responses, and each slice of a byte-range response
+are cached independently, so for example a hard-refreshed `GET` does not refresh the `HEAD` entry or any cached slices
+for the same object. If two viewer-visible URLs resolve to the same effective S3 URI, a bypass through either URL
+refreshes the shared entry. In particular, a `no-cache` byte-range request re-fetches only the slices covered by its
+`Range` header — if the object changed in S3, the remaining slices keep the previous version until they expire, and
+NGINX's slice module aborts responses that would mix slices from two object versions (`etag mismatch in slice response`
+in the error log). A bypassing request also cannot fall back to stale content: `PROXY_CACHE_USE_STALE` only applies to
+requests served through the cache, so during an S3 outage a hard refresh returns an error even when a usable cached copy
+exists.
 
 The match is token-aware and case-insensitive. Only a syntactically valid `no-cache` directive triggers a bypass — for
 example `Cache-Control: no-cache` or `Cache-Control: max-age=0, no-cache`. The following do *not* trigger a bypass:

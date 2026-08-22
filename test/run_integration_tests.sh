@@ -220,6 +220,7 @@ set_test_origin() {
   export TEST_S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
   export TEST_MINIO_SERVER_PROTO="${origin_proto}"
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
+  export TEST_PROXY_CACHE_SLICE_SIZE="1m"
   minio_server="${origin_proto}://localhost:9090"
   if [ "${origin_proto}" = "https" ]; then
     # Mount point of the generated test certificates inside the MinIO
@@ -379,6 +380,11 @@ integration_test_cache_bypass() {
 
   printf "\033[34;1m▶\033[0m"
   printf "\e[1m Integration test suite with PROXY_CACHE_BYPASS_NO_CACHE=%s\e[22m\n" "${bypass_setting}"
+
+  # A small slice size lets the cache tests prove both cross-Host sharing for
+  # one slice and isolation between different $slice_range values without
+  # checking a large binary fixture into the repository.
+  export TEST_PROXY_CACHE_SLICE_SIZE="10"
 
   p "Starting Docker Compose Environment"
   # The six standard configuration values are pinned to a known baseline
