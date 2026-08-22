@@ -1,0 +1,2 @@
+# Upstream S3 TLS verification is enabled at container startup for HTTPS origins.
+# HTTP origins leave this include empty.

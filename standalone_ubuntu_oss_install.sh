@@ -64,6 +64,24 @@ if [ "${S3_SERVER_PROTO}" != "http" ] && [ "${S3_SERVER_PROTO}" != "https" ]; th
     failed=1
 fi
 
+if [ -z "${S3_TRUSTED_CERT_PATH+x}" ]; then
+  S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+fi
+
+if [ -z "${S3_TRUSTED_CERT_PATH}" ]; then
+  >&2 echo "S3_TRUSTED_CERT_PATH must not be empty when set"
+  failed=1
+elif [ "${S3_TRUSTED_CERT_PATH#/}" = "${S3_TRUSTED_CERT_PATH}" ]; then
+  >&2 echo "S3_TRUSTED_CERT_PATH must be an absolute path"
+  failed=1
+elif [[ "${S3_TRUSTED_CERT_PATH}" =~ [^A-Za-z0-9_./-] ]]; then
+  >&2 echo "S3_TRUSTED_CERT_PATH contains unsupported characters"
+  failed=1
+elif [ "${S3_SERVER_PROTO}" = "https" ] && [ ! -f "${S3_TRUSTED_CERT_PATH}" ]; then
+  >&2 echo "S3_TRUSTED_CERT_PATH environment variable error: no file found at the path: ${S3_TRUSTED_CERT_PATH}"
+  failed=1
+fi
+
 if [ "${AWS_SIGS_VERSION}" != "2" ] && [ "${AWS_SIGS_VERSION}" != "4" ]; then
   >&2 echo "AWS_SIGS_VERSION contains an invalid value (${AWS_SIGS_VERSION}). Valid values: 2, 4"
   failed=1
@@ -122,6 +140,12 @@ echo "S3 Backend Environment"
 echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
 echo "Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}"
 echo "Host Header: ${S3_HOST_HEADER}"
+if [ "${S3_SERVER_PROTO}" = "https" ]; then
+  echo "Origin TLS Verification: enabled"
+else
+  echo "Origin TLS Verification: disabled (HTTP origin)"
+fi
+echo "Origin TLS Trusted Certificate: ${S3_TRUSTED_CERT_PATH}"
 echo "Region: ${S3_REGION}"
 echo "Addressing Style: ${S3_STYLE}"
 echo "AWS Signatures Version: v${AWS_SIGS_VERSION}"
@@ -199,6 +223,8 @@ S3_REGION=${S3_REGION}
 S3_SERVER_PORT=${S3_SERVER_PORT}
 # Protocol to used connect to S3 server - 'http' or 'https'
 S3_SERVER_PROTO=${S3_SERVER_PROTO}
+# CA bundle used to verify HTTPS S3 origin certificates
+S3_TRUSTED_CERT_PATH=${S3_TRUSTED_CERT_PATH}
 # S3 host to connect to
 S3_SERVER=${S3_SERVER}
 # The S3 host/path method - 'virtual', 'path' or 'default'
@@ -343,12 +369,37 @@ auto_envsubst() {
   done
 }
 
+enable_s3_proxy_ssl() {
+  local s3_proxy_ssl_conf="/etc/nginx/conf.d/gateway/s3_proxy_ssl.conf"
+
+  [ "${S3_SERVER_PROTO}" = "https" ] || return 0
+
+  # S3_TRUSTED_CERT_PATH syntax (absolute path, conservative character set)
+  # was validated at install time before being written to
+  # /etc/nginx/environment; only the file's presence can change between that
+  # check and this apply step.
+  if [ ! -f "${S3_TRUSTED_CERT_PATH}" ]; then
+    echo "S3_TRUSTED_CERT_PATH environment variable error: no file found at the path: ${S3_TRUSTED_CERT_PATH}" >&2
+    return 1
+  fi
+
+  # proxy_ssl_verify_depth bounds the number of untrusted intermediates
+  # rather than trust itself, and the nginx default of 1 rejects
+  # otherwise-valid chains carrying two or more intermediate CAs.
+  cat >> "${s3_proxy_ssl_conf}" <<CONF
+proxy_ssl_verify on;
+proxy_ssl_verify_depth 5;
+proxy_ssl_trusted_certificate ${S3_TRUSTED_CERT_PATH};
+CONF
+}
+
 # Attempt to read DNS Resolvers from /etc/resolv.conf
 if [ -z ${DNS_RESOLVERS+x} ]; then
   export DNS_RESOLVERS="$(cat /etc/resolv.conf | grep nameserver | cut -d' ' -f2 | xargs)"
 fi
 
 auto_envsubst
+enable_s3_proxy_ssl
 EOF
 chmod +x /usr/local/bin/template_nginx_config.sh
 
@@ -487,6 +538,7 @@ download "common/etc/nginx/templates/gateway/v4_headers.conf.template" "/etc/ngi
 download "common/etc/nginx/templates/gateway/v4_js_vars.conf.template" "/etc/nginx/templates/gateway/v4_js_vars.conf.template"
 download "common/etc/nginx/templates/gateway/cors.conf.template" "/etc/nginx/templates/gateway/cors.conf.template"
 download "common/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template" "/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template"
+download "common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template" "/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template"
 download "common/etc/nginx/templates/gateway/s3listing_location.conf.template" "/etc/nginx/templates/gateway/s3listing_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_location.conf.template" "/etc/nginx/templates/gateway/s3_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_server.conf.template" "/etc/nginx/templates/gateway/s3_server.conf.template"

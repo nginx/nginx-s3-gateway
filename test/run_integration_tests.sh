@@ -62,6 +62,8 @@ minio_user="AKIAIOSFODNN7EXAMPLE"
 minio_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 minio_name="${test_compose_project}_minio_1"
 minio_bucket="bucket-1"
+test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
+minio_mc_args=()
 
 DOCKER="${DOCKER:-docker}"
 NGINX_TYPE="${NGINX_TYPE:-oss}"
@@ -206,6 +208,64 @@ compose() {
   "${docker_compose_cmd[@]}" -f "${test_compose_config}" -p "${test_compose_project}" "$@"
 }
 
+# Configure the compose environment and mc/curl endpoints for an HTTP or
+# HTTPS MinIO origin. Kept as one function so the two origin modes cannot
+# drift apart when a new TEST_* knob is added.
+# set_test_origin <http|https>
+set_test_origin() {
+  origin_proto="$1"
+  export TEST_S3_SERVER="minio"
+  export TEST_S3_SERVER_PORT="9000"
+  export TEST_S3_SERVER_PROTO="${origin_proto}"
+  export TEST_S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+  export TEST_MINIO_SERVER_PROTO="${origin_proto}"
+  export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
+  minio_server="${origin_proto}://localhost:9090"
+  if [ "${origin_proto}" = "https" ]; then
+    # Mount point of the generated test certificates inside the MinIO
+    # container; MinIO serves TLS when its certs dir contains a key pair.
+    export TEST_MINIO_CERTS_DIR="/tmp/test-certs"
+    minio_mc_args=(--insecure)
+  else
+    export TEST_MINIO_CERTS_DIR="/root/.minio/certs"
+    minio_mc_args=()
+  fi
+}
+
+set_http_test_origin() {
+  set_test_origin "http"
+}
+
+set_https_test_origin() {
+  set_test_origin "https"
+}
+
+generate_tls_test_certs() {
+  mkdir -p "${test_tls_cert_dir}"
+  "${docker_cmd}" run --rm --user 0:0 \
+    -v "${test_tls_cert_dir}:/certs" \
+    --entrypoint /bin/sh nginx-s3-gateway -c '
+      set -eu
+      rm -f /certs/*
+      openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout /certs/ca.key -out /certs/ca.crt -days 1 \
+        -subj "/CN=nginx-s3-gateway test CA" >/dev/null 2>&1
+      openssl req -newkey rsa:2048 -nodes \
+        -keyout /certs/private.key -out /certs/server.csr \
+        -subj "/CN=minio" >/dev/null 2>&1
+      printf "%s\n" \
+        "basicConstraints=CA:FALSE" \
+        "keyUsage=digitalSignature,keyEncipherment" \
+        "extendedKeyUsage=serverAuth" \
+        "subjectAltName=DNS:minio,DNS:bucket-1.minio" > /certs/server.ext
+      openssl x509 -req -in /certs/server.csr \
+        -CA /certs/ca.crt -CAkey /certs/ca.key -CAcreateserial \
+        -out /certs/public.crt -days 1 -extfile /certs/server.ext >/dev/null 2>&1
+      chmod 0644 /certs/ca.crt /certs/public.crt
+      chmod 0600 /certs/ca.key /certs/private.key
+    '
+}
+
 integration_test_data() {
   # Write problematic files to disk if we are not on Windows. Originally,
   # these files were checked in, but that prevented the git repository from
@@ -225,7 +285,7 @@ integration_test_data() {
     echo "Querying minio server to see if it is ready"
     # `|| true` keeps errexit from aborting the retry loop when minio is not
     # listening yet (curl exits 7 on connection refused but still prints 000).
-    minio_is_up="$(${curl_cmd} -s -o /dev/null -w '%{http_code}' "${minio_server}"/minio/health/cluster || true)"
+    minio_is_up="$(${curl_cmd} --insecure -s -o /dev/null -w '%{http_code}' "${minio_server}"/minio/health/cluster || true)"
     if [ "${minio_is_up}" = "200" ]; then
       break
     else
@@ -234,14 +294,16 @@ integration_test_data() {
   done
 
   p "Adding test data to container"
-  "${mc_cmd}" alias set "$minio_name" "$minio_server" "$minio_user" "$minio_passwd"
+  # ${arr[@]+...} keeps the empty-array expansion from tripping `set -o
+  # nounset` on bash < 4.4 (macOS ships bash 3.2).
+  "${mc_cmd}" alias set ${minio_mc_args[@]+"${minio_mc_args[@]}"} "$minio_name" "$minio_server" "$minio_user" "$minio_passwd"
   # --ignore-existing keeps a bucket left behind by an aborted previous run
   # (compose containers survive a failed teardown) from failing the seeding
   # step under errexit on every subsequent run.
-  "${mc_cmd}" mb --ignore-existing "$minio_name/$minio_bucket"
+  "${mc_cmd}" mb ${minio_mc_args[@]+"${minio_mc_args[@]}"} --ignore-existing "$minio_name/$minio_bucket"
   echo "Copying contents of ${test_dir}/data/$minio_bucket to Docker container $minio_name"
   for file in "${test_dir}/data/$minio_bucket"/*; do
-    "${mc_cmd}" cp -r "${file}" "$minio_name/$minio_bucket"
+    "${mc_cmd}" cp ${minio_mc_args[@]+"${minio_mc_args[@]}"} -r "${file}" "$minio_name/$minio_bucket"
   done
   echo "Docker diff output:"
   "${docker_cmd}" diff "$minio_name"
@@ -335,6 +397,91 @@ integration_test_cache_bypass() {
   bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
 }
 
+request_status() {
+  "${curl_cmd}" --silent --output /dev/null --write-out '%{http_code}' "$@"
+}
+
+assert_request_status() {
+  expected_status=$1
+  description=$2
+  shift 2
+  actual_status="$(request_status "$@")"
+  if [ "${actual_status}" != "${expected_status}" ]; then
+    e "FAIL [${description}]: expected HTTP ${expected_status}, got ${actual_status}"
+    exit "$test_fail_exit_code"
+  fi
+}
+
+assert_request_not_status() {
+  unexpected_status=$1
+  description=$2
+  shift 2
+  actual_status="$(request_status "$@")"
+  if [ "${actual_status}" = "${unexpected_status}" ]; then
+    e "FAIL [${description}]: unexpectedly got HTTP ${unexpected_status}"
+    exit "$test_fail_exit_code"
+  fi
+}
+
+assert_gateway_logs_contain() {
+  expected_text=$1
+  description=$2
+  # Capture the logs instead of piping into grep -q: under `set -o pipefail`
+  # grep -q exits at the first match and a still-writing `compose logs` dies
+  # with SIGPIPE (141), failing the pipeline exactly when the text is found.
+  gateway_logs="$(compose logs nginx-s3-gateway 2>&1)"
+  if ! grep -qF "${expected_text}" <<< "${gateway_logs}"; then
+    e "FAIL [${description}]: expected gateway logs to contain '${expected_text}'"
+    exit "$test_fail_exit_code"
+  fi
+}
+
+start_tls_gateway() {
+  trusted_cert_path=$1
+  tls_s3_style=${2:-${S3_STYLE:-virtual-v2}}
+  tls_s3_server=${3:-minio}
+  export TEST_S3_TRUSTED_CERT_PATH="${trusted_cert_path}"
+  export TEST_S3_SERVER="${tls_s3_server}"
+  COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose up -d
+  wait_for_gateway
+}
+
+integration_test_proxy_ssl() {
+  p "Testing HTTPS S3 origin certificate verification"
+  generate_tls_test_certs
+  compose stop || true
+  compose rm -f -v || true
+  set_https_test_origin
+  integration_test_data
+
+  p "Verifying an untrusted HTTPS S3 origin is rejected"
+  start_tls_gateway "/etc/ssl/certs/ca-certificates.crt"
+  assert_request_not_status 200 "untrusted object origin" "${test_server}/a.txt"
+  assert_request_not_status 200 "untrusted directory origin" "${test_server}/b/"
+  assert_request_not_status 200 "untrusted index origin" "${test_server}/statichost/"
+  assert_gateway_logs_contain "upstream SSL certificate verify error" "untrusted origin verification"
+
+  compose stop nginx-s3-gateway
+
+  p "Verifying a trusted HTTPS S3 origin succeeds"
+  start_tls_gateway "/etc/nginx/test-certs/ca.crt"
+  assert_request_status 200 "trusted object origin" "${test_server}/a.txt"
+  assert_request_status 206 "trusted sliced origin" -H "Range: bytes=0-9" "${test_server}/a.txt"
+  assert_request_status 200 "trusted directory origin" "${test_server}/b/"
+  assert_request_status 200 "trusted index origin" "${test_server}/statichost/"
+
+  compose stop nginx-s3-gateway
+
+  p "Verifying HTTPS S3 origin hostname validation"
+  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "minio"
+  assert_request_status 200 "trusted path-style origin" "${test_server}/a.txt"
+
+  compose stop nginx-s3-gateway
+  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "minio-mismatch"
+  assert_request_not_status 200 "mismatched origin hostname" "${test_server}/a.txt"
+  assert_gateway_logs_contain "upstream SSL certificate does not match" "mismatched origin hostname verification"
+}
+
 finish() {
   result=$?
   # Disarm the traps first: a test failure otherwise runs finish twice (ERR,
@@ -354,6 +501,16 @@ finish() {
   compose stop || true
   compose rm -f -v || true
   "${mc_cmd}" alias rm "$minio_name" || true
+  # Try a plain removal first: the cert dir is created by the invoking user,
+  # so its entries are usually unlinkable without root even though the files
+  # themselves are root-owned. Only spin up a root container (1-2s, and
+  # impossible once the image has been pruned) when files actually survive
+  # the plain attempt.
+  rm -f "${test_tls_cert_dir}"/* 2> /dev/null || true
+  if [ -d "${test_tls_cert_dir}" ] && [ -n "$(ls -A "${test_tls_cert_dir}" 2> /dev/null)" ]; then
+    "${docker_cmd}" run --rm --user 0:0 -v "${test_tls_cert_dir}:/certs" --entrypoint /bin/sh nginx-s3-gateway -c 'rm -f /certs/*' > /dev/null 2>&1 || true
+  fi
+  rmdir "${test_tls_cert_dir}" 2> /dev/null || true
 
   exit ${result}
 }
@@ -384,6 +541,11 @@ bash "${test_dir}/integration/test_entrypoint_output_settings.sh" "${docker_cmd}
 # where the flags represent different configurations for that single test
 # file.
 
+# The cert dir must exist before the first compose up (docker would create
+# a root-owned dir for the bind mount otherwise); the certificates
+# themselves are only generated when the TLS phase needs them.
+mkdir -p "${test_tls_cert_dir}"
+set_http_test_origin
 integration_test_data
 
 p "Testing API with AWS Signature V2 and allow directory listing off"
@@ -446,5 +608,7 @@ compose stop nginx-s3-gateway # Restart with new config
 
 p "Testing proxy cache bypass with PROXY_CACHE_BYPASS_NO_CACHE=true"
 integration_test_cache_bypass "true"
+
+integration_test_proxy_ssl
 
 p "All integration tests complete"

@@ -13,6 +13,7 @@ proxy_pass_request_headers off;
 # Enable passing of the server name through TLS Server Name Indication extension.
 proxy_ssl_server_name on;
 proxy_ssl_name ${S3_SERVER};
+include /etc/nginx/conf.d/gateway/s3_proxy_ssl.conf;
 
 # Set the Authorization header to the AWS Signatures credentials
 proxy_set_header Authorization $s3auth;

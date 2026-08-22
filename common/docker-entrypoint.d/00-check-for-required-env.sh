@@ -103,6 +103,19 @@ if [ "${S3_SERVER_PROTO}" != "http" ] && [ "${S3_SERVER_PROTO}" != "https" ]; th
     failed=1
 fi
 
+if [ -n "${S3_TRUSTED_CERT_PATH+x}" ]; then
+  if [ -z "${S3_TRUSTED_CERT_PATH}" ]; then
+    >&2 echo "S3_TRUSTED_CERT_PATH must not be empty when set"
+    failed=1
+  elif [ "${S3_TRUSTED_CERT_PATH#/}" = "${S3_TRUSTED_CERT_PATH}" ]; then
+    >&2 echo "S3_TRUSTED_CERT_PATH must be an absolute path"
+    failed=1
+  elif [[ "${S3_TRUSTED_CERT_PATH}" =~ [^A-Za-z0-9_./-] ]]; then
+    >&2 echo "S3_TRUSTED_CERT_PATH contains unsupported characters"
+    failed=1
+  fi
+fi
+
 if [ "${AWS_SIGS_VERSION}" != "2" ] && [ "${AWS_SIGS_VERSION}" != "4" ]; then
   >&2 echo "AWS_SIGS_VERSION contains an invalid value (${AWS_SIGS_VERSION}). Valid values: 2, 4"
   failed=1
