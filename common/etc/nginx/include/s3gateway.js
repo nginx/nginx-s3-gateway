@@ -431,13 +431,13 @@ function trailslashControl(r) {
 
         // Classify the percent-decoded path so that encoded dots (%2E) are
         // visible to the extension check, approximating the decoded $uri
-        // that the @trailslash rewrite redirects to. Decode byte-wise the
+        // that the @trailslash redirect helper sanitizes. Decode byte-wise the
         // way nginx builds $uri: decodeURIComponent() would throw URIError
         // on sequences nginx accepts (e.g. invalid UTF-8 such as %C3) and
         // then misclassify any encoded dots elsewhere in the same path.
         // Unlike $uri, the result is deliberately not normalized
         // (dot-segments and duplicate slashes are kept) - the decoded path
-        // is used for classification only, never for building the redirect.
+        // is used for classification only, never emitted in the redirect.
         if (path.indexOf('%') !== -1) {
             path = path.replace(/%([0-9A-Fa-f]{2})/g, function (_match, hex) {
                 return String.fromCharCode(parseInt(hex, 16));
@@ -449,6 +449,72 @@ function trailslashControl(r) {
         }
     }
         r.internalRedirect("@error404");
+}
+
+/**
+ * Build the viewer-facing path used for slash-appending redirects.
+ *
+ * NGINX's normalized `$uri` is the right public path to preserve, but it is
+ * percent-decoded. Encode it again before putting it in a Location header so
+ * decoded delimiters, control bytes, and backslashes stay path data rather
+ * than becoming browser- or header-significant syntax. Collapsing leading
+ * slashes keeps a relative Location from becoming a scheme-relative
+ * authority redirect.
+ *
+ * The encoding works on the raw bytes of `$uri` when nginx provides them:
+ * `r.uri` is a Unicode string in which bytes that are not valid UTF-8 have
+ * already been replaced with U+FFFD, so only the byte view round-trips every
+ * S3 key (keys are arbitrary bytes). Unit-test stubs may supply only a
+ * string `uri`.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object
+ * @returns {string} safe redirect path without the appended trailing slash
+ */
+function trailslashRedirectUri(r) {
+    let path;
+
+    if ("rawVariables" in r && r.rawVariables.uri) {
+        path = _encodePathBytes(r.rawVariables.uri);
+    } else {
+        path = _escapeURIPathComponents(r.uri || '/');
+    }
+
+    return ('/' + path).replace(/^\/+/, '/');
+}
+
+/**
+ * Percent-encodes every byte of a URI path that is not an unreserved URI
+ * character or the path separator. The output alphabet matches
+ * _encodeURIComponent, so this produces identical results to the
+ * string-based encoders for any valid-UTF-8 input while preserving invalid
+ * byte sequences byte-for-byte.
+ *
+ * @param pathBytes {Buffer} raw bytes of the URI path
+ * @returns {string} path with every non-unreserved byte percent-encoded
+ * @private
+ */
+function _encodePathBytes(pathBytes) {
+    let encoded = '';
+
+    for (let i = 0; i < pathBytes.length; i++) {
+        const byte = pathBytes[i];
+        const isUnreserved =
+            (byte >= 0x41 && byte <= 0x5A) || // A-Z
+            (byte >= 0x61 && byte <= 0x7A) || // a-z
+            (byte >= 0x30 && byte <= 0x39) || // 0-9
+            byte === 0x2D || byte === 0x2E || // - .
+            byte === 0x5F || byte === 0x7E || // _ ~
+            byte === 0x2F;                    // / path separator
+
+        if (isUnreserved) {
+            encoded += String.fromCharCode(byte);
+        } else {
+            encoded += '%' + (byte < 0x10 ? '0' : '') +
+                byte.toString(16).toUpperCase();
+        }
+    }
+
+    return encoded;
 }
 
 /**
@@ -545,10 +611,22 @@ function _encodeURIComponent(string) {
  */
 function _escapeURIPath(uri) {
     // Check to see if the URI path was already encoded. If so, we decode it.
-    let decodedUri = (uri.indexOf('%') >= 0) ? decodeURIComponent(uri) : uri;
-    let components = [];
+    const decodedUri = (uri.indexOf('%') >= 0) ? decodeURIComponent(uri) : uri;
+    return _escapeURIPathComponents(decodedUri);
+}
 
-    decodedUri.split('/').forEach(function (item, i) {
+/**
+ * Percent-encodes each component of a decoded path without touching the
+ * path separator characters (/).
+ *
+ * @param path {string} path with decoded components
+ * @returns {string} path with each component separately escaped
+ * @private
+ */
+function _escapeURIPathComponents(path) {
+    const components = [];
+
+    path.split('/').forEach(function (item, i) {
         components[i] = _encodeURIComponent(item);
     });
 
@@ -604,6 +682,7 @@ export default {
     s3auth,
     s3uri,
     trailslashControl,
+    trailslashRedirectUri,
     redirectToS3,
     editHeaders,
     filterListResponse,

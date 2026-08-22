@@ -13,13 +13,6 @@ map $request_uri $uri_full_path {
     "~^(?P<path>.*?)(\?.*)*$"  $path;
 }
 
-# Retrieves the initial scheme send by the User Agent. This uses
-# X-Forwarded-Proto header added by possible proxy or load balancer.
-map $http_x_forwarded_proto $real_scheme {
-    default    $http_x_forwarded_proto;
-    ""         $scheme;
-}
-
 # Remove/replace a portion of request URL (if configured)
 map $uri_full_path $uri_path {
 	"~^$STRIP_LEADING_DIRECTORY_PATH(.*)"  $PREFIX_LEADING_DIRECTORY_PATH$1;
@@ -56,6 +49,7 @@ js_var $forIndexPage true;
 js_set $s3auth s3gateway.s3auth;
 js_set $awsSessionToken awscredentials.sessionToken;
 js_set $s3uri s3gateway.s3uri;
+js_set $trailslash_redirect_uri s3gateway.trailslashRedirectUri;
 
 server {
     # The IPv6 listen directive is added at container start by
@@ -70,6 +64,13 @@ server {
     # Don't display the NGINX version number because we don't want to reveal
     # information that could be used to find an exploit.
     server_tokens off;
+
+    # Emit every nginx-generated redirect as a relative Location so that
+    # request Host and forwarded scheme headers can never choose the redirect
+    # authority - today that is only @trailslash's 302, and this default keeps
+    # any future `return`/`rewrite` redirect safe as well. Location headers
+    # proxied from S3 are not affected.
+    absolute_redirect off;
 
     # Uncomment this for a HTTP header that will let you know the cache status
     # of an object.
@@ -401,10 +402,12 @@ server {
         # request that gets this 302 would fail the CORS check outright.
         include /etc/nginx/conf.d/gateway/cors.conf;
 
-        # 302 to request without slashes
-        # Adding a ? to the end of the replacement param in `rewrite` prevents it from
-        # appending the query string.
-        rewrite ^ $real_scheme://$http_host$uri/$is_args$query_string? redirect;
+        # This redirect stays relative (server-level `absolute_redirect off`)
+        # so request Host and forwarded scheme headers cannot change the
+        # redirect authority. The njs helper preserves the normalized
+        # viewer-facing URI while escaping path bytes that are significant to
+        # browsers or headers; `$uri_path` may contain S3-only rewrites.
+        return 302 $trailslash_redirect_uri/$is_args$query_string;
     }
 
     # Provide a hint to the client on 405 errors of the acceptable request methods
