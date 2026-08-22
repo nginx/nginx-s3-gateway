@@ -3,7 +3,6 @@
 # is only enabled when using NGINX Plus.
 set $cache_signing_key_enabled 1;
 
-# Variable indicating to the s3gateway.js script that session token
-# caching is turned on. This feature uses the keyval store, so it
-# is only enabled when using NGINX Plus.
+# Variable indicating to awscredentials.js that the full temporary credential
+# object is cached in the NGINX Plus keyval store.
 set $cache_instance_credentials_enabled 1;

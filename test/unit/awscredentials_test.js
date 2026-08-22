@@ -17,6 +17,7 @@
  */
 
 import awscred from "include/awscredentials.js";
+import credentialCacheMock from "./credential_cache_mock.js";
 import fs from "fs";
 
 globalThis.ngx = {};
@@ -49,10 +50,18 @@ const ECS_CREDS_RELATIVE_URI = '/example';
 const ECS_CREDS_URL = `http://169.254.170.2${ECS_CREDS_RELATIVE_URI}`;
 
 /**
+ * Key used by awscredentials.js for the OSS shared-dictionary cache.
+ */
+const INSTANCE_CREDENTIAL_CACHE_KEY = credentialCacheMock.INSTANCE_CREDENTIAL_CACHE_KEY;
+
+const resetSharedCredentialCache = credentialCacheMock.resetSharedCredentialCache;
+
+/**
  * Deletes every provider-selection env var so that each test opts into
  * exactly one credential provider path.
  */
 function clearProviderEnv() {
+    resetSharedCredentialCache();
     delete process.env['AWS_ACCESS_KEY_ID'];
     delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
     delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
@@ -96,6 +105,9 @@ function makeExpect200Request() {
         log: function(msg) {
             console.log(msg);
         },
+        error: function(msg) {
+            console.log(msg);
+        },
         return: function(code) {
             if (code !== 200) {
                 throw 'Expected 200 status code, got: ' + code;
@@ -111,6 +123,9 @@ function makeExpect200Request() {
 function makeRecordingRequest(state) {
     return {
         log: function(msg) {
+            console.log(msg);
+        },
+        error: function(msg) {
             console.log(msg);
         },
         return: function(code) {
@@ -159,62 +174,70 @@ function testReadCredentialsWithAccessSecretKeyAndSessionTokenSet() {
     }
 }
 
-function testReadCredentialsFromFilePath() {
-    printHeader('testReadCredentialsFromFilePath');
+function testReadAndWriteCredentialsFromSharedDict() {
+    printHeader('testReadAndWriteCredentialsFromSharedDict');
     let r = {
         variables: {
             cache_instance_credentials_enabled: 0
         }
     };
 
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('read-credentials-unit-test', '.json');
-    var testData = '{"accessKeyId":"A","secretAccessKey":"B",' +
-        '"sessionToken":"C","expiration":"2022-02-15T04:49:08Z"}';
-    fs.writeFileSync(tempFile, testData);
+    resetSharedCredentialCache();
+    var expectedCredentials = {
+        accessKeyId: 'A',
+        secretAccessKey: 'B',
+        sessionToken: 'C',
+        expiration: '2022-02-15T04:49:08Z'
+    };
+    awscred.writeCredentials(r, expectedCredentials);
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        var credentials = awscred.readCredentials(r);
-        var testDataAsJSON = JSON.parse(testData);
-        if (credentials.accessKeyId !== testDataAsJSON.accessKeyId) {
-            throw 'JSON test data does not match credentials [accessKeyId]';
-        }
-        if (credentials.secretAccessKey !== testDataAsJSON.secretAccessKey) {
-            throw 'JSON test data does not match credentials [secretAccessKey]';
-        }
-        if (credentials.sessionToken !== testDataAsJSON.sessionToken) {
-            throw 'JSON test data does not match credentials [sessionToken]';
-        }
-        if (credentials.expiration !== testDataAsJSON.expiration) {
-            throw 'JSON test data does not match credentials [expiration]';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    var credentials = awscred.readCredentials(r);
+    if (credentials.accessKeyId !== expectedCredentials.accessKeyId) {
+        throw 'JSON test data does not match credentials [accessKeyId]';
+    }
+    if (credentials.secretAccessKey !== expectedCredentials.secretAccessKey) {
+        throw 'JSON test data does not match credentials [secretAccessKey]';
+    }
+    if (credentials.sessionToken !== expectedCredentials.sessionToken) {
+        throw 'JSON test data does not match credentials [sessionToken]';
+    }
+    if (credentials.expiration !== expectedCredentials.expiration) {
+        throw 'JSON test data does not match credentials [expiration]';
     }
 }
 
-function testReadCredentialsFromNonexistentPath() {
-    printHeader('testReadCredentialsFromNonexistentPath');
+function testReadCredentialsFromEmptySharedDict() {
+    printHeader('testReadCredentialsFromEmptySharedDict');
     let r = {
         variables: {
             cache_instance_credentials_enabled: 0
         }
     };
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('nonexistent-credentials-unit-test', '.json');
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        var credentials = awscred.readCredentials(r);
-        if (credentials !== undefined) {
-            throw 'Credentials returned when no credentials file should be present';
+    resetSharedCredentialCache();
+    var credentials = awscred.readCredentials(r);
+    if (credentials !== undefined) {
+        throw 'Credentials returned when shared credential cache should be empty';
+    }
+}
+
+function testReadCredentialsFromMalformedSharedDict() {
+    printHeader('testReadCredentialsFromMalformedSharedDict');
+    let r = {
+        variables: {
+            cache_instance_credentials_enabled: 0
         }
+    };
 
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    r.log = function(msg) {
+        console.log(msg);
+    };
+
+    resetSharedCredentialCache();
+    globalThis.ngx.shared.instance_credential_cache.set(INSTANCE_CREDENTIAL_CACHE_KEY, '{');
+    var credentials = awscred.readCredentials(r);
+    if (credentials !== undefined) {
+        throw 'Malformed shared credential cache value must be ignored';
     }
 }
 
@@ -259,14 +282,12 @@ function testReadAndWriteCredentialsFromKeyValStore() {
 async function testFetchCredentialsRefreshesExpiredCache() {
     printHeader('testFetchCredentialsRefreshesExpiredCache');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-expired-cache', '.json');
     var recordedUrl = null;
     process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     /* Seed the cache with credentials whose expiration is in the past so that
        the freshness short-circuit must not fire. Guards against the expiry
        check comparing to a stale timestamp instead of a live clock. */
-    fs.writeFileSync(tempFile, JSON.stringify({
+    globalThis.ngx.shared.instance_credential_cache.set(INSTANCE_CREDENTIAL_CACHE_KEY, JSON.stringify({
         accessKeyId: 'AN_EXPIRED_ACCESS_KEY_ID',
         secretAccessKey: 'AN_EXPIRED_SECRET_ACCESS_KEY',
         sessionToken: 'AN_EXPIRED_SECURITY_TOKEN',
@@ -286,7 +307,6 @@ async function testFetchCredentialsRefreshesExpiredCache() {
     var r = makeExpect200Request();
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
 
         if (recordedUrl !== ECS_CREDS_URL) {
@@ -294,21 +314,17 @@ async function testFetchCredentialsRefreshesExpiredCache() {
                 `Recorded refresh URL: ${recordedUrl}`;
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
-        removeIfExists(tempFile);
     }
 }
 
 async function testFetchCredentialsUsesFreshCache() {
     printHeader('testFetchCredentialsUsesFreshCache');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-fresh-cache', '.json');
     process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     /* Expiration far enough in the future to stay comfortably beyond the
        4.5-minute early-refresh offset applied to the expiration. */
-    fs.writeFileSync(tempFile, JSON.stringify({
+    globalThis.ngx.shared.instance_credential_cache.set(INSTANCE_CREDENTIAL_CACHE_KEY, JSON.stringify({
         accessKeyId: 'A_FRESH_ACCESS_KEY_ID',
         secretAccessKey: 'A_FRESH_SECRET_ACCESS_KEY',
         sessionToken: 'A_FRESH_SECURITY_TOKEN',
@@ -332,7 +348,6 @@ async function testFetchCredentialsUsesFreshCache() {
     var r = makeRecordingRequest(state);
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
 
         if (recordedUrl !== null) {
@@ -343,17 +358,13 @@ async function testFetchCredentialsUsesFreshCache() {
             throw 'Expected 200 status code, got: ' + state.returnedCode;
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
-        removeIfExists(tempFile);
     }
 }
 
 async function testEcsCredentialRetrieval() {
     printHeader('testEcsCredentialRetrieval');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-ecs-happy', '.json');
     var recordedUrl = null;
     process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
     globalThis.ngx.fetch = function (url) {
@@ -370,24 +381,29 @@ async function testEcsCredentialRetrieval() {
     var r = makeExpect200Request();
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         await awscred.fetchCredentials(r);
 
         if (recordedUrl !== ECS_CREDS_URL) {
             throw `No or wrong ECS credentials fetch URL recorded: ${recordedUrl}`;
         }
+
+        /* The integration ECS mock cannot serve a Token (MinIO rejects
+           fabricated session tokens), so the Token -> sessionToken -> cache
+           seam is pinned here instead. */
+        var cached = JSON.parse(globalThis.ngx.shared.instance_credential_cache
+            .get(INSTANCE_CREDENTIAL_CACHE_KEY));
+        if (cached.sessionToken !== MOCK_AWS_CREDS_RESPONSE.Token) {
+            throw 'ECS session token was not cached as sessionToken. ' +
+                `Actual: [${cached.sessionToken}]`;
+        }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
-        removeIfExists(tempFile);
     }
 }
 
 async function testEc2CredentialRetrieval() {
     printHeader('testEc2CredentialRetrieval');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-ec2-happy', '.json');
     var credentialsIssued = false;
     globalThis.ngx.fetch = function (url, options) {
         if (url === IMDS_TOKEN_URL && options && options.method === 'PUT') {
@@ -426,16 +442,10 @@ async function testEc2CredentialRetrieval() {
     };
     var r = makeExpect200Request();
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        await awscred.fetchCredentials(r);
+    await awscred.fetchCredentials(r);
 
-        if (!credentialsIssued) {
-            throw 'Did not reach the point where EC2 credentials were issued.';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    if (!credentialsIssued) {
+        throw 'Did not reach the point where EC2 credentials were issued.';
     }
 }
 
@@ -443,8 +453,6 @@ async function testEKSPodIdentityCredentialRetrieval() {
     printHeader('testEKSPodIdentityCredentialRetrieval');
     var originalTokenFile = process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var credentialsFile = tempFilePath('eks-happy-credentials-unit-test', '.json');
     var tokenFile = tempFilePath('eks-happy-token-unit-test', '');
     var testToken = 'A_TOKEN';
     fs.writeFileSync(tokenFile, testToken);
@@ -478,16 +486,13 @@ async function testEKSPodIdentityCredentialRetrieval() {
     var r = makeExpect200Request();
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = credentialsFile;
         await awscred.fetchCredentials(r);
 
         if (!credentialsIssued) {
             throw 'Did not reach the point where EKS Pod Identity credentials were issued.';
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         restoreEnv('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', originalTokenFile);
-        removeIfExists(credentialsFile);
         removeIfExists(tokenFile);
     }
 }
@@ -496,8 +501,6 @@ async function testEKSPodIdentityCredentialRetrievalNon200Response() {
     printHeader('testEKSPodIdentityCredentialRetrievalNon200Response');
     var originalTokenFile = process.env['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE'];
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var credentialsFile = tempFilePath('eks-non200-credentials-unit-test', '.json');
     var tokenFile = tempFilePath('eks-non200-token-unit-test', '');
     var testToken = 'A_TOKEN';
     fs.writeFileSync(tokenFile, testToken);
@@ -532,7 +535,6 @@ async function testEKSPodIdentityCredentialRetrievalNon200Response() {
     };
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = credentialsFile;
         await awscred.fetchCredentials(r);
 
         if (!non200ResponseServed) {
@@ -544,13 +546,11 @@ async function testEKSPodIdentityCredentialRetrievalNon200Response() {
         if (state.returnedCode !== 500) {
             throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
         }
-        if (fs.statSync(credentialsFile, {throwIfNoEntry: false})) {
+        if (globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY)) {
             throw 'Credentials must not be cached from a non-200 response.';
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         restoreEnv('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', originalTokenFile);
-        removeIfExists(credentialsFile);
         removeIfExists(tokenFile);
     }
 }
@@ -558,8 +558,6 @@ async function testEKSPodIdentityCredentialRetrievalNon200Response() {
 async function testEc2CredentialRetrievalNon200Response() {
     printHeader('testEc2CredentialRetrievalNon200Response');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-ec2-non200', '.json');
     var non200ResponseServed = false;
     var errorBodyParsedAsCredentials = false;
     var state = {returnedCode: null};
@@ -597,33 +595,25 @@ async function testEc2CredentialRetrievalNon200Response() {
         }
     };
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        await awscred.fetchCredentials(r);
+    await awscred.fetchCredentials(r);
 
-        if (!non200ResponseServed) {
-            throw 'The mocked non-200 EC2 credentials response was never served.';
-        }
-        if (errorBodyParsedAsCredentials) {
-            throw 'A non-200 EC2 metadata response was parsed as credentials.';
-        }
-        if (state.returnedCode !== 500) {
-            throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
-        }
-        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
-            throw 'Credentials must not be cached from a non-200 response.';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    if (!non200ResponseServed) {
+        throw 'The mocked non-200 EC2 credentials response was never served.';
+    }
+    if (errorBodyParsedAsCredentials) {
+        throw 'A non-200 EC2 metadata response was parsed as credentials.';
+    }
+    if (state.returnedCode !== 500) {
+        throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
+    }
+    if (globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY)) {
+        throw 'Credentials must not be cached from a non-200 response.';
     }
 }
 
 async function testEc2CredentialRetrievalIMDSv1Fallback() {
     printHeader('testEc2CredentialRetrievalIMDSv1Fallback');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-imdsv1-fallback', '.json');
     var credentialsIssued = false;
     var r = makeExpect200Request();
     globalThis.ngx.fetch = function (url, options) {
@@ -657,24 +647,16 @@ async function testEc2CredentialRetrievalIMDSv1Fallback() {
         }
     };
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        await awscred.fetchCredentials(r);
+    await awscred.fetchCredentials(r);
 
-        if (!credentialsIssued) {
-            throw 'Did not reach the point where EC2 credentials were issued via IMDSv1.';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    if (!credentialsIssued) {
+        throw 'Did not reach the point where EC2 credentials were issued via IMDSv1.';
     }
 }
 
 async function testEc2CredentialRetrievalIMDSv1FallbackOnTokenError() {
     printHeader('testEc2CredentialRetrievalIMDSv1FallbackOnTokenError');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-imdsv1-token-error', '.json');
     var credentialsIssued = false;
     var r = makeExpect200Request();
     globalThis.ngx.fetch = function (url, options) {
@@ -707,24 +689,16 @@ async function testEc2CredentialRetrievalIMDSv1FallbackOnTokenError() {
         }
     };
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        await awscred.fetchCredentials(r);
+    await awscred.fetchCredentials(r);
 
-        if (!credentialsIssued) {
-            throw 'Did not reach the point where EC2 credentials were issued via IMDSv1.';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    if (!credentialsIssued) {
+        throw 'Did not reach the point where EC2 credentials were issued via IMDSv1.';
     }
 }
 
 async function testEc2CredentialRetrievalTokenEndpointTransientError() {
     printHeader('testEc2CredentialRetrievalTokenEndpointTransientError');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-token-transient', '.json');
     var imdsv1RequestMade = false;
     var state = {returnedCode: null};
     var r = makeRecordingRequest(state);
@@ -741,31 +715,23 @@ async function testEc2CredentialRetrievalTokenEndpointTransientError() {
         throw 'No request should be made after a transient token endpoint failure: ' + url;
     };
 
-    try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
-        await awscred.fetchCredentials(r);
+    await awscred.fetchCredentials(r);
 
-        if (imdsv1RequestMade) {
-            throw 'A token-less IMDSv1 request was made after a transient token endpoint failure.';
-        }
-        if (state.returnedCode !== 500) {
-            throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
-        }
-        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
-            throw 'Credentials must not be cached after a failed token request.';
-        }
-    } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
-        removeIfExists(tempFile);
+    if (imdsv1RequestMade) {
+        throw 'A token-less IMDSv1 request was made after a transient token endpoint failure.';
+    }
+    if (state.returnedCode !== 500) {
+        throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
+    }
+    if (globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY)) {
+        throw 'Credentials must not be cached after a failed token request.';
     }
 }
 
 async function testEc2CredentialRetrievalIMDSv1FallbackDisabled() {
     printHeader('testEc2CredentialRetrievalIMDSv1FallbackDisabled');
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
     var originalV1Disabled = process.env['AWS_EC2_METADATA_V1_DISABLED'];
-    var tempFile = tempFilePath('credentials-unit-test-v1-disabled', '.json');
     var imdsv1RequestMade = false;
     var state = {returnedCode: null};
     var r = makeRecordingRequest(state);
@@ -782,7 +748,6 @@ async function testEc2CredentialRetrievalIMDSv1FallbackDisabled() {
     };
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         process.env['AWS_EC2_METADATA_V1_DISABLED'] = 'true';
         await awscred.fetchCredentials(r);
 
@@ -792,13 +757,11 @@ async function testEc2CredentialRetrievalIMDSv1FallbackDisabled() {
         if (state.returnedCode !== 500) {
             throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
         }
-        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+        if (globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY)) {
             throw 'Credentials must not be cached after a failed token request.';
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         restoreEnv('AWS_EC2_METADATA_V1_DISABLED', originalV1Disabled);
-        removeIfExists(tempFile);
     }
 }
 
@@ -809,8 +772,6 @@ async function testWebIdentityCredentialRetrievalNon200Response() {
     var originalRoleSessionName = process.env['AWS_ROLE_SESSION_NAME'];
     var originalStsEndpoint = process.env['STS_ENDPOINT'];
     clearProviderEnv();
-    var originalCredentialPath = process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    var tempFile = tempFilePath('credentials-unit-test-web-identity', '.json');
     var tokenFile = tempFilePath('web-identity-token-unit-test', '');
     fs.writeFileSync(tokenFile, 'A_WEB_IDENTITY_TOKEN');
     var non200ResponseServed = false;
@@ -838,7 +799,6 @@ async function testWebIdentityCredentialRetrievalNon200Response() {
     };
 
     try {
-        process.env['AWS_CREDENTIALS_TEMP_FILE'] = tempFile;
         process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] = tokenFile;
         process.env['AWS_ROLE_ARN'] = 'arn:aws:iam::000000000000:role/unit-test';
         process.env['AWS_ROLE_SESSION_NAME'] = 'unit-test';
@@ -854,16 +814,14 @@ async function testWebIdentityCredentialRetrievalNon200Response() {
         if (state.returnedCode !== 500) {
             throw 'Expected the credentials fetch to fail with 500, got: ' + state.returnedCode;
         }
-        if (fs.statSync(tempFile, {throwIfNoEntry: false})) {
+        if (globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY)) {
             throw 'Credentials must not be cached from a non-200 response.';
         }
     } finally {
-        restoreEnv('AWS_CREDENTIALS_TEMP_FILE', originalCredentialPath);
         restoreEnv('AWS_WEB_IDENTITY_TOKEN_FILE', originalTokenFile);
         restoreEnv('AWS_ROLE_ARN', originalRoleArn);
         restoreEnv('AWS_ROLE_SESSION_NAME', originalRoleSessionName);
         restoreEnv('STS_ENDPOINT', originalStsEndpoint);
-        removeIfExists(tempFile);
         removeIfExists(tokenFile);
     }
 }
@@ -925,8 +883,9 @@ async function test() {
     await testEc2CredentialRetrievalIMDSv1FallbackDisabled();
     await testWebIdentityCredentialRetrievalNon200Response();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();
-    testReadCredentialsFromFilePath();
-    testReadCredentialsFromNonexistentPath();
+    testReadAndWriteCredentialsFromSharedDict();
+    testReadCredentialsFromEmptySharedDict();
+    testReadCredentialsFromMalformedSharedDict();
     testReadAndWriteCredentialsFromKeyValStore();
     testWriteInvalidCredentials();
 }

@@ -18,9 +18,12 @@
 
 import awscred from "include/awscredentials.js"
 import awssig4 from "include/awssig4.js";
+import credentialCacheMock from "./credential_cache_mock.js";
 import s3gateway from "include/s3gateway.js";
 
 globalThis.ngx = {};
+
+const resetSharedCredentialCache = credentialCacheMock.resetSharedCredentialCache;
 
 var fakeRequest = {
     "remoteAddress" : "172.17.0.1",
@@ -426,6 +429,7 @@ function testEscapeURIPathPreservesDoubleSlashes() {
 
 async function testEcsCredentialRetrieval() {
     printHeader('testEcsCredentialRetrieval');
+    resetSharedCredentialCache();
     delete process.env['AWS_ACCESS_KEY_ID'];
     process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
     globalThis.ngx.fetch = function (url) {
@@ -474,6 +478,7 @@ async function testEcsCredentialRetrieval() {
 
 async function testEc2CredentialRetrieval() {
     printHeader('testEc2CredentialRetrieval');
+    resetSharedCredentialCache();
     delete process.env['AWS_ACCESS_KEY_ID'];
     delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
     globalThis.ngx.fetch = function (url, options) {

@@ -55,6 +55,7 @@ build_dep_exit_code=4
 test_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 repo_dir="$( dirname "${test_dir}" )"
 test_compose_config="${test_dir}/docker-compose.yaml"
+dynamic_credentials_compose_config="${test_dir}/docker-compose.dynamic-credentials.yaml"
 test_compose_project="${COMPOSE_PROJECT:-ngt}"
 
 minio_server="http://localhost:9090"
@@ -182,7 +183,7 @@ wait_for_gateway() {
   return 1
 }
 
-compose() {
+prepare_compose_env() {
   # Hint to docker-compose the internal port to map for the container
   if [ "${UNPRIVILEGED}" -eq 1 ]; then
     export NGINX_INTERNAL_PORT=8080
@@ -204,8 +205,25 @@ compose() {
   fi
 
   export NGINX_LICENSE_JWT
+}
+
+compose() {
+  prepare_compose_env
 
   "${docker_compose_cmd[@]}" -f "${test_compose_config}" -p "${test_compose_project}" "$@"
+}
+
+compose_dynamic_credentials() {
+  prepare_compose_env
+
+  # The override file nulls the static AWS_* variables, but compose treats a
+  # null environment entry as pass-through-from-the-invoking-shell, not
+  # unset. Scrub them so an operator's real AWS credentials can neither leak
+  # into the test gateway nor bypass the metadata mock.
+  env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+    "${docker_compose_cmd[@]}" --profile dynamic-credentials \
+    -f "${test_compose_config}" -f "${dynamic_credentials_compose_config}" \
+    -p "${test_compose_project}" "$@"
 }
 
 # Configure the compose environment and mc/curl endpoints for an HTTP or
@@ -279,6 +297,11 @@ integration_test_data() {
   p "Starting Docker Compose Environment"
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true compose up -d
+
+  seed_minio_data
+}
+
+seed_minio_data() {
 
   # Hit minio's health check end point to see if it has started up
   for (( i=1; i<=3; i++ ))
@@ -488,6 +511,40 @@ integration_test_proxy_ssl() {
   assert_gateway_logs_contain "upstream SSL certificate does not match" "mismatched origin hostname verification"
 }
 
+integration_test_dynamic_credentials() {
+  p "Testing dynamic credential shared-memory caching"
+  # Use the profile-aware config and remove its networks as well as its
+  # containers. Leaving the fixed metadata subnet behind makes a later run
+  # under a different COMPOSE_PROJECT fail with an overlapping-pool error.
+  compose_dynamic_credentials down --volumes --remove-orphans || true
+  set_http_test_origin
+
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose_dynamic_credentials up -d
+  wait_for_gateway
+  seed_minio_data
+
+  assert_request_status 200 "dynamic credentials first object request" "${test_server}/a.txt"
+
+  # Captured rather than piped into grep -q for the same pipefail/SIGPIPE
+  # reason as assert_gateway_logs_contain.
+  credential_logs="$(compose_dynamic_credentials logs ecs-credentials 2>&1)"
+  if ! grep -qF 'GET /credentials' <<< "${credential_logs}"; then
+    e "FAIL [dynamic credential fetch]: the gateway never queried the metadata mock"
+    exit "$test_fail_exit_code"
+  fi
+
+  # Prove cache reuse behaviorally rather than by counting access-log lines:
+  # with the metadata mock stopped, further requests can only succeed if the
+  # first fetch was cached in shared memory.
+  compose_dynamic_credentials stop ecs-credentials
+  assert_request_status 200 "dynamic credentials cached second object request" "${test_server}/b/e.txt"
+
+  if ! compose_dynamic_credentials exec -T nginx-s3-gateway sh -c 'test ! -e /tmp/credentials.json'; then
+    e "FAIL [dynamic credential disk exposure]: /tmp/credentials.json must not exist"
+    exit "$test_fail_exit_code"
+  fi
+}
+
 finish() {
   result=$?
   # Disarm the traps first: a test failure otherwise runs finish twice (ERR,
@@ -500,12 +557,11 @@ finish() {
 
   if [ $result -ne 0 ]; then
     e "Error running tests - outputting container logs"
-    compose logs || true
+    compose_dynamic_credentials logs || true
   fi
 
   p "Cleaning up Docker compose environment"
-  compose stop || true
-  compose rm -f -v || true
+  compose_dynamic_credentials down --volumes --remove-orphans || true
   "${mc_cmd}" alias rm "$minio_name" || true
   # Try a plain removal first: the cert dir is created by the invoking user,
   # so its entries are usually unlinkable without root even though the files
@@ -616,5 +672,7 @@ p "Testing proxy cache bypass with PROXY_CACHE_BYPASS_NO_CACHE=true"
 integration_test_cache_bypass "true"
 
 integration_test_proxy_ssl
+
+integration_test_dynamic_credentials
 
 p "All integration tests complete"

@@ -544,7 +544,22 @@ download "common/etc/nginx/templates/gateway/s3_location.conf.template" "/etc/ng
 download "common/etc/nginx/templates/gateway/s3_server.conf.template" "/etc/nginx/templates/gateway/s3_server.conf.template"
 download "common/etc/nginx/templates/gateway/s3_location_common.conf.template" "/etc/nginx/templates/gateway/s3_location_common.conf.template"
 download "oss/etc/nginx/templates/upstreams.conf.template" "/etc/nginx/templates/upstreams.conf.template"
-download "oss/etc/nginx/conf.d/gateway/server_variables.conf" "/etc/nginx/conf.d/gateway/server_variables.conf"
+download "oss/etc/nginx/templates/gateway/server_variables.conf.template" "/etc/nginx/templates/gateway/server_variables.conf.template"
+download "oss/etc/nginx/conf.d/instance_credential_cache.conf" "/etc/nginx/conf.d/instance_credential_cache.conf"
+
+# Older standalone installs cached temporary AWS credentials on disk,
+# resolving the path exactly as the deleted _credentialsTempFile() did: an
+# explicit AWS_CREDENTIALS_TEMP_FILE, else ${TMPDIR}/credentials.json, else
+# /tmp/credentials.json. Current installs keep credentials in shared memory,
+# so remove a leftover file at every path the old code could have written.
+for legacy_credentials_file in \
+    ${AWS_CREDENTIALS_TEMP_FILE:+"${AWS_CREDENTIALS_TEMP_FILE}"} \
+    ${TMPDIR:+"${TMPDIR}/credentials.json"} \
+    /tmp/credentials.json; do
+  if [ -f "${legacy_credentials_file}" ] || [ -L "${legacy_credentials_file}" ]; then
+    rm -f "${legacy_credentials_file}"
+  fi
+done
 
 echo "▶ Creating directory for proxy cache"
 mkdir -p /var/cache/nginx/s3_proxy

@@ -435,6 +435,15 @@ Instance profiles work by providing credentials to the instance via the
 When the API is queried, it provides the keys allowed to the instance. Those
 keys regularly expire, so services using them must refresh frequently.
 
+The gateway caches these temporary credentials in memory only: OSS uses an njs
+shared dictionary and NGINX Plus uses keyval. Current versions do not write
+temporary AWS credentials to disk. On startup the container removes any legacy
+credential cache left behind by an older OSS image, checking every path the old
+code could have written: `AWS_CREDENTIALS_TEMP_FILE`, `${TMPDIR}/credentials.json`,
+and `/tmp/credentials.json`. If you dropped a custom `TMPDIR` or
+`AWS_CREDENTIALS_TEMP_FILE` setting from the environment before upgrading,
+remove that file from the persisted volume manually.
+
 ### Running in EC2 with an IAM Policy
 
 Following the [AWS documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#permission-to-pass-iam-roles)

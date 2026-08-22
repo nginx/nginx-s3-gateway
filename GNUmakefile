@@ -49,6 +49,7 @@ override IMAGE_NAME := nginx-s3-gateway
 # same value), so the suite and the `clean` teardown share one project name.
 COMPOSE_PROJECT   := ngt
 COMPOSE_FILE      := $(BASE_DIR)test/docker-compose.yaml
+DYNAMIC_CREDENTIALS_COMPOSE_FILE := $(BASE_DIR)test/docker-compose.dynamic-credentials.yaml
 PLUS_CRT          := $(BASE_DIR)plus/etc/ssl/nginx/nginx-repo.crt
 PLUS_KEY          := $(BASE_DIR)plus/etc/ssl/nginx/nginx-repo.key
 DOCKERFILES       := Dockerfile.oss Dockerfile.plus Dockerfile.latest-njs Dockerfile.unprivileged
@@ -286,9 +287,14 @@ jsdoc: docs ## Back-compat alias for docs (previous Makefile's target name)
 # The DOCS_DIR guard rejects empty, absolute, parent-traversal, and
 # trailing-slash values so the rm -rf can never escape the repository (a
 # trailing slash would make rm follow a symlinked DOCS_DIR into its target).
-# The teardown mirrors the compose() invocation in
-# test/run_integration_tests.sh, including its docker-compose fallback, and
-# also removes the mc alias that script registers.
+# The teardown mirrors the profile-aware compose_dynamic_credentials()
+# invocation in test/run_integration_tests.sh, including its docker-compose
+# fallback, so it removes the fixed metadata network as well as the regular
+# stack. It also removes the mc alias that script registers and the TLS cert
+# scratch directory its finish() trap normally cleans (a killed test run
+# never reaches finish()). The generated keys in there are root-owned, so a
+# plain rm is tried first (it works while the directory itself is
+# user-owned) with a root-container fallback, the same way finish() does.
 clean: ## Remove generated docs and tear down the test compose environment
 	@case "$(DOCS_DIR)" in \
 		""|.|..|/*|*..*|*/) echo "ERROR: refusing to rm -rf suspicious DOCS_DIR '$(DOCS_DIR)'"; exit 1;; \
@@ -297,10 +303,20 @@ clean: ## Remove generated docs and tear down the test compose environment
 	@if $(DOCKER) compose version > /dev/null 2>&1; then compose_cmd="$(DOCKER) compose"; \
 	else compose_cmd="docker-compose"; fi; \
 	COMPOSE_COMPATIBILITY=true \
-		$$compose_cmd -f "$(COMPOSE_FILE)" -p $(COMPOSE_PROJECT) \
+		$$compose_cmd --profile dynamic-credentials \
+		-f "$(COMPOSE_FILE)" -f "$(DYNAMIC_CREDENTIALS_COMPOSE_FILE)" -p $(COMPOSE_PROJECT) \
 		down --volumes --remove-orphans 2> /dev/null || true
 	@mc_cmd="$$(command -v mc || echo "$(BASE_DIR).bin/mc")"; \
 	[ -x "$$mc_cmd" ] && "$$mc_cmd" alias rm $(COMPOSE_PROJECT)_minio_1 2> /dev/null || true
+	@tls_dir="$${TMPDIR:-/tmp}/nginx-s3-gateway-$(COMPOSE_PROJECT)-tls"; \
+	if [ -d "$$tls_dir" ]; then \
+		rm -f "$$tls_dir"/* 2> /dev/null || true; \
+		if [ -n "$$(ls -A "$$tls_dir" 2> /dev/null)" ]; then \
+			$(DOCKER) run --rm --user 0:0 -v "$$tls_dir:/certs" \
+				--entrypoint /bin/sh "$(IMAGE_NAME)" -c 'rm -f /certs/*' > /dev/null 2>&1 || true; \
+		fi; \
+		rmdir "$$tls_dir" 2> /dev/null || true; \
+	fi
 
 clean-images: ## Remove all locally built gateway image tags
 	@for tag in latest oss plus latest-njs-oss latest-njs-plus unprivileged-oss unprivileged-plus; do \

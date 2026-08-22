@@ -195,6 +195,15 @@ function s3auth(r) {
     let signature;
 
     const credentials = awscred.readCredentials(r);
+    /* The cache entry can expire between the auth_request credential check
+       and this evaluation (the Plus keyval zone carries a timeout; the OSS
+       shared dict deliberately does not, see
+       oss/etc/nginx/conf.d/instance_credential_cache.conf). Fail with a
+       clear message instead of a TypeError deep in the signing code; the
+       next request refetches and recovers. */
+    if (credentials === undefined) {
+        throw 'AWS credentials are unavailable; the cached credentials may have expired mid-request';
+    }
     if (sigver == '2') {
         let req = _s3ReqParamsForSigV2(r, bucket);
         signature = awssig2.signatureV2(r, req.uri, req.httpDate, credentials);
