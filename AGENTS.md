@@ -184,6 +184,9 @@ nginx-provided must be hand-mocked.
   from `awscredentials_test.js` (`makeExpect200Request()`,
   `makeRecordingRequest(state)`). Fake the Plus keyval store by pre-seeding
   `r.variables = { cache_instance_credentials_enabled: 1, instance_credential_json: null }`.
+  Fake the OSS shared-dict credential cache with
+  `test/unit/credential_cache_mock.js` (`resetSharedCredentialCache()`) rather
+  than hand-rolling an `ngx.shared` stub.
 - **`process.env` is real and mutable** in the njs CLI: mutate it directly and
   restore in `finally`, using a `restoreEnv(name, saved)` helper that `delete`s
   the key when the saved value was `undefined` (assigning `undefined` re-creates
