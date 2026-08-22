@@ -170,6 +170,7 @@ function requireEnvVar(envVarName) {
 export default {
     areAllEnvVarsSet,
     debug_log,
+    debugEnabled: DEBUG,
     getAmzDatetime,
     getEightDigitDate,
     padWithLeadingZeros,

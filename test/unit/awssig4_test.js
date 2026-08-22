@@ -19,6 +19,8 @@
 import awssig4 from "include/awssig4.js";
 import utils from "include/utils.js";
 
+const mod_hmac = require('crypto');
+
 
 function testBuildSigningKeyHashWithReferenceInputs() {
     printHeader('testBuildSigningKeyHashWithReferenceInputs');
@@ -160,11 +162,91 @@ function testSignatureV4Cache() {
     _runSignatureV4(r);
 }
 
+function testSignatureV4DebugLogsRedactSecrets() {
+    printHeader('testSignatureV4DebugLogsRedactSecrets');
+    const logs = [];
+    const timestamp = new Date('2020-08-11T19:42:14Z');
+    const eightDigitDate = utils.getEightDigitDate(timestamp);
+    const amzDatetime = utils.getAmzDatetime(timestamp, eightDigitDate);
+    const secret = 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb';
+    const sessionToken = 'A_SECURITY_TOKEN';
+    const region = 'us-west-2';
+    const service = 's3';
+    const creds = {secretAccessKey: secret, sessionToken: sessionToken};
+    const r = {
+        method: 'GET',
+        variables: {
+            cache_signing_key_enabled: 1,
+            request_body: ''
+        }
+    };
+
+    r.log = function(msg) {
+        logs.push(msg);
+    };
+
+    const canonicalRequest = awssig4._buildCanonicalRequest(r,
+        r.method, '/a/c/ramen.jpg', '', 'ez-test-bucket-1.s3-us-west-2.amazonaws.com',
+        amzDatetime, sessionToken);
+    const signature = awssig4._buildSignatureV4(r, amzDatetime, eightDigitDate,
+        creds, region, service, canonicalRequest);
+    awssig4._buildSignatureV4(r, amzDatetime, eightDigitDate,
+        creds, region, service, canonicalRequest);
+    /* Exercise the public entry point too: it logs the assembled
+       Authorization header, which must carry a redacted signature. */
+    awssig4.signatureV4(r, timestamp, region, service, '/a/c/ramen.jpg', '',
+        'ez-test-bucket-1.s3-us-west-2.amazonaws.com', creds);
+
+    const signingKey = awssig4._buildSigningKeyHash(secret, eightDigitDate, region, service);
+    const signingKeyHex = signingKey.toString('hex');
+    const signingKeyFingerprint = mod_hmac.createHash('sha256')
+        .update(signingKey)
+        .digest('hex');
+    const sessionTokenFingerprint = mod_hmac.createHash('sha256')
+        .update(sessionToken)
+        .digest('hex');
+    const allLogs = logs.join('\n');
+
+    if (allLogs.indexOf(signingKeyHex) !== -1) {
+        throw 'Debug logs exposed the raw signing key.\nActual:   [' + allLogs + ']';
+    }
+
+    if (allLogs.indexOf(sessionToken) !== -1) {
+        throw 'Debug logs exposed the raw session token.\nActual:   [' + allLogs + ']';
+    }
+
+    if (allLogs.indexOf('AWS v4 Signing Key Fingerprint: [' +
+        signingKeyFingerprint + ']') === -1) {
+        throw 'Debug logs did not include the signing key fingerprint.\nActual:   [' + allLogs + ']';
+    }
+
+    if (allLogs.indexOf('AWS v4 Session Token Fingerprint: [' +
+        sessionTokenFingerprint + ']') === -1) {
+        throw 'Debug logs did not include the session token fingerprint.\nActual:   [' + allLogs + ']';
+    }
+
+    if (allLogs.indexOf('x-amz-security-token:[REDACTED]') === -1) {
+        throw 'Debug canonical request did not redact the session token.\nActual:   [' + allLogs + ']';
+    }
+
+    /* The signature authenticates the request until the SigV4 clock skew
+       window closes, so neither the standalone signature log line nor the
+       assembled Authorization header may contain it. */
+    if (allLogs.indexOf(signature) !== -1) {
+        throw 'Debug logs exposed the raw request signature.\nActual:   [' + allLogs + ']';
+    }
+
+    if (allLogs.indexOf('Signature=[REDACTED]') === -1) {
+        throw 'Debug Authorization header did not redact the signature.\nActual:   [' + allLogs + ']';
+    }
+}
+
 async function test() {
     testBuildSigningKeyHashWithReferenceInputs();
     testBuildSigningKeyHashWithTestSuiteInputs();
     testSignatureV4();
     testSignatureV4Cache();
+    testSignatureV4DebugLogsRedactSecrets();
 }
 
 function printHeader(testName) {
