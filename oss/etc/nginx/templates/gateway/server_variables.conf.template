@@ -3,7 +3,7 @@
 # is only enabled when using NGINX Plus.
 set $cache_signing_key_enabled 0;
 
-# Variable indicating to the awscredentials.js script that session token
-# caching is turned on. This feature uses the keyval store, so it
-# is only enabled when using NGINX Plus.
+# Variable indicating to awscredentials.js that the NGINX Plus keyval cache is
+# unavailable. OSS caches the full temporary credential object in the njs
+# shared dictionary configured by instance_credential_cache.conf instead.
 set $cache_instance_credentials_enabled 0;

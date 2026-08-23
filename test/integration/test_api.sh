@@ -190,6 +190,51 @@ assertHttpRequestEquals() {
   fi
 }
 
+# Assert that a slash-appending redirect is relative and preserves the
+# viewer-visible path without reflecting request authority headers.
+# assertRedirectLocation <path> <host_header> <expected_location> [forwarded_proto]
+assertRedirectLocation() {
+  path="$1"
+  host="$2"
+  expected_location="$3"
+  forwarded_proto="${4:-}"
+  curl_args=(-H "Host: ${host}")
+
+  if [ -n "${forwarded_proto}" ]; then
+    curl_args+=(-H "X-Forwarded-Proto: ${forwarded_proto}")
+  fi
+
+  if [[ $path == /* ]]; then
+    uri="${test_server}${path}"
+  else
+    uri="${test_server}/${path}"
+  fi
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Testing redirect: GET ${path} (Host: ${host}, X-Forwarded-Proto: ${forwarded_proto:-<none>})"
+
+  headers="$(${curl_cmd} "${curl_args[@]}" -D - -o /dev/null "${uri}")"
+  actual_location=""
+  while IFS= read -r header; do
+    case "${header}" in
+      [Ll]ocation:\ *)
+        actual_location="${header#*: }"
+        actual_location="${actual_location%$'\r'}"
+        break
+        ;;
+    esac
+  done <<< "${headers}"
+
+  if [ "${expected_location}" != "${actual_location}" ]; then
+    e "Redirect location didn't match expectation. Request [GET ${uri} Host: ${host} X-Forwarded-Proto: ${forwarded_proto:-<none>}] Expected [${expected_location}] Actual [${actual_location}]"
+    # Print the argument vector actually sent: hand-assembling the repro
+    # would inject an empty X-Forwarded-Proto header (curl treats
+    # -H 'Name: ' as header deletion) and change the request under test.
+    e "curl command: ${curl_cmd} ${curl_args[*]} -D - -o /dev/null '${uri}'"
+    exit ${test_fail_exit_code}
+  fi
+}
+
 # Check to see if HTTP server is available
 set +o errexit
 # Allow curl command to fail with a non-zero exit code for this block because
@@ -245,7 +290,10 @@ assertHttpRequestEquals "HEAD" "a.txt?some=param&that=should&be=stripped#aaah" "
 assertHttpRequestEquals "HEAD" "b/c/d.txt" "200"
 assertHttpRequestEquals "HEAD" "b/c/../e.txt" "200"
 assertHttpRequestEquals "HEAD" "b/e.txt" "200"
-assertHttpRequestEquals "HEAD" "b//e.txt" "200"
+# Double slashes are preserved in the S3 URI, so this is a distinct missing
+# object rather than an alias for b/e.txt. A cache key based on nginx's
+# normalized $uri would incorrectly reuse the b/e.txt entry here.
+assertHttpRequestEquals "HEAD" "b//e.txt" "404"
 assertHttpRequestEquals "HEAD" "a/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.txt" "200"
 
 # Byte range requests
@@ -315,11 +363,9 @@ fi
 assertHttpRequestEquals "HEAD" "b/" "404"
 assertHttpRequestEquals "HEAD" "/b/c/" "404"
 assertHttpRequestEquals "HEAD" "/soap" "404"
-if [ "${append_slash}" == "1" ] && [ "${index_page}" == "0" ]; then
-assertHttpRequestEquals "HEAD" "b//c" "302"
-else
+# As with b//e.txt above, b//c is a distinct S3 key and must not inherit the
+# normalized /b/c response from another cache entry.
 assertHttpRequestEquals "HEAD" "b//c" "404"
-fi
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "HEAD" "/statichost/" "200"
@@ -376,7 +422,7 @@ fi
 # corrupt /statichost/index.html, which the static-hosting assertions below
 # depend on and which is never re-seeded between configurations, and (b) the
 # verifying GET cannot be satisfied from a proxy_cache entry warmed by any
-# other assertion (proxy_cache_key is "$request_method$host$uri").
+# other assertion (proxy_cache_key includes the effective upstream S3 URI).
 # Note that only DELETE and PUT give the GET real teeth: a pre-fix gateway
 # also surfaced POST as a sanitized 404 (upstream error via error_page), so
 # the POST assertion pins the sanitized status, not the non-forwarding.
@@ -400,6 +446,23 @@ assertHttpRequestEquals "GET" "/statichost/noindexdir/multipledir/" "data/bucket
   if [ "${append_slash}" == "1" ]; then
   assertHttpRequestEquals "GET" "/statichost" "data/bucket-1/statichost/index.html"
   assertHttpRequestEquals "GET" "/statichost/noindexdir/multipledir" "data/bucket-1/statichost/noindexdir/multipledir/index.html"
+  assertRedirectLocation "/statichost" "a.example" "/statichost/"
+  assertRedirectLocation "/statichost" "b.example" "/statichost/"
+  assertRedirectLocation "/statichost" "attacker.example" "/statichost/" "https"
+  assertRedirectLocation "/statichost?foo=bar" "a.example" "/statichost/?foo=bar"
+  assertRedirectLocation "/%5Cevil.example/foo" "a.example" "/%5Cevil.example/foo/"
+  # NGINX exposes a percent-decoded r.uri to njs, so the redirect helper must
+  # re-escape delimiters and control bytes before they reach Location.
+  assertRedirectLocation "/%3Ffoo" "a.example" "/%3Ffoo/"
+  assertRedirectLocation "/%23foo" "a.example" "/%23foo/"
+  assertRedirectLocation "/%25foo" "a.example" "/%25foo/"
+  assertRedirectLocation "/foo%0D%0AX-Evil%3A%20yes" "a.example" "/foo%0D%0AX-Evil%3A%20yes/"
+  # MinIO's SigV2 handling returns a plain 404 for this distinct double-slash
+  # key before the gateway reaches @trailslash. SigV4 reaches the redirect and
+  # proves the emitted Location cannot become a scheme-relative `//...` URL.
+  if [ "${signature_version}" == "4" ]; then
+    assertRedirectLocation "//statichost" "a.example" "/statichost/"
+  fi
   fi
 
   if [ "${allow_directory_list}" == "1" ]; then

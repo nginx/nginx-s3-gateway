@@ -56,6 +56,18 @@ check_banner() {
     >&2 echo "${output}"
     exit 2
   fi
+
+  if ! echo "${output}" | grep -qF "Origin TLS Verification: disabled (HTTP origin)"; then
+    >&2 echo "FAIL [S3_STYLE=${style}]: expected HTTP origin TLS verification to be disabled in banner:"
+    >&2 echo "${output}"
+    exit 2
+  fi
+
+  if ! echo "${output}" | grep -qF "Origin TLS Trusted Certificate: /etc/ssl/certs/ca-certificates.crt"; then
+    >&2 echo "FAIL [S3_STYLE=${style}]: expected the default S3 trusted certificate path in banner:"
+    >&2 echo "${output}"
+    exit 2
+  fi
 }
 
 # Path style keeps the bucket out of the hostname entirely - the GH-367 fix.

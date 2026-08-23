@@ -26,11 +26,12 @@ running as a Container or as a Systemd service.
 | `S3_REGION`                           | Yes       |                                            |                                                     | Region associated with API                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `S3_SERVER_PORT`                      | Yes       |                                            |                                                     | SSL/TLS port to connect to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `S3_SERVER_PROTO`                     | Yes       | `http`, `https`                            |                                                     | Protocol to used connect to S3 server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `S3_TRUSTED_CERT_PATH`                | No        |                                            | `/etc/ssl/certs/ca-certificates.crt`                | CA bundle used to verify HTTPS S3 origin certificates. Set this to a mounted CA bundle when proxying to a private or self-signed S3-compatible endpoint. This setting is separate from `JS_TRUSTED_CERT_PATH`, which only applies to credential retrieval.                                                                                                                                                                                                                                                                                                                                                               |
 | `S3_SERVER`                           | Yes       |                                            |                                                     | S3 host to connect to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `S3_STYLE`                            | Yes       | `virtual-v2`, `virtual`, `path`, `default` | `default`                                           | The S3 host/path method. <br><br>`virtual` and `virtual-v2` represent the method that uses DNS-style bucket+hostname:port. The `default` is the same as `virtual`. In the future, the `default` value will become `virtual-v2`. See [Choosing a `S3_STYLE` Setting](#choosing-a-s3_style-setting) below for details. <br><br>`path` is a method that appends the bucket name as the first directory in the URI's path. This method is used by many S3 compatible services. See this [AWS blog article](https://aws.amazon.com/blogs/aws/amazon-s3-path-deprecation-plan-the-rest-of-the-story/) for further information. |
 | `S3_SERVICE`                          | Yes       | `s3`, `s3express`                          | `s3`                                                | Configures the gateway to interface with either normal S3 buckets or S3 Express One Zone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `DEBUG`                               | No        | `true`, `false`                            | `false`                                             | Flag enabling AWS signatures debug output                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` | No        | `true`, `false`                            | `false`                                             | Flag enabling the return a 302 with a `/` appended to the path. This is independent of the behavior selected in `ALLOW_DIRECTORY_LIST` or `PROVIDE_INDEX_PAGE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` | No        | `true`, `false`                            | `false`                                             | Flag enabling the return of a relative 302 with a `/` appended to the path. This is independent of the behavior selected in `ALLOW_DIRECTORY_LIST` or `PROVIDE_INDEX_PAGE`.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `DIRECTORY_LISTING_PATH_PREFIX`       | No        |                                            |                                                     | In `ALLOW_DIRECTORY_LIST=true` mode [adds defined prefix to links](#configuring-directory-listing)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `FOUR_O_FOUR_ON_EMPTY_BUCKET`         | No        | `true`, `false`                            | `false`                                             | In `ALLOW_DIRECTORY_LIST=true` mode, return `404 Not Found` instead of an empty directory listing when a bucket or path prefix contains no objects                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `DNS_RESOLVERS`                       | No        |                                            |                                                     | DNS resolvers (separated by single spaces) to configure NGINX with                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -56,6 +57,12 @@ running as a Container or as a Systemd service.
 If you are using [AWS instance profile credentials](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2.html),
 you will need to omit the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` variables from
 the configuration.
+
+When `S3_SERVER_PROTO=https`, the gateway verifies the S3 origin certificate by default using
+`S3_TRUSTED_CERT_PATH`. Public AWS endpoints work with the default system CA bundle. For a
+private or self-signed S3-compatible endpoint, mount the appropriate CA bundle into the
+container and set `S3_TRUSTED_CERT_PATH` to that absolute path. `JS_TRUSTED_CERT_PATH` remains
+separate because it controls TLS trust only for njs credential-fetch requests.
 
 When running with Docker, the above environment variables can be set in a file
 with the `--env-file` flag. When running as a Systemd service, the environment
@@ -144,8 +151,11 @@ will look like the following:
 When `PROVIDE_INDEX_PAGE` environment variable is set to 1, the gateway will
 transform `/some/path/` to `/some/path/index.html` when retrieving from S3.  
 Default of "index.html" can be edited in `s3gateway.js`.
-It will also redirect `/some/path` to `/some/path/` when S3 returns 404 on
-`/some/path` if `APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` is set. `path` has to
+It will also return a relative redirect from `/some/path` to `/some/path/`
+when S3 returns 404 on `/some/path` if
+`APPEND_SLASH_FOR_POSSIBLE_DIRECTORY` is set. Relative redirects preserve the
+viewer-visible path for direct and reverse-proxy deployments without relying
+on request `Host` or forwarded-protocol headers. `path` has to
 look like a possible directory: it must not end with a slash, and its final
 path segment must not contain a dot. Only the final segment is checked, so a
 dot in an intermediate directory (e.g. `/dir.name/file`) does not prevent
@@ -179,6 +189,12 @@ more details see the [official reference](http://nginx.org/en/docs/http/ngx_http
 You may make byte-range requests and normal requests for the same file and NGINX will automatically handle them
 differently. The caches for file chunks and normal file requests are separate on disk.
 
+Cache entries are keyed by the effective S3 request identity, not by the viewer's `Host` header. Requests sent through
+different frontend hostnames, or through different gateway URL aliases that resolve to the same S3 URI after
+`STRIP_LEADING_DIRECTORY_PATH`, `PREFIX_LEADING_DIRECTORY_PATH`, or static-site index handling, share one cache entry.
+This prevents clients from fragmenting the cache by varying `Host` while still keeping different origins, S3 hosts,
+request methods, and byte-range slices separate.
+
 ## Bypassing the Local Cache with Cache-Control: no-cache
 
 By default the gateway ignores the client's `Cache-Control` request header and serves cached objects until the
@@ -191,14 +207,16 @@ fetches a fresh copy from S3. The fresh response also replaces the cache entry i
 requests for that entry are served the updated content. The bypass applies to byte-range requests served from
 the slice cache as well.
 
-A bypassing request only refreshes the cache entries it actually touches. Cache entries are scoped per request method
-and per cache zone: full-body `GET` responses, `HEAD` responses, and each slice of a byte-range response are cached
-independently, so for example a hard-refreshed `GET` does not refresh the `HEAD` entry or any cached slices for the same
-object. In particular, a `no-cache` byte-range request re-fetches only the slices covered by its `Range` header — if the
-object changed in S3, the remaining slices keep the previous version until they expire, and NGINX's slice module aborts
-responses that would mix slices from two object versions (`etag mismatch in slice response` in the error log). A
-bypassing request also cannot fall back to stale content: `PROXY_CACHE_USE_STALE` only applies to requests served
-through the cache, so during an S3 outage a hard refresh returns an error even when a usable cached copy exists.
+A bypassing request only refreshes the canonical S3 cache entries it actually touches. Cache entries are scoped per
+request method and per cache zone: full-body `GET` responses, `HEAD` responses, and each slice of a byte-range response
+are cached independently, so for example a hard-refreshed `GET` does not refresh the `HEAD` entry or any cached slices
+for the same object. If two viewer-visible URLs resolve to the same effective S3 URI, a bypass through either URL
+refreshes the shared entry. In particular, a `no-cache` byte-range request re-fetches only the slices covered by its
+`Range` header — if the object changed in S3, the remaining slices keep the previous version until they expire, and
+NGINX's slice module aborts responses that would mix slices from two object versions (`etag mismatch in slice response`
+in the error log). A bypassing request also cannot fall back to stale content: `PROXY_CACHE_USE_STALE` only applies to
+requests served through the cache, so during an S3 outage a hard refresh returns an error even when a usable cached copy
+exists.
 
 The match is token-aware and case-insensitive. Only a syntactically valid `no-cache` directive triggers a bypass — for
 example `Cache-Control: no-cache` or `Cache-Control: max-age=0, no-cache`. The following do *not* trigger a bypass:
@@ -419,6 +437,15 @@ Instance profiles work by providing credentials to the instance via the
 [AWS Metadata API](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html).
 When the API is queried, it provides the keys allowed to the instance. Those
 keys regularly expire, so services using them must refresh frequently.
+
+The gateway caches these temporary credentials in memory only: OSS uses an njs
+shared dictionary and NGINX Plus uses keyval. Current versions do not write
+temporary AWS credentials to disk. On startup the container removes any legacy
+credential cache left behind by an older OSS image, checking every path the old
+code could have written: `AWS_CREDENTIALS_TEMP_FILE`, `${TMPDIR}/credentials.json`,
+and `/tmp/credentials.json`. If you dropped a custom `TMPDIR` or
+`AWS_CREDENTIALS_TEMP_FILE` setting from the environment before upgrading,
+remove that file from the persisted volume manually.
 
 ### Running in EC2 with an IAM Policy
 

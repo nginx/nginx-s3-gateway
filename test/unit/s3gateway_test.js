@@ -18,9 +18,12 @@
 
 import awscred from "include/awscredentials.js"
 import awssig4 from "include/awssig4.js";
+import credentialCacheMock from "./credential_cache_mock.js";
 import s3gateway from "include/s3gateway.js";
 
 globalThis.ngx = {};
+
+const resetSharedCredentialCache = credentialCacheMock.resetSharedCredentialCache;
 
 var fakeRequest = {
     "remoteAddress" : "172.17.0.1",
@@ -343,6 +346,52 @@ function testTrailslashControl() {
     });
 }
 
+function testTrailslashRedirectUri() {
+    printHeader('testTrailslashRedirectUri');
+    const testCases = [
+        ['/statichost', '/statichost'],
+        ['//statichost', '/statichost'],
+        ['/\\evil.example/foo', '/%5Cevil.example/foo'],
+        ['/foo\\bar', '/foo%5Cbar'],
+        ['/foo?bar', '/foo%3Fbar'],
+        ['/foo#bar', '/foo%23bar'],
+        ['/foo%bar', '/foo%25bar'],
+        ['/foo bar', '/foo%20bar'],
+        ['/foo\r\nX-Evil: yes', '/foo%0D%0AX-Evil%3A%20yes']
+    ];
+
+    testCases.forEach(function(testCase) {
+        const uri = testCase[0];
+        const expected = testCase[1];
+        const actual = s3gateway.trailslashRedirectUri({uri: uri});
+        console.log(`  ## testTrailslashRedirectUri: ${uri} => ${expected}`);
+        if (actual !== expected) {
+            throw `Redirect URI [${uri}] was sanitized to [${actual}], expected [${expected}]`;
+        }
+    });
+
+    /* nginx exposes $uri to njs as a Unicode string in which invalid UTF-8
+       bytes are already U+FFFD, so production encodes from the raw byte
+       view instead - S3 keys are arbitrary bytes and must round-trip. */
+    const rawByteCases = [
+        [[0x2F, 0x64, 0x69, 0x72, 0xC3], '/dir%C3'],
+        [[0x2F, 0x2F, 0x64, 0x69, 0x72, 0xFF], '/dir%FF'],
+        [[0x2F, 0x66, 0x6F, 0x6F, 0x5C, 0x62, 0x61, 0x72], '/foo%5Cbar'],
+        [[0x2F, 0x66, 0x6F, 0x6F, 0x0D, 0x0A], '/foo%0D%0A']
+    ];
+
+    rawByteCases.forEach(function(testCase) {
+        const rawUri = Buffer.from(testCase[0]);
+        const expected = testCase[1];
+        const actual = s3gateway.trailslashRedirectUri(
+            {rawVariables: {uri: rawUri}});
+        console.log(`  ## testTrailslashRedirectUri (raw): => ${expected}`);
+        if (actual !== expected) {
+            throw `Raw redirect URI was sanitized to [${actual}], expected [${expected}]`;
+        }
+    });
+}
+
 /**
  * Restores an env var to a previously saved value. Deletes the variable when
  * the saved value is undefined - assigning undefined would re-create the key
@@ -426,6 +475,7 @@ function testEscapeURIPathPreservesDoubleSlashes() {
 
 async function testEcsCredentialRetrieval() {
     printHeader('testEcsCredentialRetrieval');
+    resetSharedCredentialCache();
     delete process.env['AWS_ACCESS_KEY_ID'];
     process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/example';
     globalThis.ngx.fetch = function (url) {
@@ -474,6 +524,7 @@ async function testEcsCredentialRetrieval() {
 
 async function testEc2CredentialRetrieval() {
     printHeader('testEc2CredentialRetrieval');
+    resetSharedCredentialCache();
     delete process.env['AWS_ACCESS_KEY_ID'];
     delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
     globalThis.ngx.fetch = function (url, options) {
@@ -556,6 +607,7 @@ async function test() {
     testEditHeadersHeadDirectory();
     testHasExtension();
     testTrailslashControl();
+    testTrailslashRedirectUri();
     testS3uri();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();

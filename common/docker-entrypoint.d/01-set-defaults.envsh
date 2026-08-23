@@ -94,6 +94,12 @@ else
   export S3_HOST_HEADER="${S3_BUCKET_NAME}.${S3_SERVER}"
 fi
 
+# Use the system CA bundle for HTTPS S3 origins unless a private/custom CA
+# bundle is mounted and selected explicitly.
+if [ "${S3_TRUSTED_CERT_PATH+x}" = "" ]; then
+  export S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
+fi
+
 # Use default proxy_cache_use_stale settings if the variable is not defined
 if [ "${PROXY_CACHE_USE_STALE+x}" = "" ]; then
   export PROXY_CACHE_USE_STALE="error timeout http_500 http_502 http_503 http_504"

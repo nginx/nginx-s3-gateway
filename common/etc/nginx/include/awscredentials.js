@@ -81,6 +81,20 @@ const EKS_POD_IDENTITY_AGENT_CREDENTIALS_ENDPOINT = 'http://169.254.170.23/v1/cr
  */
 const maxValidityOffsetMs = 4.5 * 60 * 1000;
 
+/**
+ * Key used for OSS temporary credential caching in the njs shared dictionary.
+ * @type {string}
+ */
+const INSTANCE_CREDENTIAL_CACHE_KEY = 'instance_credentials';
+
+/**
+ * Name of the njs shared dictionary zone that caches OSS temporary
+ * credentials. Must byte-match the zone declared in
+ * oss/etc/nginx/conf.d/instance_credential_cache.conf.
+ * @type {string}
+ */
+const INSTANCE_CREDENTIAL_CACHE_ZONE = 'instance_credential_cache';
+
 
 /**
  * Get the current session token from either the instance profile credential
@@ -91,6 +105,14 @@ const maxValidityOffsetMs = 4.5 * 60 * 1000;
  */
 function sessionToken(r) {
     const credentials = readCredentials(r);
+    /* The cache entry can expire between the auth_request credential check
+       and this evaluation (the Plus keyval zone carries a timeout; the OSS
+       shared dict deliberately does not, see
+       oss/etc/nginx/conf.d/instance_credential_cache.conf), so tolerate a
+       missing entry instead of crashing the request with a TypeError. */
+    if (credentials === undefined) {
+        return '';
+    }
     if (credentials.sessionToken) {
         return credentials.sessionToken;
     }
@@ -120,7 +142,7 @@ function readCredentials(r) {
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
         return _readCredentialsFromKeyValStore(r);
     } else {
-        return _readCredentialsFromFile();
+        return _readCredentialsFromSharedDict(r);
     }
 }
 
@@ -148,44 +170,26 @@ function _readCredentialsFromKeyValStore(r) {
 }
 
 /**
- * Read the contents of the credentials file into memory. If it is not
- * found, then return undefined.
+ * Read credentials from the OSS njs shared dictionary. If they are not found,
+ * then return undefined.
  *
+ * @param r {NginxHTTPRequest} HTTP request object (used for debug logging)
  * @returns {Credentials|undefined} AWS instance profile credentials or undefined
  * @private
  */
-function _readCredentialsFromFile() {
-    const credsFilePath = _credentialsTempFile();
+function _readCredentialsFromSharedDict(r) {
+    const cached = _instanceCredentialSharedDict().get(INSTANCE_CREDENTIAL_CACHE_KEY);
+
+    if (!cached) {
+        return undefined;
+    }
 
     try {
-        const creds = fs.readFileSync(credsFilePath);
-        return JSON.parse(creds);
+        return JSON.parse(cached);
     } catch (e) {
-        /* Do not throw an exception in the case of when the
-           credentials file path is invalid in order to signal to
-           the caller that such a file has not been created yet. */
-        if (e.code === 'ENOENT') {
-            return undefined;
-        }
-        throw e;
+        utils.debug_log(r, `Error parsing JSON value from ngx.shared.${INSTANCE_CREDENTIAL_CACHE_ZONE}: ${e}`);
+        return undefined;
     }
-}
-
-/**
- * Returns the path to the credentials temporary cache file.
- *
- * @returns {string} path on the file system to credentials cache file
- * @private
- */
-function _credentialsTempFile() {
-    if (process.env['AWS_CREDENTIALS_TEMP_FILE']) {
-        return process.env['AWS_CREDENTIALS_TEMP_FILE'];
-    }
-    if (process.env['TMPDIR']) {
-        return `${process.env['TMPDIR']}/credentials.json`
-    }
-
-    return '/tmp/credentials.json';
 }
 
 /**
@@ -211,7 +215,7 @@ function writeCredentials(r, credentials) {
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
         _writeCredentialsToKeyValStore(r, credentials);
     } else {
-        _writeCredentialsToFile(credentials);
+        _writeCredentialsToSharedDict(credentials);
     }
 }
 
@@ -227,15 +231,32 @@ function _writeCredentialsToKeyValStore(r, credentials) {
 }
 
 /**
- * Write the instance profile credentials to a file on the file system. This
- * file will be quite small and should end up in the file cache relatively
- * quickly if it is repeatedly read.
+ * Write the instance profile credentials to the OSS njs shared dictionary.
  *
  * @param credentials {Credentials} AWS instance profile credentials
  * @private
  */
-function _writeCredentialsToFile(credentials) {
-    fs.writeFileSync(_credentialsTempFile(), JSON.stringify(credentials));
+function _writeCredentialsToSharedDict(credentials) {
+    _instanceCredentialSharedDict().set(INSTANCE_CREDENTIAL_CACHE_KEY, JSON.stringify(credentials));
+}
+
+/**
+ * Get the OSS shared dictionary used to cache temporary credentials.
+ *
+ * The OSS image configures this zone with js_shared_dict_zone. Keeping the
+ * lookup behind a helper produces a clear failure when a custom NGINX config
+ * omits that required zone instead of silently falling back to disk.
+ *
+ * @returns {NgxSharedDict} shared dictionary used for credential caching
+ * @private
+ */
+function _instanceCredentialSharedDict() {
+    if (typeof ngx === 'undefined' || !("shared" in ngx) ||
+        !(INSTANCE_CREDENTIAL_CACHE_ZONE in ngx.shared)) {
+        throw `NGINX shared dictionary ${INSTANCE_CREDENTIAL_CACHE_ZONE} is unavailable`;
+    }
+
+    return ngx.shared[INSTANCE_CREDENTIAL_CACHE_ZONE];
 }
 
 /**
@@ -268,7 +289,10 @@ async function fetchCredentials(r) {
     try {
         current = readCredentials(r);
     } catch (e) {
-        utils.debug_log(r, `Could not read credentials: ${e}`);
+        /* A failing credential cache turns every request into a 500, so
+           surface it at error level rather than only under DEBUG (a custom
+           NGINX configuration missing the cache zone lands here). */
+        r.error(`Could not read credentials: ${e}`);
         r.return(500);
         return;
     }
@@ -331,7 +355,9 @@ async function fetchCredentials(r) {
     try {
         writeCredentials(r, credentials);
     } catch (e) {
-        utils.debug_log(r, `Could not write credentials: ${e}`);
+        /* Cache write failures also 500 every request, so they too must be
+           visible at the default error log level, not only under DEBUG. */
+        r.error(`Could not write credentials: ${e}`);
         r.return(500);
         return;
     }
@@ -580,6 +606,7 @@ function Now() {
 }
 
 export default {
+    INSTANCE_CREDENTIAL_CACHE_KEY,
     Now,
     fetchCredentials,
     readCredentials,

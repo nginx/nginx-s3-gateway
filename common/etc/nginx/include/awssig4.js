@@ -31,6 +31,20 @@ const mod_hmac = require('crypto');
 const DEFAULT_SIGNED_HEADERS = 'host;x-amz-content-sha256;x-amz-date';
 
 /**
+ * Placeholder used in debug logs for secret values that must not be emitted.
+ * @type {string}
+ */
+const DEBUG_REDACTED_VALUE = '[REDACTED]';
+
+/**
+ * Name of the signed header carrying the AWS session token. Shared between
+ * canonical request construction and debug-log redaction so that the
+ * redaction always byte-matches the signed header.
+ * @type {string}
+ */
+const X_AMZ_SECURITY_TOKEN_HEADER = 'x-amz-security-token';
+
+/**
  * Create HTTP Authorization header for authenticating with an AWS compatible
  * v4 API.
  *
@@ -55,7 +69,13 @@ function signatureV4(r, timestamp, region, service, uri, queryParams, host, cred
         .concat(credentials.accessKeyId, '/', eightDigitDate, '/', region, '/', service, '/aws4_request,',
             'SignedHeaders=', _signedHeaders(r, credentials.sessionToken), ',Signature=', signature);
 
-    utils.debug_log(r, 'AWS v4 Auth header: [' + authHeader + ']');
+    /* The signature authenticates this exact request until the SigV4 clock
+       skew window closes, so it must never appear in logs - redact it the
+       same way the canonical request redacts the session token. */
+    if (utils.debugEnabled) {
+        utils.debug_log(r, 'AWS v4 Auth header: [' +
+            authHeader.replace(signature, DEBUG_REDACTED_VALUE) + ']');
+    }
 
     return authHeader;
 }
@@ -80,7 +100,7 @@ function _buildCanonicalRequest(r,
                            'x-amz-date:' + amzDatetime + '\n';
 
     if (sessionToken && sessionToken.length > 0) {
-        canonicalHeaders += 'x-amz-security-token:' + sessionToken + '\n'
+        canonicalHeaders += X_AMZ_SECURITY_TOKEN_HEADER + ':' + sessionToken + '\n'
     }
 
     let canonicalRequest = method + '\n';
@@ -108,7 +128,17 @@ function _buildCanonicalRequest(r,
  */
 function _buildSignatureV4(
     r, amzDatetime, eightDigitDate, creds, region, service, canonicalRequest) {
-    utils.debug_log(r, 'AWS v4 Auth Canonical Request: [' + canonicalRequest + ']');
+    /* Fingerprinting and redaction hash and copy request-sized strings, so
+       skip that work entirely on the hot path unless debug logging is on. */
+    if (utils.debugEnabled) {
+        if (creds.sessionToken && creds.sessionToken.length > 0) {
+            utils.debug_log(r, 'AWS v4 Session Token Fingerprint: [' +
+                _debugFingerprint(creds.sessionToken) + ']');
+        }
+
+        utils.debug_log(r, 'AWS v4 Auth Canonical Request: [' +
+            _canonicalRequestForDebug(canonicalRequest, creds.sessionToken) + ']');
+    }
 
     const canonicalRequestHash = mod_hmac.createHash('sha256')
         .update(canonicalRequest)
@@ -148,7 +178,7 @@ function _buildSignatureV4(
         // Otherwise, generate a new signing key hash and store it in the cache
         } else {
             kSigningHash = _buildSigningKeyHash(creds.secretAccessKey, eightDigitDate, region, service);
-            utils.debug_log(r, 'Writing key: ' + eightDigitDate + ':' + kSigningHash.toString('hex'));
+            utils.debug_log(r, 'Writing signing key cache entry for date: [' + eightDigitDate + ']');
             r.variables.signing_key_hash = eightDigitDate + ':' + JSON.stringify(kSigningHash);
         }
     // Otherwise, don't use caching at all (like when we are using NGINX OSS)
@@ -156,14 +186,54 @@ function _buildSignatureV4(
         kSigningHash = _buildSigningKeyHash(creds.secretAccessKey, eightDigitDate, region, service);
     }
 
-    utils.debug_log(r, 'AWS v4 Signing Key Hash: [' + kSigningHash.toString('hex') + ']');
+    if (utils.debugEnabled) {
+        utils.debug_log(r, 'AWS v4 Signing Key Fingerprint: [' +
+            _debugFingerprint(kSigningHash) + ']');
+    }
 
     const signature = mod_hmac.createHmac('sha256', kSigningHash)
         .update(stringToSign).digest('hex');
 
-    utils.debug_log(r, 'AWS v4 Authorization Header: [' + signature + ']');
+    /* The raw signature is replayable secret material (see signatureV4), so
+       only a fingerprint of it may reach the debug log. */
+    if (utils.debugEnabled) {
+        utils.debug_log(r, 'AWS v4 Signature Fingerprint: [' +
+            _debugFingerprint(signature) + ']');
+    }
 
     return signature;
+}
+
+/**
+ * Creates a non-reusable fingerprint for secret values included in debug logs.
+ *
+ * @param value {NjsStringOrBuffer} secret value
+ * @returns {string} SHA-256 fingerprint
+ * @private
+ */
+function _debugFingerprint(value) {
+    return mod_hmac.createHash('sha256')
+        .update(value)
+        .digest('hex');
+}
+
+/**
+ * Redacts the session token before logging the canonical request. The original
+ * canonical request is still used to calculate the signature.
+ *
+ * @param canonicalRequest {string} canonical request used for signing
+ * @param sessionToken {string|undefined} AWS session token if present
+ * @returns {string} canonical request safe for debug logs
+ * @private
+ */
+function _canonicalRequestForDebug(canonicalRequest, sessionToken) {
+    if (!sessionToken || sessionToken.length === 0) {
+        return canonicalRequest;
+    }
+
+    return canonicalRequest.replace(
+        X_AMZ_SECURITY_TOKEN_HEADER + ':' + sessionToken + '\n',
+        X_AMZ_SECURITY_TOKEN_HEADER + ':' + DEBUG_REDACTED_VALUE + '\n');
 }
 
 /**
@@ -198,7 +268,7 @@ function _buildStringToSign(amzDatetime, eightDigitDate, region, service, canoni
 function _signedHeaders(r, sessionToken) {
     let headers = DEFAULT_SIGNED_HEADERS;
     if (sessionToken && sessionToken.length > 0) {
-        headers += ';x-amz-security-token';
+        headers += ';' + X_AMZ_SECURITY_TOKEN_HEADER;
     }
     return headers;
 }

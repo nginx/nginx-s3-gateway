@@ -24,6 +24,12 @@ else
   ipv6_listen="disabled"
 fi
 
+if [ "${S3_SERVER_PROTO}" = "https" ]; then
+  origin_tls_verification="enabled"
+else
+  origin_tls_verification="disabled (HTTP origin)"
+fi
+
 # S3_UPSTREAM and S3_HOST_HEADER are computed per S3_STYLE by
 # 01-set-defaults.envsh (sourced by the entrypoint before this script runs),
 # so report those rather than assuming the virtual-host form - path style
@@ -34,6 +40,8 @@ S3 Backend Environment:
   Access Key ID: ${AWS_ACCESS_KEY_ID}
   Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}
   Host Header: ${S3_HOST_HEADER}
+  Origin TLS Verification: ${origin_tls_verification}
+  Origin TLS Trusted Certificate: ${S3_TRUSTED_CERT_PATH}
   Region: ${S3_REGION}
   Addressing Style: ${S3_STYLE}
   AWS Signatures Version: v${AWS_SIGS_VERSION}

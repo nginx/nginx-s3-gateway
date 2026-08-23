@@ -43,6 +43,13 @@ Each of these files can be overwritten in a container image that inherits
 from the S3 Gateway container image, so that additional NGINX configuration
 directives can be inserted into the gateway configuration.
 
+The similarly located
+[`/etc/nginx/conf.d/gateway/s3_proxy_ssl.conf`](/common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template)
+is not an extension point: the entrypoint appends the upstream TLS
+verification directives to it at container start whenever
+`S3_SERVER_PROTO=https`. To verify a private or self-signed S3 origin against
+a custom CA bundle, set `S3_TRUSTED_CERT_PATH` instead of editing this file.
+
 ### Examples
 
 In the [examples/ directory](/examples), there are `Dockerfile` examples that
@@ -104,8 +111,11 @@ that runner.
 
 Integration tests live in `test/integration/` and are driven by
 `test/run_integration_tests.sh`, which starts the compose environment
-(`test/docker-compose.yaml`), seeds MinIO with the fixtures in `test/data/`,
-and invokes the test scripts across a matrix of gateway configurations. New
+(`test/docker-compose.yaml`, with the
+`test/docker-compose.dynamic-credentials.yaml` override supplying an ECS
+credential-endpoint mock for the dynamic-credentials phase), seeds MinIO with
+the fixtures in `test/data/`, and invokes the test scripts across a matrix of
+gateway configurations, including HTTPS origins with TLS verification. New
 shell scripts under `test/` and `test/integration/` are picked up by
 `make lint` automatically and must pass `shellcheck --severity=warning`.
 

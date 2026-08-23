@@ -108,39 +108,55 @@ fi
 
 fixture_dir="${test_dir}/data/${minio_bucket}/cache-bypass"
 
+# Populates the curl_args array with the optional Host and Cache-Control
+# request headers shared by the assertion helpers below, so the two helpers
+# cannot drift in what they send. Callers expand it nounset-safely as
+# ${curl_args[@]+"${curl_args[@]}"} because an empty-array expansion trips
+# `set -o nounset` on bash < 4.4 (macOS ships bash 3.2).
+# buildCurlHeaderArgs <host_or_empty> <cache_control_or_empty>
+buildCurlHeaderArgs() {
+  curl_args=()
+
+  if [ -n "$1" ]; then
+    curl_args+=(-H "Host: $1")
+  fi
+
+  if [ -n "$2" ]; then
+    curl_args+=(-H "Cache-Control: $2")
+  fi
+}
+
 # Asserts that a GET of <url_path>, optionally sent with a Cache-Control
 # request header, returns a body identical to <local_file>.
-# assertGetEquals <url_path> <local_file> <cache_control_value_or_empty> <label>
+# assertGetEquals <url_path> <local_file> <cache_control_value_or_empty> <label> [host_header]
 assertGetEquals() {
   path="$1"
   expected_file="$2"
   cache_control="$3"
   label="$4"
+  host="${5:-}"
   uri="${test_server}${path}"
+  buildCurlHeaderArgs "${host}" "${cache_control}"
 
   printf "  \033[36;1m▲\033[0m "
-  echo "Cache bypass [${label}]: GET ${path} (Cache-Control: ${cache_control:-<none>})"
+  echo "Cache bypass [${label}]: GET ${path} (Host: ${host:-<default>}, Cache-Control: ${cache_control:-<none>})"
 
   checksum_output="$(${checksum_cmd} "${expected_file}")"
   expected_checksum="${checksum_output:0:${checksum_length}}"
 
-  if [ -n "${cache_control}" ]; then
-    curl_checksum_output="$(${curl_cmd} -H "Cache-Control: ${cache_control}" "${uri}" | ${checksum_cmd})"
-  else
-    curl_checksum_output="$(${curl_cmd} "${uri}" | ${checksum_cmd})"
-  fi
+  curl_checksum_output="$(${curl_cmd} ${curl_args[@]+"${curl_args[@]}"} "${uri}" | ${checksum_cmd})"
   actual_checksum="${curl_checksum_output:0:${checksum_length}}"
 
   if [ "${expected_checksum}" != "${actual_checksum}" ]; then
-    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
-    e "curl command: ${curl_cmd} -H 'Cache-Control: ${cache_control}' '${uri}' | ${checksum_cmd}"
+    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Host: ${host:-<default>} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
+    e "curl command: ${curl_cmd} ${curl_args[*]+"${curl_args[*]}"} '${uri}' | ${checksum_cmd}"
     exit ${test_fail_exit_code}
   fi
 }
 
 # Same as assertGetEquals but for a byte-range request, which the gateway
 # routes to the @s3_sliced location backed by the separate slice cache.
-# assertRangeGetEquals <url_path> <local_file> <start> <end> <cache_control_value_or_empty> <label>
+# assertRangeGetEquals <url_path> <local_file> <start> <end> <cache_control_value_or_empty> <label> [host_header]
 assertRangeGetEquals() {
   path="$1"
   expected_file="$2"
@@ -148,25 +164,23 @@ assertRangeGetEquals() {
   range_end="$4"
   cache_control="$5"
   label="$6"
+  host="${7:-}"
   uri="${test_server}${path}"
   byte_count=$((range_end - range_start + 1)) # add one since we read through the last byte
+  buildCurlHeaderArgs "${host}" "${cache_control}"
 
   printf "  \033[36;1m▲\033[0m "
-  echo "Cache bypass [${label}]: GET ${path} bytes ${range_start}-${range_end} (Cache-Control: ${cache_control:-<none>})"
+  echo "Cache bypass [${label}]: GET ${path} bytes ${range_start}-${range_end} (Host: ${host:-<default>}, Cache-Control: ${cache_control:-<none>})"
 
   file_checksum="$(${file_convert_command} if="${expected_file}" bs=1 skip="${range_start}" count="${byte_count}" 2>/dev/null | ${checksum_cmd})"
   expected_checksum="${file_checksum:0:${checksum_length}}"
 
-  if [ -n "${cache_control}" ]; then
-    curl_checksum_output="$(${curl_cmd} -H "Cache-Control: ${cache_control}" -r "${range_start}"-"${range_end}" "${uri}" | ${checksum_cmd})"
-  else
-    curl_checksum_output="$(${curl_cmd} -r "${range_start}"-"${range_end}" "${uri}" | ${checksum_cmd})"
-  fi
+  curl_checksum_output="$(${curl_cmd} ${curl_args[@]+"${curl_args[@]}"} -r "${range_start}"-"${range_end}" "${uri}" | ${checksum_cmd})"
   actual_checksum="${curl_checksum_output:0:${checksum_length}}"
 
   if [ "${expected_checksum}" != "${actual_checksum}" ]; then
-    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Range: ${range_start}-${range_end} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
-    e "curl command: ${curl_cmd} -H 'Cache-Control: ${cache_control}' -r ${range_start}-${range_end} '${uri}' | ${checksum_cmd}"
+    e "Checksum doesn't match expectation. Cache bypass [${label}] Request [GET ${uri} Host: ${host:-<default>} Range: ${range_start}-${range_end} Cache-Control: ${cache_control:-<none>}] Expected [${expected_checksum} = $(basename "${expected_file}")] Actual [${actual_checksum}]"
+    e "curl command: ${curl_cmd} ${curl_args[*]+"${curl_args[*]}"} -r ${range_start}-${range_end} '${uri}' | ${checksum_cmd}"
     exit ${test_fail_exit_code}
   fi
 }
@@ -232,8 +246,23 @@ if [ "${phase}" = "disabled" ]; then
   overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/sliced.txt"
   assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "no-cache" "no-cache ignored by slice cache when feature off"
 
+  # Viewer Host is not part of the effective S3 request identity. A different
+  # Host header must reuse the same full-body and slice cache entries instead
+  # of forcing a second fetch to S3. A different slice range must still fetch
+  # independently.
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "" "prime cache under first viewer Host" "a.example"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/enabled.txt"
+  assertGetEquals "/cache-bypass/enabled.txt" "${fixture_dir}/enabled.txt" "" "different viewer Host shares cache entry" "b.example"
+  overwriteObject "${fixture_dir}/enabled.txt" "cache-bypass/enabled.txt"
+
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "" "prime slice under first viewer Host" "a.example"
+  overwriteObject "${fixture_dir}/updated.txt" "cache-bypass/sliced.txt"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "" "different viewer Host shares slice entry" "b.example"
+  assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 10 19 "" "different slice range stays independent" "b.example"
+
   # Restore the overwritten objects so that the enabled phase and any rerun
   # against a warm MinIO start from the checked-in fixture content.
+  overwriteObject "${fixture_dir}/enabled.txt" "cache-bypass/enabled.txt"
   overwriteObject "${fixture_dir}/disabled.txt" "cache-bypass/disabled.txt"
   overwriteObject "${fixture_dir}/sliced.txt" "cache-bypass/sliced.txt"
 else

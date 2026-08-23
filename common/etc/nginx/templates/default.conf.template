@@ -13,13 +13,6 @@ map $request_uri $uri_full_path {
     "~^(?P<path>.*?)(\?.*)*$"  $path;
 }
 
-# Retrieves the initial scheme send by the User Agent. This uses
-# X-Forwarded-Proto header added by possible proxy or load balancer.
-map $http_x_forwarded_proto $real_scheme {
-    default    $http_x_forwarded_proto;
-    ""         $scheme;
-}
-
 # Remove/replace a portion of request URL (if configured)
 map $uri_full_path $uri_path {
 	"~^$STRIP_LEADING_DIRECTORY_PATH(.*)"  $PREFIX_LEADING_DIRECTORY_PATH$1;
@@ -56,6 +49,7 @@ js_var $forIndexPage true;
 js_set $s3auth s3gateway.s3auth;
 js_set $awsSessionToken awscredentials.sessionToken;
 js_set $s3uri s3gateway.s3uri;
+js_set $trailslash_redirect_uri s3gateway.trailslashRedirectUri;
 
 server {
     # The IPv6 listen directive is added at container start by
@@ -70,6 +64,13 @@ server {
     # Don't display the NGINX version number because we don't want to reveal
     # information that could be used to find an exploit.
     server_tokens off;
+
+    # Emit every nginx-generated redirect as a relative Location so that
+    # request Host and forwarded scheme headers can never choose the redirect
+    # authority - today that is only @trailslash's 302, and this default keeps
+    # any future `return`/`rewrite` redirect safe as well. Location headers
+    # proxied from S3 are not affected.
+    absolute_redirect off;
 
     # Uncomment this for a HTTP header that will let you know the cache status
     # of an object.
@@ -90,7 +91,10 @@ server {
     proxy_cache_background_update on;
     proxy_cache_lock on;
     proxy_cache_use_stale ${PROXY_CACHE_USE_STALE};
-    proxy_cache_key "$request_method$host$uri";
+    # Cache by the effective S3 request identity, not the viewer-controlled
+    # Host header. The version prefix avoids reusing entries written under the
+    # older viewer-Host-based key after an upgrade.
+    proxy_cache_key "s3gw-v2|$request_method|${S3_SERVER_PROTO}://${S3_UPSTREAM}|$s3_host|$s3uri";
     # Bypass the local cache and re-fetch from S3 when the client sends
     # Cache-Control: no-cache and PROXY_CACHE_BYPASS_NO_CACHE is enabled.
     # Opt-in because client-controlled cache busting can be abused to drive
@@ -151,7 +155,11 @@ server {
     location @s3_sliced {
         proxy_cache s3_cache_slices;
         proxy_cache_valid 200 302 206 ${PROXY_CACHE_VALID_OK};
-        proxy_cache_key "$request_method$host$uri$slice_range";
+        # Must mirror the server-level proxy_cache_key exactly, with only
+        # |$slice_range appended: the tuple cannot be single-sourced through a
+        # server-scope `set`, because that would freeze the lazily evaluated
+        # $s3uri before @s3Directory flips $forIndexPage.
+        proxy_cache_key "s3gw-v2|$request_method|${S3_SERVER_PROTO}://${S3_UPSTREAM}|$s3_host|$s3uri|$slice_range";
         # proxy_cache_bypass is inherited from the server level. A bypassing
         # ranged request re-fetches only the slices its Range covers, so a
         # changed object can leave other slices at the previous version until
@@ -179,6 +187,7 @@ server {
         # Enable passing of the server name through TLS Server Name Indication extension.
         proxy_ssl_server_name on;
         proxy_ssl_name ${S3_SERVER};
+        include /etc/nginx/conf.d/gateway/s3_proxy_ssl.conf;
 
         # Set the Authorization header to the AWS Signatures credentials
         proxy_set_header Authorization $s3auth;
@@ -240,6 +249,7 @@ server {
         # Enable passing of the server name through TLS Server Name Indication extension.
         proxy_ssl_server_name on;
         proxy_ssl_name ${S3_SERVER};
+        include /etc/nginx/conf.d/gateway/s3_proxy_ssl.conf;
 
         # Set the Authorization header to the AWS Signatures credentials
         proxy_set_header Authorization $s3auth;
@@ -318,10 +328,10 @@ server {
         # direct request to any `*/index.html` path skips the credential
         # fetch that happens in `location /`. When running with dynamic
         # credentials (Pod Identity / IRSA / IMDS / ECS task role), that
-        # means /tmp/credentials.json is never written and signatureV4
-        # crashes with a TypeError dereferencing undefined (#518). Run
-        # the same auth_request sub-request here so fetchCredentials
-        # runs before s3gateway.s3auth evaluates $s3auth.
+        # means the temporary credential cache is never populated and
+        # signatureV4 crashes with a TypeError dereferencing undefined (#518).
+        # Run the same auth_request sub-request here so fetchCredentials runs
+        # before s3gateway.s3auth evaluates $s3auth.
         auth_request /aws/credentials/retrieve;
 
         # Don't allow any headers from the client - we don't want them messing
@@ -331,6 +341,7 @@ server {
         # Enable passing of the server name through TLS Server Name Indication extension.
         proxy_ssl_server_name on;
         proxy_ssl_name ${S3_SERVER};
+        include /etc/nginx/conf.d/gateway/s3_proxy_ssl.conf;
 
         # Set the Authorization header to the AWS Signatures credentials
         proxy_set_header Authorization $s3auth;
@@ -391,10 +402,12 @@ server {
         # request that gets this 302 would fail the CORS check outright.
         include /etc/nginx/conf.d/gateway/cors.conf;
 
-        # 302 to request without slashes
-        # Adding a ? to the end of the replacement param in `rewrite` prevents it from
-        # appending the query string.
-        rewrite ^ $real_scheme://$http_host$uri/$is_args$query_string? redirect;
+        # This redirect stays relative (server-level `absolute_redirect off`)
+        # so request Host and forwarded scheme headers cannot change the
+        # redirect authority. The njs helper preserves the normalized
+        # viewer-facing URI while escaping path bytes that are significant to
+        # browsers or headers; `$uri_path` may contain S3-only rewrites.
+        return 302 $trailslash_redirect_uri/$is_args$query_string;
     }
 
     # Provide a hint to the client on 405 errors of the acceptable request methods

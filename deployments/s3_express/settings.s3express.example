@@ -5,6 +5,7 @@ AWS_SESSION_TOKEN=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 S3_SERVER=s3express-usw2-az1.us-west-2.amazonaws.com
 S3_SERVER_PORT=443
 S3_SERVER_PROTO=https
+S3_TRUSTED_CERT_PATH=/etc/ssl/certs/ca-certificates.crt
 S3_REGION=us-west-2
 S3_STYLE=virtual-v2
 S3_SERVICE=s3express
