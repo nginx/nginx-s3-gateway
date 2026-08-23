@@ -103,6 +103,15 @@ server {
     # own, including @s3 and @s3_sliced.
     proxy_cache_bypass $cache_bypass_no_cache;
 
+    # Optionally disables NGINX's processing of the caching headers S3 returns,
+    # so that the PROXY_CACHE_VALID_* settings alone decide how long a response
+    # is cached. The file is empty unless PROXY_CACHE_IGNORE_HEADERS is set;
+    # 25-set-proxy-ignore-headers.sh (container) or
+    # standalone_ubuntu_oss_install.sh writes the directive into it at startup.
+    # Kept at server scope so every proxying location inherits it - none of them
+    # define a proxy_ignore_headers of their own, including @s3 and @s3_sliced.
+    include /etc/nginx/conf.d/gateway/proxy_ignore_headers.conf;
+
     # If you need to support proxying range request, refer to this article:
     # https://www.nginx.com/blog/smart-efficient-byte-range-caching-nginx/
 

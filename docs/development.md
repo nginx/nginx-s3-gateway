@@ -43,12 +43,18 @@ Each of these files can be overwritten in a container image that inherits
 from the S3 Gateway container image, so that additional NGINX configuration
 directives can be inserted into the gateway configuration.
 
-The similarly located
-[`/etc/nginx/conf.d/gateway/s3_proxy_ssl.conf`](/common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template)
-is not an extension point: the entrypoint appends the upstream TLS
-verification directives to it at container start whenever
-`S3_SERVER_PROTO=https`. To verify a private or self-signed S3 origin against
-a custom CA bundle, set `S3_TRUSTED_CERT_PATH` instead of editing this file.
+Two similarly located files in the same directory are *not* extension points
+— the entrypoint writes their contents at container start:
+
+- [`/etc/nginx/conf.d/gateway/s3_proxy_ssl.conf`](/common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template)
+  receives the upstream TLS verification directives whenever
+  `S3_SERVER_PROTO=https`. To verify a private or self-signed S3 origin
+  against a custom CA bundle, set `S3_TRUSTED_CERT_PATH` instead of editing
+  this file.
+- [`/etc/nginx/conf.d/gateway/proxy_ignore_headers.conf`](/common/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template)
+  receives a `proxy_ignore_headers` directive when
+  `PROXY_CACHE_IGNORE_HEADERS` is set, and stays empty otherwise. Set that
+  variable instead of editing this file.
 
 ### Examples
 

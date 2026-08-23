@@ -82,6 +82,38 @@ elif [ "${S3_SERVER_PROTO}" = "https" ] && [ ! -f "${S3_TRUSTED_CERT_PATH}" ]; t
   failed=1
 fi
 
+# PROXY_CACHE_IGNORE_HEADERS is optional (unset and empty leave
+# proxy_ignore_headers out of the configuration entirely). Its value is
+# interpolated verbatim into nginx configuration by
+# apply_proxy_ignore_headers in template_nginx_config.sh, so accept only the
+# field names the proxy_ignore_headers directive recognizes. nginx compares
+# them case-insensitively, so any spelling of a valid field is passed through
+# as the operator wrote it. This mirrors the check in
+# common/docker-entrypoint.d/00-check-for-required-env.sh.
+# https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_ignore_headers
+if [ -n "${PROXY_CACHE_IGNORE_HEADERS:-}" ]; then
+  # read stops at the first line break, so line breaks are folded to spaces
+  # beforehand - otherwise everything after a newline would skip this check
+  # and still be written verbatim into the nginx configuration.
+  read -ra proxy_cache_ignore_header_fields <<< "${PROXY_CACHE_IGNORE_HEADERS//[$'\n\r']/ }"
+  if [ ${#proxy_cache_ignore_header_fields[@]} -eq 0 ]; then
+    # A whitespace-only value is non-empty, so the apply step would render
+    # 'proxy_ignore_headers ;' and NGINX would refuse to start.
+    >&2 echo "PROXY_CACHE_IGNORE_HEADERS is set but contains no field names. Unset it to leave proxy_ignore_headers out of the configuration."
+    failed=1
+  else
+    for field in "${proxy_cache_ignore_header_fields[@]}"; do
+      case "${field,,}" in
+        x-accel-redirect | x-accel-expires | x-accel-limit-rate | x-accel-buffering | x-accel-charset | expires | cache-control | set-cookie | vary) ;;
+        *)
+          >&2 echo "PROXY_CACHE_IGNORE_HEADERS contains an unsupported field (${field}). Valid fields: X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset Expires Cache-Control Set-Cookie Vary"
+          failed=1
+          ;;
+      esac
+    done
+  fi
+fi
+
 if [ "${AWS_SIGS_VERSION}" != "2" ] && [ "${AWS_SIGS_VERSION}" != "4" ]; then
   >&2 echo "AWS_SIGS_VERSION contains an invalid value (${AWS_SIGS_VERSION}). Valid values: 2, 4"
   failed=1
@@ -160,6 +192,7 @@ echo "Proxy Caching Time for Not Found Response: ${PROXY_CACHE_VALID_NOTFOUND}"
 echo "Proxy Caching Time for Forbidden Response: ${PROXY_CACHE_VALID_FORBIDDEN}"
 echo "Proxy Cache Using Stale: ${PROXY_CACHE_USE_STALE}"
 echo "Proxy Cache Bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}"
+echo "Proxy Cache Ignoring S3 Response Headers: ${PROXY_CACHE_IGNORE_HEADERS:-}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
@@ -249,6 +282,8 @@ PROXY_CACHE_VALID_FORBIDDEN=${PROXY_CACHE_VALID_FORBIDDEN:-'30s'}
 PROXY_CACHE_USE_STALE=${PROXY_CACHE_USE_STALE:-'error timeout http_500 http_502 http_503 http_504'}
 # Bypass the local cache when a client sends Cache-Control: no-cache (1=enabled, 0=disabled)
 PROXY_CACHE_BYPASS_NO_CACHE=${PROXY_CACHE_BYPASS_NO_CACHE}
+# Space-separated S3 response header fields whose caching effect is ignored
+PROXY_CACHE_IGNORE_HEADERS=${PROXY_CACHE_IGNORE_HEADERS:-''}
 # Enables or disables CORS for the S3 Gateway (1=enabled, 0=disabled;
 # normalized from the documented true/false form above)
 CORS_ENABLED=${CORS_ENABLED}
@@ -393,6 +428,22 @@ proxy_ssl_trusted_certificate ${S3_TRUSTED_CERT_PATH};
 CONF
 }
 
+apply_proxy_ignore_headers() {
+  local proxy_ignore_headers_conf="/etc/nginx/conf.d/gateway/proxy_ignore_headers.conf"
+
+  # proxy_ignore_headers requires at least one field name, so the directive
+  # has to be omitted entirely rather than rendered with an empty value.
+  [ -n "${PROXY_CACHE_IGNORE_HEADERS:-}" ] || return 0
+
+  # PROXY_CACHE_IGNORE_HEADERS was checked against the field names nginx
+  # accepts at install time before being written to /etc/nginx/environment.
+  # Appending rather than overwriting is safe because auto_envsubst re-renders
+  # the stub from its template on every start, just above.
+  cat >> "${proxy_ignore_headers_conf}" <<CONF
+proxy_ignore_headers ${PROXY_CACHE_IGNORE_HEADERS};
+CONF
+}
+
 # Attempt to read DNS Resolvers from /etc/resolv.conf
 if [ -z ${DNS_RESOLVERS+x} ]; then
   export DNS_RESOLVERS="$(cat /etc/resolv.conf | grep nameserver | cut -d' ' -f2 | xargs)"
@@ -400,6 +451,7 @@ fi
 
 auto_envsubst
 enable_s3_proxy_ssl
+apply_proxy_ignore_headers
 EOF
 chmod +x /usr/local/bin/template_nginx_config.sh
 
@@ -492,6 +544,7 @@ env PROXY_CACHE_VALID_NOTFOUND;
 env PROXY_CACHE_VALID_FORBIDDEN;
 env PROXY_CACHE_USE_STALE;
 env PROXY_CACHE_BYPASS_NO_CACHE;
+env PROXY_CACHE_IGNORE_HEADERS;
 env HEADER_PREFIXES_TO_STRIP;
 env HEADER_PREFIXES_ALLOWED;
 env FOUR_O_FOUR_ON_EMPTY_BUCKET;
@@ -539,6 +592,7 @@ download "common/etc/nginx/templates/gateway/v4_js_vars.conf.template" "/etc/ngi
 download "common/etc/nginx/templates/gateway/cors.conf.template" "/etc/nginx/templates/gateway/cors.conf.template"
 download "common/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template" "/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template"
 download "common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template" "/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template"
+download "common/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template" "/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template"
 download "common/etc/nginx/templates/gateway/s3listing_location.conf.template" "/etc/nginx/templates/gateway/s3listing_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_location.conf.template" "/etc/nginx/templates/gateway/s3_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_server.conf.template" "/etc/nginx/templates/gateway/s3_server.conf.template"
