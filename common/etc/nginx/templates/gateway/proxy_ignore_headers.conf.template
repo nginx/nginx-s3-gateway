@@ -1,0 +1,4 @@
+# A proxy_ignore_headers directive is appended at container start when
+# PROXY_CACHE_IGNORE_HEADERS is set. The setting stays out of the
+# configuration otherwise, because proxy_ignore_headers requires at least one
+# field name and an empty directive is a parse error.

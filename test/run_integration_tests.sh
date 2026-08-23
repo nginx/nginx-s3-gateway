@@ -426,6 +426,35 @@ integration_test_cache_bypass() {
   bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
 }
 
+integration_test_cache_ignore_headers() {
+  ignore_headers=$1  # "" or a field list - passed through compose to the gateway
+  # The assertion set follows the setting so that the two can never be passed
+  # as a mismatched pair.
+  if [ -n "${ignore_headers}" ]; then
+    ignore_phase="enabled"
+  else
+    ignore_phase="disabled"
+  fi
+
+  printf "\033[34;1m▶\033[0m"
+  printf "\e[1m Integration test suite with PROXY_CACHE_IGNORE_HEADERS='%s'\e[22m\n" "${ignore_headers}"
+
+  p "Starting Docker Compose Environment"
+  # The six standard configuration values are pinned to the same v4,
+  # no-listing baseline the cache bypass passes use, and the bypass setting is
+  # pinned off so neither feature can mask the other. Changing the
+  # environment makes compose recreate the gateway container, which discards
+  # the proxy cache so that each phase starts with an empty cache.
+  # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" PROXY_CACHE_BYPASS_NO_CACHE=false PROXY_CACHE_IGNORE_HEADERS="${ignore_headers}" compose up -d
+
+  wait_for_gateway
+
+  p "Starting cache ignore headers tests (phase: ${ignore_phase})"
+  echo "  test/integration/test_cache_ignore_headers.sh \"$test_server\" \"$test_dir\" ${ignore_phase} \"${mc_cmd}\" \"${minio_name}\" \"${minio_bucket}\""
+  bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
+}
+
 request_status() {
   "${curl_cmd}" --silent --output /dev/null --write-out '%{http_code}' "$@"
 }
@@ -588,6 +617,9 @@ bash "${test_dir}/integration/test_entrypoint_ipv6.sh" "${docker_cmd}" "${gatewa
 p "Testing settings output entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_output_settings.sh" "${docker_cmd}"
 
+p "Testing proxy cache ignore headers entrypoint scripts"
+bash "${test_dir}/integration/test_entrypoint_cache_ignore_headers.sh" "${docker_cmd}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
 # integration_test 2 0 0 0 "" ""
@@ -670,6 +702,16 @@ compose stop nginx-s3-gateway # Restart with new config
 
 p "Testing proxy cache bypass with PROXY_CACHE_BYPASS_NO_CACHE=true"
 integration_test_cache_bypass "true"
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing proxy cache ignore headers with PROXY_CACHE_IGNORE_HEADERS unset (default)"
+integration_test_cache_ignore_headers ""
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing proxy cache ignore headers with PROXY_CACHE_IGNORE_HEADERS='Cache-Control Expires'"
+integration_test_cache_ignore_headers "Cache-Control Expires"
 
 integration_test_proxy_ssl
 

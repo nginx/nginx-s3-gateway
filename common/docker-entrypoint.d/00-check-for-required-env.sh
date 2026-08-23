@@ -154,6 +154,40 @@ if [ -n "${PROXY_CACHE_BYPASS_NO_CACHE:-}" ]; then
   esac
 fi
 
+# PROXY_CACHE_IGNORE_HEADERS is optional (unset and empty leave
+# proxy_ignore_headers out of the configuration entirely). Its value is
+# interpolated verbatim into nginx configuration by
+# 25-set-proxy-ignore-headers.sh, so accept only the field names the
+# proxy_ignore_headers directive recognizes. nginx compares them
+# case-insensitively, so any spelling of a valid field is passed through as
+# the operator wrote it.
+# https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_ignore_headers
+if [ -n "${PROXY_CACHE_IGNORE_HEADERS:-}" ]; then
+  # read -ra rather than an unquoted for-loop so the intentional word
+  # splitting is explicit and shellcheck stays clean. read stops at the first
+  # line break, so line breaks are folded to spaces beforehand - otherwise
+  # everything after a newline would skip this check and still be written
+  # verbatim into the nginx configuration.
+  read -ra proxy_cache_ignore_header_fields <<< "${PROXY_CACHE_IGNORE_HEADERS//[$'\n\r']/ }"
+  if [ ${#proxy_cache_ignore_header_fields[@]} -eq 0 ]; then
+    # A whitespace-only value is non-empty, so the apply step would render
+    # 'proxy_ignore_headers ;' and NGINX would refuse to start. Fail here with
+    # a diagnostic instead.
+    >&2 echo "PROXY_CACHE_IGNORE_HEADERS is set but contains no field names. Unset it to leave proxy_ignore_headers out of the configuration."
+    failed=1
+  else
+    for field in "${proxy_cache_ignore_header_fields[@]}"; do
+      case "${field,,}" in
+        x-accel-redirect | x-accel-expires | x-accel-limit-rate | x-accel-buffering | x-accel-charset | expires | cache-control | set-cookie | vary) ;;
+        *)
+          >&2 echo "PROXY_CACHE_IGNORE_HEADERS contains an unsupported field (${field}). Valid fields: X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset Expires Cache-Control Set-Cookie Vary"
+          failed=1
+          ;;
+      esac
+    done
+  fi
+fi
+
 # IPV6_ENABLED is optional (unset and empty mean auto-detection from kernel
 # IPv6 support), but when it is set it must be a recognized spelling: an
 # unrecognized value would silently fall through to auto-detection in
