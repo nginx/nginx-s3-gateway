@@ -17,6 +17,7 @@
  */
 
 import awscred from "include/awscredentials.js";
+import utils from "include/utils.js";
 import credentialCacheMock from "./credential_cache_mock.js";
 import fs from "fs";
 
@@ -171,6 +172,126 @@ function testReadCredentialsWithAccessSecretKeyAndSessionTokenSet() {
         if ('AWS_SESSION_TOKEN' in process.env) {
             delete process.env.AWS_SESSION_TOKEN;
         }
+    }
+}
+
+function testReadCredentialsFromFiles() {
+    printHeader('testReadCredentialsFromFiles');
+
+    const accessKeyIdPath = tempFilePath('access-key-id', '');
+    const secretAccessKeyPath = tempFilePath('secret-access-key', '');
+    const sessionTokenPath = tempFilePath('session-token', '');
+
+    const savedAccessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+    const savedSecretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
+    const savedSessionToken = process.env['AWS_SESSION_TOKEN'];
+
+    /* The trailing newlines are deliberate: a secret file written by an editor
+       or by `echo` ends in one, and a credential carrying it would invalidate
+       every signature the gateway produces. */
+    fs.writeFileSync(accessKeyIdPath, 'FILE_ACCESS_KEY\n');
+    fs.writeFileSync(secretAccessKeyPath, 'FILE_SECRET_KEY\n');
+    fs.writeFileSync(sessionTokenPath, 'FILE_SESSION_TOKEN\n');
+
+    delete process.env['AWS_ACCESS_KEY_ID'];
+    delete process.env['AWS_SECRET_ACCESS_KEY'];
+    delete process.env['AWS_SESSION_TOKEN'];
+    process.env['AWS_ACCESS_KEY_ID_FILE'] = accessKeyIdPath;
+    process.env['AWS_SECRET_ACCESS_KEY_FILE'] = secretAccessKeyPath;
+    process.env['AWS_SESSION_TOKEN_FILE'] = sessionTokenPath;
+    utils.resetEnvVarFileCache();
+
+    try {
+        const credentials = awscred.readCredentials({});
+        if (credentials.accessKeyId !== 'FILE_ACCESS_KEY') {
+            throw `file credentials do not match returned value [accessKeyId]\nActual:   [${credentials.accessKeyId}]\nExpected: [FILE_ACCESS_KEY]`;
+        }
+        if (credentials.secretAccessKey !== 'FILE_SECRET_KEY') {
+            throw `file credentials do not match returned value [secretAccessKey]\nActual:   [${credentials.secretAccessKey}]\nExpected: [FILE_SECRET_KEY]`;
+        }
+        if (credentials.sessionToken !== 'FILE_SESSION_TOKEN') {
+            throw `file credentials do not match returned value [sessionToken]\nActual:   [${credentials.sessionToken}]\nExpected: [FILE_SESSION_TOKEN]`;
+        }
+        if (credentials.expiration !== null) {
+            throw 'file credentials do not match returned value [expiration]';
+        }
+    } finally {
+        delete process.env['AWS_ACCESS_KEY_ID_FILE'];
+        delete process.env['AWS_SECRET_ACCESS_KEY_FILE'];
+        delete process.env['AWS_SESSION_TOKEN_FILE'];
+        restoreEnv('AWS_ACCESS_KEY_ID', savedAccessKeyId);
+        restoreEnv('AWS_SECRET_ACCESS_KEY', savedSecretAccessKey);
+        restoreEnv('AWS_SESSION_TOKEN', savedSessionToken);
+        utils.resetEnvVarFileCache();
+        removeIfExists(accessKeyIdPath);
+        removeIfExists(secretAccessKeyPath);
+        removeIfExists(sessionTokenPath);
+    }
+}
+
+function testReadCredentialsWithoutSessionTokenFile() {
+    printHeader('testReadCredentialsWithoutSessionTokenFile');
+
+    const accessKeyIdPath = tempFilePath('access-key-id', '');
+    const secretAccessKeyPath = tempFilePath('secret-access-key', '');
+
+    const savedAccessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+    const savedSecretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
+    const savedSessionToken = process.env['AWS_SESSION_TOKEN'];
+
+    fs.writeFileSync(accessKeyIdPath, 'FILE_ACCESS_KEY');
+    fs.writeFileSync(secretAccessKeyPath, 'FILE_SECRET_KEY');
+
+    delete process.env['AWS_ACCESS_KEY_ID'];
+    delete process.env['AWS_SECRET_ACCESS_KEY'];
+    delete process.env['AWS_SESSION_TOKEN'];
+    process.env['AWS_ACCESS_KEY_ID_FILE'] = accessKeyIdPath;
+    process.env['AWS_SECRET_ACCESS_KEY_FILE'] = secretAccessKeyPath;
+    utils.resetEnvVarFileCache();
+
+    try {
+        const credentials = awscred.readCredentials({});
+        if (credentials.sessionToken !== null) {
+            throw `session token absent from the configuration did not read as null\nActual:   [${credentials.sessionToken}]`;
+        }
+    } finally {
+        delete process.env['AWS_ACCESS_KEY_ID_FILE'];
+        delete process.env['AWS_SECRET_ACCESS_KEY_FILE'];
+        restoreEnv('AWS_ACCESS_KEY_ID', savedAccessKeyId);
+        restoreEnv('AWS_SECRET_ACCESS_KEY', savedSecretAccessKey);
+        restoreEnv('AWS_SESSION_TOKEN', savedSessionToken);
+        utils.resetEnvVarFileCache();
+        removeIfExists(accessKeyIdPath);
+        removeIfExists(secretAccessKeyPath);
+    }
+}
+
+function testReadCredentialsPrefersEnvVarOverFile() {
+    printHeader('testReadCredentialsPrefersEnvVarOverFile');
+
+    const accessKeyIdPath = tempFilePath('access-key-id', '');
+
+    const savedAccessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+    const savedSecretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
+
+    fs.writeFileSync(accessKeyIdPath, 'FILE_ACCESS_KEY');
+
+    process.env['AWS_ACCESS_KEY_ID'] = 'ENV_ACCESS_KEY';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'ENV_SECRET_KEY';
+    process.env['AWS_ACCESS_KEY_ID_FILE'] = accessKeyIdPath;
+    utils.resetEnvVarFileCache();
+
+    try {
+        const credentials = awscred.readCredentials({});
+        if (credentials.accessKeyId !== 'ENV_ACCESS_KEY') {
+            throw `file value did not lose to the environment variable\nActual:   [${credentials.accessKeyId}]\nExpected: [ENV_ACCESS_KEY]`;
+        }
+    } finally {
+        delete process.env['AWS_ACCESS_KEY_ID_FILE'];
+        restoreEnv('AWS_ACCESS_KEY_ID', savedAccessKeyId);
+        restoreEnv('AWS_SECRET_ACCESS_KEY', savedSecretAccessKey);
+        utils.resetEnvVarFileCache();
+        removeIfExists(accessKeyIdPath);
     }
 }
 
@@ -883,6 +1004,9 @@ async function test() {
     await testEc2CredentialRetrievalIMDSv1FallbackDisabled();
     await testWebIdentityCredentialRetrievalNon200Response();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();
+    testReadCredentialsFromFiles();
+    testReadCredentialsWithoutSessionTokenFile();
+    testReadCredentialsPrefersEnvVarOverFile();
     testReadAndWriteCredentialsFromSharedDict();
     testReadCredentialsFromEmptySharedDict();
     testReadCredentialsFromMalformedSharedDict();

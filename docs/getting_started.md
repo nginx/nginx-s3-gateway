@@ -5,6 +5,7 @@
 [Configuration](#configuration)  
 [Running as a Systemd Service](#running-as-a-systemd-service)  
 [Running in Containers](#running-in-containers)  
+[Supplying Credentials from Files (Docker Secrets)](#supplying-credentials-from-files-docker-secrets)  
 [Running Using AWS Instance Profile Credentials](#running-using-aws-instance-profile-credentials)  
 [Running on EKS with IAM roles for service accounts](#running-on-eks-with-iam-roles-for-service-accounts)  
 [Running on EKS with EKS Pod Identities](#running-on-eks-with-eks-pod-identities)  
@@ -22,6 +23,9 @@ running as a Container or as a Systemd service.
 | `AWS_ACCESS_KEY_ID`                   | Yes       |                                                                                                                                                       |                                                     | Access key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `AWS_SECRET_ACCESS_KEY`               | Yes       |                                                                                                                                                       |                                                     | Secret access key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `AWS_SESSION_TOKEN`                   | No        |                                                                                                                                                       |                                                     | Session token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `AWS_ACCESS_KEY_ID_FILE`              | No        |                                                                                                                                                       |                                                     | Path to a file holding the access key, for use with container secret stores such as Docker secrets. Mutually exclusive with `AWS_ACCESS_KEY_ID`. See [Supplying Credentials from Files](#supplying-credentials-from-files-docker-secrets)                                                                                                                                                                                                                                                                                                                                                                                |
+| `AWS_SECRET_ACCESS_KEY_FILE`          | No        |                                                                                                                                                       |                                                     | Path to a file holding the secret access key, for use with container secret stores such as Docker secrets. Mutually exclusive with `AWS_SECRET_ACCESS_KEY`. See [Supplying Credentials from Files](#supplying-credentials-from-files-docker-secrets)                                                                                                                                                                                                                                                                                                                                                                     |
+| `AWS_SESSION_TOKEN_FILE`              | No        |                                                                                                                                                       |                                                     | Path to a file holding the session token, for use with container secret stores such as Docker secrets. Mutually exclusive with `AWS_SESSION_TOKEN`. See [Supplying Credentials from Files](#supplying-credentials-from-files-docker-secrets)                                                                                                                                                                                                                                                                                                                                                                             |
 | `S3_BUCKET_NAME`                      | Yes       |                                                                                                                                                       |                                                     | Name of S3 bucket to proxy requests to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `S3_REGION`                           | Yes       |                                                                                                                                                       |                                                     | Region associated with API                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `S3_SERVER_PORT`                      | Yes       |                                                                                                                                                       |                                                     | SSL/TLS port to connect to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -477,6 +481,58 @@ environment variables.
 docker run --env-file ./settings --publish 80:80 --name nginx-plus-s3-gateway \
     nginx-s3-gateway:plus
 ```
+
+## Supplying Credentials from Files (Docker Secrets)
+
+Environment variables are readable by anything that can run `docker inspect` or read `/proc/<pid>/environ`, so
+container secret stores mount each secret as a read-only file instead. To use one, set the `_FILE` companion of a
+credential variable to the path of that file rather than setting the credential variable itself:
+
+| Instead of              | Set                          |
+| ----------------------- | ---------------------------- |
+| `AWS_ACCESS_KEY_ID`     | `AWS_ACCESS_KEY_ID_FILE`     |
+| `AWS_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY_FILE` |
+| `AWS_SESSION_TOKEN`     | `AWS_SESSION_TOKEN_FILE`     |
+
+With Docker Compose or Docker Swarm:
+
+```yaml
+services:
+  nginx-s3-gateway:
+    image: ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+    environment:
+      AWS_ACCESS_KEY_ID_FILE: /run/secrets/aws_access_key_id
+      AWS_SECRET_ACCESS_KEY_FILE: /run/secrets/aws_secret_access_key
+      # ... the remaining settings as usual
+    secrets:
+      - aws_access_key_id
+      - aws_secret_access_key
+
+secrets:
+  aws_access_key_id:
+    file: ./secrets/aws_access_key_id
+  aws_secret_access_key:
+    file: ./secrets/aws_secret_access_key
+```
+
+Notes:
+
+- A credential variable and its `_FILE` companion are mutually exclusive. Setting both is a configuration error and
+  the container refuses to start.
+- Leading and trailing whitespace is stripped from the file contents, so a secret file that ends in a newline works.
+  A file that is empty or contains only whitespace is rejected at start up, because an empty credential would
+  otherwise fail much later as an opaque `403 Access Denied` from the S3 origin.
+- The file must be readable by the `nginx` worker user, which is not root. Docker Swarm mounts its secrets
+  world-readable (mode `0444`) by default, so this works out of the box. Docker Compose instead bind-mounts a
+  file-based secret with the host file's own owner and permissions, so a secret file created under the usual `0600`
+  umask - like a hand-mounted `0400 root:root` file - is unreadable inside the container; `chmod 0444` it on the host.
+  The container checks this on start up as the worker user rather than as root, so a file it cannot read is reported
+  by name at start up instead of turning every proxied request into a `500`.
+- The value is read on demand and memoized for the lifetime of the njs VM context. After rotating a secret file,
+  reload NGINX (`nginx -s reload`) or restart the container to guarantee the new value is picked up.
+- This is not specific to containers: the same variables work for the
+  [Systemd service](#running-as-a-systemd-service) install, which records the path in `/etc/nginx/environment`
+  rather than the secret itself.
 
 ## Running Using AWS Instance Profile Credentials
 

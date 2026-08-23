@@ -24,6 +24,17 @@ else
   ipv6_listen="disabled"
 fi
 
+# The access key id is not secret, but it is not always in the environment:
+# when it comes from a file (GH-67) report where it was read from instead of
+# printing a blank. The secret key and session token are never reported.
+if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+  access_key_id="${AWS_ACCESS_KEY_ID}"
+elif [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
+  access_key_id="(read from ${AWS_ACCESS_KEY_ID_FILE})"
+else
+  access_key_id=""
+fi
+
 if [ "${S3_SERVER_PROTO}" = "https" ]; then
   origin_tls_verification="enabled"
 else
@@ -37,7 +48,7 @@ fi
 cat <<EOM
 S3 Backend Environment:
   Service: ${S3_SERVICE:-s3}
-  Access Key ID: ${AWS_ACCESS_KEY_ID}
+  Access Key ID: ${access_key_id}
   Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}
   Host Header: ${S3_HOST_HEADER}
   Origin TLS Verification: ${origin_tls_verification}

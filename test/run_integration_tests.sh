@@ -56,6 +56,7 @@ test_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 repo_dir="$( dirname "${test_dir}" )"
 test_compose_config="${test_dir}/docker-compose.yaml"
 dynamic_credentials_compose_config="${test_dir}/docker-compose.dynamic-credentials.yaml"
+secret_file_credentials_compose_config="${test_dir}/docker-compose.secret-file-credentials.yaml"
 test_compose_project="${COMPOSE_PROJECT:-ngt}"
 
 minio_server="http://localhost:9090"
@@ -64,6 +65,7 @@ minio_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 minio_name="${test_compose_project}_minio_1"
 minio_bucket="bucket-1"
 test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
+test_secrets_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-secrets"
 minio_mc_args=()
 
 DOCKER="${DOCKER:-docker}"
@@ -223,6 +225,20 @@ compose_dynamic_credentials() {
   env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
     "${docker_compose_cmd[@]}" --profile dynamic-credentials \
     -f "${test_compose_config}" -f "${dynamic_credentials_compose_config}" \
+    -p "${test_compose_project}" "$@"
+}
+
+compose_secret_file_credentials() {
+  prepare_compose_env
+
+  export TEST_SECRETS_DIR="${test_secrets_dir}"
+
+  # Same pass-through trap as compose_dynamic_credentials: the override nulls
+  # the static AWS_* variables, so they have to be scrubbed here or the
+  # gateway would read them from the environment and never touch the files.
+  env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+    "${docker_compose_cmd[@]}" \
+    -f "${test_compose_config}" -f "${secret_file_credentials_compose_config}" \
     -p "${test_compose_project}" "$@"
 }
 
@@ -574,6 +590,45 @@ integration_test_dynamic_credentials() {
   fi
 }
 
+integration_test_secret_file_credentials() {
+  p "Testing credentials supplied through mounted secret files"
+  compose_secret_file_credentials down --volumes --remove-orphans || true
+  set_http_test_origin
+
+  # 0444 because compose bind-mounts a file-based secret with the host file's
+  # own permissions: the value is read by the nginx worker user, not by root,
+  # so a default-umask 0600 file would be unreadable inside the container.
+  mkdir -p "${test_secrets_dir}"
+  # Unlink first: the files this function leaves behind are 0444, so a run that
+  # was killed before finish() could clean up would make the redirections below
+  # fail with EACCES - even for their own owner - and abort the whole suite.
+  rm -f "${test_secrets_dir}"/aws_access_key_id "${test_secrets_dir}"/aws_secret_access_key
+  printf '%s\n' "${minio_user}" > "${test_secrets_dir}/aws_access_key_id"
+  printf '%s\n' "${minio_passwd}" > "${test_secrets_dir}/aws_secret_access_key"
+  chmod 0444 "${test_secrets_dir}"/aws_*
+
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose_secret_file_credentials up -d
+  wait_for_gateway
+  seed_minio_data
+
+  # A signed request only succeeds if the credentials made it out of the files
+  # and through the nginx.conf env allowlist into the njs modules - a missing
+  # `env AWS_ACCESS_KEY_ID_FILE;` directive shows up here and nowhere else.
+  assert_request_status 200 "secret file credentials object request" "${test_server}/a.txt"
+
+  # The point of the feature: the credentials are not in the environment of
+  # the gateway process. Captured rather than piped into grep -q for the same
+  # pipefail/SIGPIPE reason as assert_gateway_logs_contain: grep -q exits at
+  # the first match and the still-writing producer dies with SIGPIPE (141),
+  # failing the pipeline - and so passing this check - exactly when the secret
+  # is found.
+  gateway_env="$(compose_secret_file_credentials exec -T nginx-s3-gateway env 2>&1)"
+  if grep -qF "${minio_passwd}" <<< "${gateway_env}"; then
+    e "FAIL [secret file credentials]: the secret access key must not be in the container environment"
+    exit "$test_fail_exit_code"
+  fi
+}
+
 finish() {
   result=$?
   # Disarm the traps first: a test failure otherwise runs finish twice (ERR,
@@ -602,6 +657,10 @@ finish() {
     "${docker_cmd}" run --rm --user 0:0 -v "${test_tls_cert_dir}:/certs" --entrypoint /bin/sh nginx-s3-gateway -c 'rm -f /certs/*' > /dev/null 2>&1 || true
   fi
   rmdir "${test_tls_cert_dir}" 2> /dev/null || true
+  # The secret files are created by the invoking user and only ever read from
+  # inside the containers, so a plain removal is always enough here.
+  rm -f "${test_secrets_dir}"/* 2> /dev/null || true
+  rmdir "${test_secrets_dir}" 2> /dev/null || true
 
   exit ${result}
 }
@@ -619,6 +678,9 @@ bash "${test_dir}/integration/test_entrypoint_output_settings.sh" "${docker_cmd}
 
 p "Testing proxy cache ignore headers entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_cache_ignore_headers.sh" "${docker_cmd}"
+
+p "Testing file-backed credential entrypoint scripts"
+bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"
 
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
@@ -716,5 +778,7 @@ integration_test_cache_ignore_headers "Cache-Control Expires"
 integration_test_proxy_ssl
 
 integration_test_dynamic_credentials
+
+integration_test_secret_file_credentials
 
 p "All integration tests complete"

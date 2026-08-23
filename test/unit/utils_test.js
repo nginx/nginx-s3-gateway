@@ -18,6 +18,8 @@
 
 import utils from "include/utils.js";
 
+const fs = require('fs');
+
 function testParseArray() {
     printHeader('testParseArray');
 
@@ -182,12 +184,174 @@ function testAreAllEnvVarsSet() {
 }
 
 
+function testReadEnvVarOrFile() {
+    printHeader('testReadEnvVarOrFile');
+
+    const settingName = 'TEST_SECRET_SETTING';
+    const fileSettingName = settingName + '_FILE';
+    const secretPath = '/tmp/test_secret_setting';
+
+    /* Assigning undefined would re-create the key and break the presence
+       checks that readEnvVarOrFile makes, so delete it instead. */
+    function restoreEnv(name, saved) {
+        if (saved === undefined) {
+            delete process.env[name];
+        } else {
+            process.env[name] = saved;
+        }
+    }
+
+    /* readEnvVarOrFile memoizes what it reads, so every case starts from a
+       clean cache as well as a clean environment. */
+    function withCleanEnv(body) {
+        const savedDirect = process.env[settingName];
+        const savedFile = process.env[fileSettingName];
+        delete process.env[settingName];
+        delete process.env[fileSettingName];
+        utils.resetEnvVarFileCache();
+        try {
+            body();
+        } finally {
+            restoreEnv(settingName, savedDirect);
+            restoreEnv(fileSettingName, savedFile);
+            utils.resetEnvVarFileCache();
+            /* The path is fixed rather than unique, so leaving the file behind
+               would let one case's contents leak into the next run. */
+            if (fs.statSync(secretPath, {throwIfNoEntry: false})) {
+                fs.unlinkSync(secretPath);
+            }
+        }
+    }
+
+    function testNeitherFormSet() {
+        console.log('  ## testNeitherFormSet');
+        withCleanEnv(function () {
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== undefined) {
+                throw `Unset setting did not read as undefined\nActual:   [${actual}]`;
+            }
+        });
+    }
+
+    function testDirectValue() {
+        console.log('  ## testDirectValue');
+        withCleanEnv(function () {
+            process.env[settingName] = 'from_env';
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== 'from_env') {
+                throw `Value not read from the environment variable\nActual:   [${actual}]\nExpected: [from_env]`;
+            }
+        });
+    }
+
+    function testDirectValueWinsOverFile() {
+        console.log('  ## testDirectValueWinsOverFile');
+        withCleanEnv(function () {
+            fs.writeFileSync(secretPath, 'from_file');
+            process.env[settingName] = 'from_env';
+            process.env[fileSettingName] = secretPath;
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== 'from_env') {
+                throw `File value did not lose to the environment variable\nActual:   [${actual}]\nExpected: [from_env]`;
+            }
+        });
+    }
+
+    function testFileValue() {
+        console.log('  ## testFileValue');
+        withCleanEnv(function () {
+            fs.writeFileSync(secretPath, 'from_file');
+            process.env[fileSettingName] = secretPath;
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== 'from_file') {
+                throw `Value not read from the file\nActual:   [${actual}]\nExpected: [from_file]`;
+            }
+        });
+    }
+
+    function testFileValueIsTrimmed() {
+        console.log('  ## testFileValueIsTrimmed');
+        withCleanEnv(function () {
+            fs.writeFileSync(secretPath, '  from_file\n');
+            process.env[fileSettingName] = secretPath;
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== 'from_file') {
+                throw `Surrounding whitespace not trimmed from the file value\nActual:   [${actual}]\nExpected: [from_file]`;
+            }
+        });
+    }
+
+    function testFileValueIsMemoized() {
+        console.log('  ## testFileValueIsMemoized');
+        withCleanEnv(function () {
+            fs.writeFileSync(secretPath, 'first_value');
+            process.env[fileSettingName] = secretPath;
+            utils.readEnvVarOrFile(settingName);
+            fs.writeFileSync(secretPath, 'second_value');
+            const actual = utils.readEnvVarOrFile(settingName);
+            if (actual !== 'first_value') {
+                throw `File was re-read instead of memoized\nActual:   [${actual}]\nExpected: [first_value]`;
+            }
+        });
+    }
+
+    function testMissingFileThrows() {
+        console.log('  ## testMissingFileThrows');
+        withCleanEnv(function () {
+            process.env[fileSettingName] = '/tmp/no_such_secret_file';
+            let thrown = null;
+            try {
+                utils.readEnvVarOrFile(settingName);
+            } catch (e) {
+                thrown = e;
+            }
+            if (thrown === null) {
+                throw 'An unreadable secret file did not throw';
+            }
+            if (thrown.indexOf(fileSettingName) < 0) {
+                throw `Error did not name the setting that failed\nActual:   [${thrown}]`;
+            }
+        });
+    }
+
+    function testEmptyFileThrows() {
+        console.log('  ## testEmptyFileThrows');
+        withCleanEnv(function () {
+            fs.writeFileSync(secretPath, '\n   \n');
+            process.env[fileSettingName] = secretPath;
+            let thrown = null;
+            try {
+                utils.readEnvVarOrFile(settingName);
+            } catch (e) {
+                thrown = e;
+            }
+            if (thrown === null) {
+                throw 'A whitespace-only secret file did not throw';
+            }
+            if (thrown.indexOf('empty file') < 0) {
+                throw `Error did not report an empty file\nActual:   [${thrown}]`;
+            }
+        });
+    }
+
+    testNeitherFormSet();
+    testDirectValue();
+    testDirectValueWinsOverFile();
+    testFileValue();
+    testFileValueIsTrimmed();
+    testFileValueIsMemoized();
+    testMissingFileThrows();
+    testEmptyFileThrows();
+}
+
+
 async function test() {
     testAmzDatetime();
     testEightDigitDate();
     testPad();
     testParseArray();
     testAreAllEnvVarsSet();
+    testReadEnvVarOrFile();
 }
     
 function printHeader(testName) {

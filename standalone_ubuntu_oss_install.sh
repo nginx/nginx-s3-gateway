@@ -44,11 +44,85 @@ elif curl --output /dev/null --silent --head --fail --connect-timeout 2 "http://
   echo "Running inside an EC2 instance, using IMDSv1 for credentials"
   uses_iam_creds=1
 else
-  required+=("AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY")
+  # Each static credential may be supplied either in its own environment
+  # variable or, following the container secret-store convention, in a file
+  # named by a '<VAR>_FILE' companion variable (GH-67). The njs modules read
+  # whichever form is present, so accept either one here. Setting both is
+  # ambiguous and rejected.
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
+    file_name="${name}_FILE"
+    if [ -z ${!name+x} ] && [ -z ${!file_name+x} ]; then
+      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
+      failed=1
+    fi
+  done
   uses_iam_creds=0
 fi
 
-if [[ -v AWS_SESSION_TOKEN ]]; then
+# The credential files are read by the NGINX worker processes at request time,
+# not by this script. This script runs as root while the nginx.conf it writes
+# further down drops the workers to the nginx user, so a plain `test -r` here
+# says nothing about whether a worker can read the file: a root-only secret
+# would install cleanly and then fail every single request. On a first install
+# the nginx package - and so the nginx user - does not exist yet, in which case
+# fall back to testing as ourselves rather than refusing to install over a
+# check we cannot perform.
+nginx_worker_user="nginx"
+if [ "$(id -u)" -eq 0 ] && [ "${nginx_worker_user}" != "$(id -un)" ] &&
+   id -u "${nginx_worker_user}" > /dev/null 2>&1 &&
+   command -v su > /dev/null 2>&1; then
+  can_probe_as_nginx_worker=1
+else
+  can_probe_as_nginx_worker=0
+fi
+
+# Reports whether the NGINX worker user can read a path. Unlike a root
+# `test -r` this also catches a parent directory the worker cannot traverse,
+# because access(2) resolves the whole path as the probing user.
+isReadableByNginxWorker() {
+  probe_path=$1
+
+  if [ "${can_probe_as_nginx_worker}" -eq 0 ]; then
+    [ -r "${probe_path}" ]
+    return
+  fi
+
+  # The path is passed as a positional parameter rather than interpolated into
+  # the -c string so that a path containing shell metacharacters cannot alter
+  # the command that runs.
+  su -s /bin/sh "${nginx_worker_user}" -c 'test -r "$1"' sh "${probe_path}"
+}
+
+for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"; do
+  file_name="${name}_FILE"
+  if [ -z ${!file_name+x} ]; then
+    continue
+  fi
+  # Only a non-empty direct value conflicts: the njs modules fall through to
+  # the file when the variable is set but empty.
+  if [ -n "${!name:-}" ]; then
+    >&2 echo "${name} and ${file_name} are mutually exclusive - set only one of them"
+    failed=1
+  fi
+  if [ -z "${!file_name}" ]; then
+    >&2 echo "${file_name} must not be empty when set"
+    failed=1
+  elif [ ! -f "${!file_name}" ]; then
+    >&2 echo "${file_name} does not refer to an existing regular file (${!file_name})"
+    failed=1
+  elif ! isReadableByNginxWorker "${!file_name}"; then
+    >&2 echo "${file_name} refers to a file the NGINX worker user (${nginx_worker_user}) cannot read (${!file_name}). Make it readable by that user, for example with chmod 0444."
+    failed=1
+  # An all-whitespace file yields an empty credential, which passes every
+  # check downstream and then throws in njs on every request. Match the
+  # container entrypoint and fail here instead.
+  elif [ -z "$(tr -d '[:space:]' < "${!file_name}")" ]; then
+    >&2 echo "${file_name} refers to an empty file (${!file_name})"
+    failed=1
+  fi
+done
+
+if [[ -v AWS_SESSION_TOKEN ]] || [[ -v AWS_SESSION_TOKEN_FILE ]]; then
   echo "S3 Session token present"
 fi
 
@@ -169,7 +243,16 @@ else
 fi
 
 echo "S3 Backend Environment"
-echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
+# The access key id is not secret, but it is not always in the environment:
+# when it comes from a file (GH-67) report where it was read from instead of
+# printing a blank. The secret key and session token are never reported.
+if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+  echo "Access Key ID: ${AWS_ACCESS_KEY_ID}"
+elif [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
+  echo "Access Key ID: (read from ${AWS_ACCESS_KEY_ID_FILE})"
+else
+  echo "Access Key ID: "
+fi
 echo "Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}"
 echo "Host Header: ${S3_HOST_HEADER}"
 if [ "${S3_SERVER_PROTO}" = "https" ]; then
@@ -238,6 +321,27 @@ if [ "${to_install}" != "" ]; then
   apt-get -qq install --yes ${to_install}
   echo "▶ Stopping nginx so that it can be configured as a S3 Gateway"
   systemctl stop nginx
+fi
+
+# On a first install the worker-readability check in the validation block above
+# could only test as root: the nginx user is created by the nginx package, which
+# has only now been installed. Redo it for real, because a root-only secret
+# passes a root `test -r` and then fails every single request once the workers
+# drop privileges. Aborting here leaves an installed but unconfigured nginx,
+# which a re-run after fixing the permissions completes.
+if [ "${can_probe_as_nginx_worker}" -eq 0 ] && id -u "${nginx_worker_user}" > /dev/null 2>&1; then
+  can_probe_as_nginx_worker=1
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"; do
+    file_name="${name}_FILE"
+    if [ -n "${!file_name:-}" ] && ! isReadableByNginxWorker "${!file_name}"; then
+      >&2 echo "${file_name} refers to a file the NGINX worker user (${nginx_worker_user}) cannot read (${!file_name}). Make it readable by that user, for example with chmod 0444."
+      failed=1
+    fi
+  done
+
+  if [ $failed -gt 0 ]; then
+    exit 1
+  fi
 fi
 
 echo "▶ Adding environment variables to NGINX configuration file: /etc/nginx/environment"
@@ -349,13 +453,40 @@ EOF
 # Only include these env vars if we are not using a instance profile credential
 # to obtain S3 permissions.
 if [ $uses_iam_creds -eq 0 ]; then
-  cat >> "/etc/nginx/environment" << EOF
+  # Write whichever form of each credential was supplied. The file form is
+  # checked first, and by value rather than with `-v`: an env-file line with no
+  # value leaves the direct variable set but empty, which the validation above
+  # deliberately accepts and the njs modules read as "not configured". Keying
+  # off `-v` there would emit a lone `AWS_ACCESS_KEY_ID=` line and drop the
+  # path, leaving the gateway with no credentials at all.
+  if [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
+    cat >> "/etc/nginx/environment" << EOF
+# File holding the AWS Access key
+AWS_ACCESS_KEY_ID_FILE=${AWS_ACCESS_KEY_ID_FILE}
+EOF
+  else
+    cat >> "/etc/nginx/environment" << EOF
 # AWS Access key
 AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+EOF
+  fi
+  if [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; then
+    cat >> "/etc/nginx/environment" << EOF
+# File holding the AWS Secret access key
+AWS_SECRET_ACCESS_KEY_FILE=${AWS_SECRET_ACCESS_KEY_FILE}
+EOF
+  else
+    cat >> "/etc/nginx/environment" << EOF
 # AWS Secret access key
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 EOF
-  if [[ -v AWS_SESSION_TOKEN ]]; then
+  fi
+  if [ -n "${AWS_SESSION_TOKEN_FILE:-}" ]; then
+    cat >> "/etc/nginx/environment" << EOF
+# File holding the AWS Session Token
+AWS_SESSION_TOKEN_FILE=${AWS_SESSION_TOKEN_FILE}
+EOF
+  elif [[ -v AWS_SESSION_TOKEN ]]; then
     cat >> "/etc/nginx/environment" << EOF
 # AWS Session Token
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
@@ -498,11 +629,23 @@ EOF
 # Only include these env vars if we are not using a instance profile credential
 # to obtain S3 permissions.
 if [ $uses_iam_creds -eq 0 ]; then
-  cat >> "/etc/nginx/nginx.conf" << EOF
-env AWS_ACCESS_KEY_ID;
-env AWS_SECRET_ACCESS_KEY;
+  # Must agree with the form written to /etc/nginx/environment above, and for
+  # the same reason: a set-but-empty AWS_ACCESS_KEY_ID would otherwise select
+  # `env AWS_ACCESS_KEY_ID;` and strip the _FILE variable that actually holds
+  # the path from the worker processes.
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
+    file_name="${name}_FILE"
+    if [ -n "${!file_name:-}" ]; then
+      echo "env ${file_name};" >> "/etc/nginx/nginx.conf"
+    else
+      echo "env ${name};" >> "/etc/nginx/nginx.conf"
+    fi
+  done
+  if [ -n "${AWS_SESSION_TOKEN_FILE:-}" ]; then
+    cat >> "/etc/nginx/nginx.conf" << EOF
+env AWS_SESSION_TOKEN_FILE;
 EOF
-  if [[ -v AWS_SESSION_TOKEN ]]; then
+  elif [[ -v AWS_SESSION_TOKEN ]]; then
     cat >> "/etc/nginx/nginx.conf" << EOF
 env AWS_SESSION_TOKEN;
 EOF
