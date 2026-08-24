@@ -106,6 +106,10 @@ Other useful targets:
 
 Run `make help` for the full target list.
 
+Agent users can also run an adaptive live smoke test of the gateway via the
+skill in `.claude/skills/smoke-test/`, which exercises features the fixed
+integration matrix does not cover.
+
 ### Adding tests
 
 Unit tests live in `test/unit/` and run under the njs CLI inside the built
