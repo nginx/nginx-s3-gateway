@@ -26,6 +26,104 @@ required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION"
 "CORS_ENABLED")
 
+# Each static credential may be supplied either in its own environment
+# variable or, following the container secret-store convention, in a file named
+# by a '<VAR>_FILE' companion variable (GH-67). The njs modules read whichever
+# form is present, so the checks below accept either one. These cannot go in
+# the ${required} array, which only knows how to name a single variable.
+
+# The credential files are read by the NGINX worker processes at request time,
+# not by this script. In the standard images this script runs as root while
+# nginx.conf drops the workers to an unprivileged user, so a plain `test -r`
+# here says nothing about whether a worker can read the file: a root-only
+# secret would start up cleanly and then fail every single request. Resolve the
+# worker user so the check below can probe as that user instead.
+nginx_worker_user="$(awk '$1 == "user" { sub(/;.*$/, "", $2); print $2; exit }' /etc/nginx/nginx.conf 2> /dev/null || true)"
+if [ -z "${nginx_worker_user}" ]; then
+  # The unprivileged image deletes the `user` directive, and NGINX cannot
+  # change user without root anyway - the workers then run as whoever started
+  # the container, which is also who runs this script.
+  nginx_worker_user="$(id -un)"
+fi
+
+# Whether privileges can actually be dropped to probe as that user. Anything
+# unexpected - no such user, no su, not root - falls back to testing as
+# ourselves rather than refusing to start over a check we cannot perform.
+if [ "$(id -u)" -eq 0 ] && [ "${nginx_worker_user}" != "$(id -un)" ] &&
+   id -u "${nginx_worker_user}" > /dev/null 2>&1 &&
+   command -v su > /dev/null 2>&1; then
+  can_probe_as_nginx_worker=1
+else
+  can_probe_as_nginx_worker=0
+fi
+
+# Reports whether the NGINX worker user can read a path. Unlike a root
+# `test -r` this also catches a parent directory the worker cannot traverse,
+# because access(2) resolves the whole path as the probing user.
+isReadableByNginxWorker() {
+  probe_path=$1
+
+  if [ "${can_probe_as_nginx_worker}" -eq 0 ]; then
+    [ -r "${probe_path}" ]
+    return
+  fi
+
+  # The path is passed as a positional parameter rather than interpolated into
+  # the -c string so that a path containing shell metacharacters cannot alter
+  # the command that runs.
+  su -s /bin/sh "${nginx_worker_user}" -c 'test -r "$1"' sh "${probe_path}"
+}
+
+# Fails when neither form of a static credential is configured.
+requireStaticCredential() {
+  name=$1
+  file_name="${name}_FILE"
+
+  if [[ ! -v $name ]] && [[ ! -v $file_name ]]; then
+    >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
+    failed=1
+  fi
+}
+
+# Validates a '<VAR>_FILE' companion variable when it is set. This runs in
+# every credential mode, not just the static one, so that a mistyped path fails
+# at start up rather than turning every proxied request into a 500.
+checkCredentialFile() {
+  name=$1
+  file_name="${name}_FILE"
+
+  if [[ ! -v $file_name ]]; then
+    return
+  fi
+
+  path="${!file_name}"
+
+  # Only a non-empty direct value conflicts: the njs modules fall through to
+  # the file when the variable is set but empty (as an env-file line with no
+  # value or a compose pass-through of an unset variable leaves it), so
+  # rejecting that would refuse a configuration that works.
+  if [ -n "${!name:-}" ]; then
+    >&2 echo "${name} and ${file_name} are mutually exclusive - set only one of them"
+    failed=1
+  fi
+
+  if [ -z "${path}" ]; then
+    >&2 echo "${file_name} must not be empty when set"
+    failed=1
+  elif [ ! -f "${path}" ]; then
+    >&2 echo "${file_name} does not refer to an existing regular file (${path})"
+    failed=1
+  elif ! isReadableByNginxWorker "${path}"; then
+    >&2 echo "${file_name} refers to a file the NGINX worker user (${nginx_worker_user}) cannot read (${path}). A file-based secret keeps the permissions of its source file, so make it readable by that user, for example with chmod 0444."
+    failed=1
+  # An all-whitespace file yields an empty credential, which passes every check
+  # downstream and only fails at the S3 origin as an opaque 403.
+  elif [ -z "$(tr -d '[:space:]' < "${path}")" ]; then
+    >&2 echo "${file_name} refers to an empty file (${path})"
+    failed=1
+  fi
+}
+
 # Require some form of authentication to be configured.
 
 # a) Using container credentials. This is indicated by AWS_CONTAINER_CREDENTIALS_RELATIVE_URI being set.
@@ -38,7 +136,7 @@ elif [[ -v S3_SESSION_TOKEN ]]; then
   echo "Deprecated the S3_SESSION_TOKEN! Use the environment variable of AWS_SESSION_TOKEN instead"
   failed=1
 
-elif [[ -v AWS_SESSION_TOKEN ]]; then
+elif [[ -v AWS_SESSION_TOKEN ]] || [[ -v AWS_SESSION_TOKEN_FILE ]]; then
   echo "S3 Session token specified - not using IMDS for credentials"
 
 # b) Using Instance Metadata Service (IMDS) credentials, if IMDS is present at http://169.254.169.254.
@@ -83,8 +181,13 @@ elif [[ -v AWS_SECRET_KEY ]]; then
 # If none of the options above is used, require static credentials.
 # See https://docs.aws.amazon.com/sdkref/latest/guide/feature-static-credentials.html.
 else
-  required+=("AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY")
+  requireStaticCredential "AWS_ACCESS_KEY_ID"
+  requireStaticCredential "AWS_SECRET_ACCESS_KEY"
 fi
+
+for credential_name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+  checkCredentialFile "${credential_name}"
+done
 
 if [[ -v S3_DEBUG ]]; then
   echo "Deprecated the S3_DEBUG! Use the environment variable of DEBUG instead"

@@ -120,24 +120,43 @@ function sessionToken(r) {
 }
 
 /**
+ * Get the long-lived credentials that were configured statically, either in
+ * the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+ * environment variables or in the files named by their '_FILE' companions
+ * (GH-67). If no static credentials are configured, then return undefined and
+ * leave the caller to use one of the instance credential providers.
+ *
+ * @returns {Credentials|undefined} statically configured credentials or undefined
+ * @private
+ */
+function _readStaticCredentials() {
+    const accessKeyId = utils.readEnvVarOrFile('AWS_ACCESS_KEY_ID');
+    const secretAccessKey = utils.readEnvVarOrFile('AWS_SECRET_ACCESS_KEY');
+
+    if (!accessKeyId || !secretAccessKey) {
+        return undefined;
+    }
+
+    const sessionToken = utils.readEnvVarOrFile('AWS_SESSION_TOKEN');
+
+    return {
+        accessKeyId: accessKeyId,
+        secretAccessKey: secretAccessKey,
+        sessionToken: sessionToken ? sessionToken : null,
+        expiration: null
+    };
+}
+
+/**
  * Get the instance profile credentials needed to authenticate against S3 from
  * a backend cache. If the credentials cannot be found, then return undefined.
  * @param r {NginxHTTPRequest} HTTP request object (not used, but required for NGINX configuration)
  * @returns {Credentials|undefined} AWS instance profile credentials or undefined
  */
 function readCredentials(r) {
-    if ('AWS_ACCESS_KEY_ID' in process.env && 'AWS_SECRET_ACCESS_KEY' in process.env) {
-        let sessionToken = 'AWS_SESSION_TOKEN' in process.env ?
-            process.env['AWS_SESSION_TOKEN'] : null;
-        if (sessionToken !== null && sessionToken.length === 0) {
-            sessionToken = null;
-        }
-        return {
-            accessKeyId: process.env['AWS_ACCESS_KEY_ID'],
-            secretAccessKey: process.env['AWS_SECRET_ACCESS_KEY'],
-            sessionToken: sessionToken,
-            expiration: null
-        };
+    const staticCredentials = _readStaticCredentials();
+    if (staticCredentials !== undefined) {
+        return staticCredentials;
     }
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
         return _readCredentialsFromKeyValStore(r);
@@ -201,7 +220,7 @@ function _readCredentialsFromSharedDict(r) {
 function writeCredentials(r, credentials) {
     /* Do not bother writing credentials if we are running in a mode where we
        do not need instance credentials. */
-    if (process.env['AWS_ACCESS_KEY_ID'] && process.env['AWS_SECRET_ACCESS_KEY']) {
+    if (_readStaticCredentials() !== undefined) {
         return;
     }
 
@@ -279,7 +298,7 @@ function _instanceCredentialSharedDict() {
 async function fetchCredentials(r) {
     /* If we are not using an AWS instance profile to set our credentials we
        exit quickly and don't write a credentials file. */
-    if (utils.areAllEnvVarsSet(['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'])) {
+    if (_readStaticCredentials() !== undefined) {
         r.return(200);
         return;
     }
@@ -611,5 +630,8 @@ export default {
     fetchCredentials,
     readCredentials,
     sessionToken,
-    writeCredentials
+    writeCredentials,
+    // These functions do not need to be exposed, but they are exposed so that
+    // unit tests can run against them.
+    _readStaticCredentials
 }

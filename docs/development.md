@@ -119,7 +119,9 @@ Integration tests live in `test/integration/` and are driven by
 `test/run_integration_tests.sh`, which starts the compose environment
 (`test/docker-compose.yaml`, with the
 `test/docker-compose.dynamic-credentials.yaml` override supplying an ECS
-credential-endpoint mock for the dynamic-credentials phase), seeds MinIO with
+credential-endpoint mock for the dynamic-credentials phase and the
+`test/docker-compose.secret-file-credentials.yaml` override supplying the
+static credentials as mounted secret files), seeds MinIO with
 the fixtures in `test/data/`, and invokes the test scripts across a matrix of
 gateway configurations, including HTTPS origins with TLS verification. New
 shell scripts under `test/` and `test/integration/` are picked up by
