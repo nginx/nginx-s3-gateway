@@ -308,10 +308,13 @@ function s3BaseUri(r) {
  *
  * @param r {NginxHTTPRequest} HTTP request
  * @param opts {Object} Additional options for assembling the s3 URI
- * @param opts.preserveBasePath {boolean} If true, do not prepend the bucket
- *   name for path-style configurations. This produces a URI addressed to
- *   this gateway - which prepends the bucket name itself when proxying to
- *   S3 - rather than a URI addressed directly to S3.
+ * @param opts.preserveBasePath {boolean} If true, produce a URI addressed to
+ *   this gateway rather than directly to S3: the bucket name is not prepended
+ *   for path-style configurations (the gateway prepends it itself when
+ *   proxying - GH-210), and the path is built from the client-facing request
+ *   path ($uri_full_path) instead of the rewritten $uri_path, because the
+ *   gateway re-applies the STRIP/PREFIX_LEADING_DIRECTORY_PATH rewrite to
+ *   every incoming request (GH-575).
  * @returns {string} uri for s3 request
  */
 function s3uri(r, opts) {
@@ -321,16 +324,28 @@ function s3uri(r, opts) {
 
     let basePath;
     let path;
-    let uriPath = r.variables.uri_path;
+    let uriPath;
 
     if (opts.preserveBasePath) {
+        // Gateway-addressed URIs always come from index-page probing, where
+        // $forIndexPage is true (the js_var default; only @s3Directory sets
+        // it false and never routes back to @s3PreListing), so the
+        // directory-listing query branch below cannot run here. The
+        // preserveBasePath conjunct on that branch enforces this
+        // structurally - a probe must never become a "?delimiter=..."
+        // listing URI.
         basePath = '';
+        uriPath = r.variables.uri_full_path;
     } else {
         basePath = s3BaseUri(r);
+        uriPath = r.variables.uri_path;
     }
 
     // Create query parameters only if directory listing is enabled.
-    if (ALLOW_LISTING && !utils.parseBoolean(r.variables.forIndexPage)) {
+    // Gateway-addressed URIs (preserveBasePath) are index-page probes and
+    // must never become listing queries - see the invariant comment above.
+    if (ALLOW_LISTING && !opts.preserveBasePath &&
+        !utils.parseBoolean(r.variables.forIndexPage)) {
         const queryParams = _s3DirQueryParams(uriPath, r.method);
         if (queryParams.length > 0) {
             path = `${basePath}?${queryParams}`;
@@ -532,9 +547,11 @@ async function loadContent(r) {
     // This URI is addressed to the gateway itself, not to S3: both the
     // loopback probe below and the internalRedirect on success re-enter
     // this server's `location ~ /index\.html$`, which prepends the bucket
-    // name when proxying path-style requests to S3. Including the bucket
-    // name here as well would duplicate it in the upstream request (GH-210),
-    // so ask for the gateway-relative path instead.
+    // name when proxying path-style requests to S3 (GH-210) and re-applies
+    // the STRIP/PREFIX_LEADING_DIRECTORY_PATH request-path rewrite (GH-575).
+    // preserveBasePath therefore yields the client-facing path with no
+    // bucket name - anything already rewritten here would be rewritten a
+    // second time on re-entry.
     const uri = s3uri(r, { preserveBasePath: true });
 
     let reply = await ngx.fetch(

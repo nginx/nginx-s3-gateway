@@ -306,6 +306,19 @@ if [ -n "${IPV6_ENABLED:-}" ]; then
 fi
 
 
+# PREFIX_LEADING_DIRECTORY_PATH is rendered verbatim into the nginx
+# configuration: into the request-path map and into listing.xsl's
+# xslt_string_param, which wraps the value in single quotes. A single quote
+# or a literal '$' in the value therefore produces a configuration nginx
+# refuses to parse ("unexpected end of parameter" / "unknown variable"), so
+# fail here with a message that names the real culprit instead.
+case "${PREFIX_LEADING_DIRECTORY_PATH:-}" in
+  *"'"* | *'$'*)
+    >&2 echo "PREFIX_LEADING_DIRECTORY_PATH must not contain single quote or '\$' characters because the value is rendered into the NGINX configuration (${PREFIX_LEADING_DIRECTORY_PATH})"
+    failed=1
+    ;;
+esac
+
 if [ $failed -gt 0 ]; then
   exit 1
 fi

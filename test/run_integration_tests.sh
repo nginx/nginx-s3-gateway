@@ -716,6 +716,9 @@ bash "${test_dir}/integration/test_entrypoint_cache_ignore_headers.sh" "${docker
 p "Testing file-backed credential entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"
 
+p "Testing prefix normalization entrypoint script"
+bash "${test_dir}/integration/test_entrypoint_prefix_normalization.sh" "${docker_cmd}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
 # integration_test 2 0 0 0 "" ""
@@ -788,6 +791,21 @@ integration_test 4 0 0 0 "/tostrip" "/b"
 
 p "Testing API with AWS Signature V2 and prefix leading directory path"
 integration_test 2 0 0 0 "" "/b"
+
+p "Test API with AWS Signature V4 and prefix leading directory path on and directory listing on"
+integration_test 4 1 0 0 "" "/b"
+
+p "Test API with AWS Signature V4, prefix leading directory path, prefix stripping and directory listing on"
+integration_test 4 1 0 0 "/tostrip" "/b"
+
+p "Test API with AWS Signature V4, prefix leading directory path, directory listing and index page on"
+integration_test 4 1 1 1 "" "/statichost"
+
+p "Test API with AWS Signature V4, prefix leading directory path, prefix stripping, directory listing and index page on"
+integration_test 4 1 1 1 "/tostrip" "/statichost"
+
+p "Test API with AWS Signature V4, trailing-slash prefix leading directory path and directory listing on"
+integration_test 4 1 0 0 "" "/b/"
 
 compose stop nginx-s3-gateway # Restart with new config
 

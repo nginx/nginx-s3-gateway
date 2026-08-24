@@ -193,6 +193,20 @@ if [ "${AWS_SIGS_VERSION}" != "2" ] && [ "${AWS_SIGS_VERSION}" != "4" ]; then
   failed=1
 fi
 
+# PREFIX_LEADING_DIRECTORY_PATH is rendered verbatim into the nginx
+# configuration: into the request-path map and into listing.xsl's
+# xslt_string_param, which wraps the value in single quotes. A single quote
+# or a literal '$' in the value therefore produces a configuration nginx
+# refuses to parse ("unexpected end of parameter" / "unknown variable"), so
+# fail here with a message that names the real culprit instead. This mirrors
+# the check in common/docker-entrypoint.d/00-check-for-required-env.sh.
+case "${PREFIX_LEADING_DIRECTORY_PATH:-}" in
+  *"'"* | *'$'*)
+    >&2 echo "PREFIX_LEADING_DIRECTORY_PATH must not contain single quote or '\$' characters because the value is rendered into the NGINX configuration (${PREFIX_LEADING_DIRECTORY_PATH})"
+    failed=1
+    ;;
+esac
+
 if [ $failed -gt 0 ]; then
   exit 1
 fi
@@ -221,6 +235,32 @@ case "${CORS_ENABLED:-false}" in
   TRUE | true | True | YES | Yes | 1) CORS_ENABLED=1 ;;
   *) CORS_ENABLED=0 ;;
 esac
+
+# Normalize STRIP_LEADING_DIRECTORY_PATH and PREFIX_LEADING_DIRECTORY_PATH for
+# the request-path map in default.conf.template, which concatenates
+# $PREFIX_LEADING_DIRECTORY_PATH with paths that always begin with "/": a
+# trailing slash would produce double-slash S3 keys and 404 every request
+# (GH-576). PREFIX also gains a leading slash if missing; STRIP is a regex
+# fragment, so only its trailing slashes are trimmed. The normalized values
+# are written into /etc/nginx/environment below, so both the template
+# renderer and the nginx master see the same value. This mirrors the
+# normalization in common/docker-entrypoint.d/01-set-defaults.envsh.
+
+# Prints $1 with all trailing slashes removed ("" stays "").
+trimTrailingSlashes() {
+  while [ "${1%/}" != "$1" ]; do
+    set -- "${1%/}"
+  done
+  printf '%s' "$1"
+}
+
+PREFIX_LEADING_DIRECTORY_PATH="$(trimTrailingSlashes "${PREFIX_LEADING_DIRECTORY_PATH:-}")"
+case "${PREFIX_LEADING_DIRECTORY_PATH}" in
+  "" | /*) ;;
+  *) PREFIX_LEADING_DIRECTORY_PATH="/${PREFIX_LEADING_DIRECTORY_PATH}" ;;
+esac
+
+STRIP_LEADING_DIRECTORY_PATH="$(trimTrailingSlashes "${STRIP_LEADING_DIRECTORY_PATH:-}")"
 
 # This is the primary logic to determine the s3 host used for the
 # upstream (the actual proxying action) as well as the `Host` header
@@ -691,8 +731,9 @@ env PROXY_CACHE_IGNORE_HEADERS;
 env HEADER_PREFIXES_TO_STRIP;
 env HEADER_PREFIXES_ALLOWED;
 env FOUR_O_FOUR_ON_EMPTY_BUCKET;
-env STRIP_LEADING_DIRECTORY_PATH;
-env PREFIX_LEADING_DIRECTORY_PATH;
+# STRIP/PREFIX_LEADING_DIRECTORY_PATH are deliberately not whitelisted, for
+# parity with the container image: njs must only see these through nginx
+# variables, never process.env.
 
 events {
     worker_connections  1024;
