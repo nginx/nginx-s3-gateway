@@ -2,7 +2,19 @@ set $request_cors "${request_method}_${CORS_ENABLED}";
 
 if ($request_cors = "OPTIONS_1") {
     add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}';
-    add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS';
+    #
+    # Advertise exactly the read-only method policy the gateway enforces:
+    # LIMIT_METHODS_TO_CSV renders "GET, HEAD, OPTIONS" whenever this block
+    # is reachable, because it and CORS_ENABLED are derived from the same
+    # setting by 01-set-defaults.envsh (container) or
+    # standalone_ubuntu_oss_install.sh. The previous hardcoded list
+    # advertised POST - which every path rejects (GH-496 rewrite-phase
+    # guard, GH-551 limit_except) - and omitted HEAD, which the gateway
+    # serves, so preflighted HEAD requests were refused by the browser and
+    # preflighted POSTs were approved only to fail with a 405. Keep the
+    # three Access-Control-Allow-Methods rows in this file identical.
+    #
+    add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}';
     #
     # Custom headers and headers various browsers *should* be OK with but aren't
     #
@@ -24,14 +36,16 @@ if ($request_cors = "OPTIONS_1") {
 
 if ($request_cors = "GET_1") {
     add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}' always;
-    add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+    # Keep in sync with the OPTIONS_1 block above - see the comment there.
+    add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}' always;
     add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
     add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
 }
 
 if ($request_cors = "HEAD_1") {
     add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}' always;
-    add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+    # Keep in sync with the OPTIONS_1 block above - see the comment there.
+    add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}' always;
     add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
     add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
 }

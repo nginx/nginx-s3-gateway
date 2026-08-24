@@ -171,16 +171,64 @@ assertHttpRequestEquals() {
         e "curl command: ${curl_cmd} -X "GET" -r "${range_start}"-"${range_end}" "${uri}" ${extra_arg} | ${checksum_cmd}"
         exit ${test_fail_exit_code}
     fi
-  elif [ "${method}" = "PUT" ] || [ "${method}" = "POST" ] || [ "${method}" = "DELETE" ]; then
-    # Write methods must be rejected by the gateway, so only the immediate
-    # response code is asserted - deliberately no redirect following.
+  elif [ "${method}" = "PUT" ] || [ "${method}" = "POST" ] || [ "${method}" = "DELETE" ] || [ "${method}" = "OPTIONS" ]; then
+    # Non-read methods must be rejected by the gateway (OPTIONS included when
+    # CORS is disabled, as it is in this environment), so only the immediate
+    # response is asserted - deliberately no redirect following.
     expected_response_code="$3"
-    actual_response_code="$(${curl_cmd} -X "${method}" -o /dev/null -w '%{http_code}' "${uri}")"
+    # A single request feeds both the status assertion and the 405 header
+    # assertions below, so every assertion observes the same response - two
+    # requests could straddle a config reload and pass/fail on different
+    # responses (mirrors assertRequest in test_cors.sh; keep them in sync).
+    headers="$(${curl_cmd} -X "${method}" -D - -o /dev/null "${uri}")"
+    IFS= read -r status_line <<< "${headers}"
+    actual_response_code="${status_line#* }"
+    actual_response_code="${actual_response_code:0:3}"
 
     if [ "${expected_response_code}" != "${actual_response_code}" ]; then
       e "Response code didn't match expectation. Request [${method} ${uri}] Expected [${expected_response_code}] Actual [${actual_response_code}]"
-      e "curl command: ${curl_cmd} -X '${method}' -o /dev/null -w '%{http_code}' '${uri}'"
+      e "curl command: ${curl_cmd} -X '${method}' -D - -o /dev/null '${uri}'"
       exit ${test_fail_exit_code}
+    fi
+
+    if [ "${expected_response_code}" = "405" ]; then
+      # Every 405 must carry the Allow header @error405 promises (RFC 9110).
+      # CORS is disabled in every leg that runs this script (the
+      # CORS-enabled contract lives in test_cors.sh), so the exact value is
+      # pinned; add_header silently omits the header when
+      # LIMIT_METHODS_TO_CSV renders empty, which only a value assertion
+      # can catch. For the same reason Access-Control-Allow-Origin must be
+      # absent: with CORS off the $cors_error_origin map renders empty and
+      # add_header must omit the header entirely rather than leak the
+      # CORS_ALLOWED_ORIGIN default onto rejection responses. The whole
+      # header block is scanned (no early break) because both headers must
+      # be observed regardless of their order in the response.
+      expected_allow="GET, HEAD"
+      actual_allow=""
+      actual_acao=""
+      while IFS= read -r header; do
+        case "${header}" in
+          [Aa]llow:\ *)
+            actual_allow="${header#*: }"
+            actual_allow="${actual_allow%$'\r'}"
+            ;;
+          [Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:*)
+            actual_acao="${header%$'\r'}"
+            ;;
+        esac
+      done <<< "${headers}"
+
+      if [ "${expected_allow}" != "${actual_allow}" ]; then
+        e "Allow header didn't match expectation. Request [${method} ${uri}] Expected [${expected_allow}] Actual [${actual_allow}]"
+        e "curl command: ${curl_cmd} -X '${method}' -D - -o /dev/null '${uri}'"
+        exit ${test_fail_exit_code}
+      fi
+
+      if [ -n "${actual_acao}" ]; then
+        e "Access-Control-Allow-Origin must be absent on 405s when CORS is disabled. Request [${method} ${uri}] Got [${actual_acao}]"
+        e "curl command: ${curl_cmd} -X '${method}' -D - -o /dev/null '${uri}'"
+        exit ${test_fail_exit_code}
+      fi
     fi
   else
     # A typo'd method must fail the suite loudly - silently continuing here
@@ -433,12 +481,25 @@ assertHttpRequestEquals "POST" "/gh551-writeguard/index.html" "404"
 # rejected DELETE/PUT above must not have reached the bucket.
 assertHttpRequestEquals "GET" "/gh551-writeguard/index.html" "data/bucket-1/gh551-writeguard/index.html"
 
-# The write-method policy for ordinary object paths lives in `location /`:
-# its empty limit_except starves unlisted methods of a content handler, so
-# nginx's static module rejects them and the server-level error_page answers
-# 405 with an Allow header - nothing is ever sent to S3.
+# GH-496: the method policy for ordinary object paths lives in `location /`,
+# which rejects unlisted methods in the rewrite phase with an immediate 405 -
+# before credentials are fetched and without consulting the local filesystem.
+# Nothing is ever sent to S3. POST is the load-bearing assertion: the pre-fix
+# empty limit_except starved unlisted methods of a content handler, so
+# nginx's static module probed the local docroot and answered POST with 404
+# (missing file) or 405 (present file) instead of a uniform 405. The
+# nonexistent-path POST assertion pins that the status no longer depends on
+# what exists on the container filesystem (the static module rejected PUT
+# before any filesystem access, so its row just completes the
+# method/existence matrix). OPTIONS must be rejected here because CORS is
+# disabled in every leg that runs this script; test_cors.sh asserts the
+# CORS-enabled flip side, where OPTIONS is served as the preflight.
 assertHttpRequestEquals "PUT" "a.txt" "405"
 assertHttpRequestEquals "DELETE" "a.txt" "405"
+assertHttpRequestEquals "POST" "a.txt" "405"
+assertHttpRequestEquals "POST" "gh496-does-not-exist" "405"
+assertHttpRequestEquals "PUT" "gh496-does-not-exist" "405"
+assertHttpRequestEquals "OPTIONS" "a.txt" "405"
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "GET" "/statichost/" "data/bucket-1/statichost/index.html"

@@ -123,7 +123,8 @@ credential-endpoint mock for the dynamic-credentials phase and the
 `test/docker-compose.secret-file-credentials.yaml` override supplying the
 static credentials as mounted secret files), seeds MinIO with
 the fixtures in `test/data/`, and invokes the test scripts across a matrix of
-gateway configurations, including HTTPS origins with TLS verification. New
+gateway configurations, including HTTPS origins with TLS verification and a
+CORS-enabled phase. New
 shell scripts under `test/` and `test/integration/` are picked up by
 `make lint` automatically and must pass `shellcheck --severity=warning`.
 

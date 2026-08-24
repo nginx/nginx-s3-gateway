@@ -38,6 +38,43 @@ map "${PROXY_CACHE_BYPASS_NO_CACHE}:$req_cc_no_cache" $cache_bypass_no_cache {
     "1:1"    1;
 }
 
+# GH-496: whether the request method is one this read-only gateway serves.
+# `location /` rejects every other method in the rewrite phase with an
+# immediate 405 - see the comment there. CORS_ENABLED is normalized to 1/0
+# by 01-set-defaults.envsh (container) or standalone_ubuntu_oss_install.sh.
+# The read methods match on the method alone (regex rows) so an unnormalized
+# CORS_ENABLED value can never take reads down; only OPTIONS - the CORS
+# preflight - requires the exact value '1'. Everything else fails closed.
+# Keep this method set in sync with LIMIT_METHODS_TO/LIMIT_METHODS_TO_CSV
+# (01-set-defaults.envsh and standalone_ubuntu_oss_install.sh): the
+# index.html limit_except and the @error405 Allow header still derive from
+# those, and a change to one side alone would make the gateway 405 methods
+# its own Allow header advertises.
+map "${CORS_ENABLED}:$request_method" $method_not_allowed {
+    default        1;
+    "~:GET$"       0;
+    "~:HEAD$"      0;
+    "1:OPTIONS"    0;
+}
+
+# The Access-Control-Allow-Origin value for the nginx-generated rejection
+# responses in @error404 and @error405. cors.conf's if blocks key on the
+# request method and match only GET/HEAD/OPTIONS, so the non-read methods
+# those locations answer (rewrite-phase 405s per GH-496; the */index.html
+# limit_except denial collapsed to a sanitized 404 per GH-551) would
+# otherwise carry no CORS headers at all, and a cross-origin caller would
+# see an opaque network error instead of the real status. Renders empty
+# when CORS is disabled - add_header omits a header whose value is empty -
+# so CORS-off responses are unchanged, and an operator who explicitly sets
+# CORS_ALLOWED_ORIGIN to "" fails safe the same way. Both variables are
+# guaranteed defined at render time: CORS_ENABLED is normalized to 1/0 and
+# CORS_ALLOWED_ORIGIN defaulted to '*' by 01-set-defaults.envsh (container)
+# or standalone_ubuntu_oss_install.sh.
+map "${CORS_ENABLED}" $cors_error_origin {
+    "1"      "${CORS_ALLOWED_ORIGIN}";
+    default  "";
+}
+
 # S3_HOST_HEADER is set in the startup script
 # (either ./common/docker-entrypoint.sh or ./standalone_ubuntu_oss_install.sh)
 # based on the S3_STYLE configuration option.
@@ -127,10 +164,24 @@ server {
     }
 
     location / {
-        # This value is templated in based on the CORS_ENABLED setting. When
-        # CORS is enabled, acceptable methods are GET, HEAD, and OPTIONS.
-        # Otherwise, they are GET and HEAD.
-        limit_except ${LIMIT_METHODS_TO} {}
+        # This is a read-only gateway: reject any non-read method in the
+        # rewrite phase with an immediate 405. The server-level
+        # `error_page 405 @error405` adds the Allow header. Rejection happens
+        # before the CORS preflight check below (the map allows OPTIONS when
+        # CORS is enabled), before the credential-fetching auth_request,
+        # before the request body is read, and without ever consulting the
+        # local filesystem. This replaces an empty `limit_except` block:
+        # js_content is not inherited into limit_except contexts, so unlisted
+        # methods fell through to nginx's static module and were answered
+        # from the local docroot - POST returned 404 or 405 depending on
+        # whether the path happened to exist on disk (GH-496). Do not
+        # reintroduce a limit_except alongside this guard: nginx switches
+        # unlisted methods to the limit_except context before the rewrite
+        # phase runs, so this `if` would never execute for exactly the
+        # methods it is meant to reject.
+        if ($method_not_allowed) {
+            return 405;
+        }
 
         # CORS is implemented by returning the appropriate headers as part of
         # the response to an OPTIONS request. If you want to customize the
@@ -140,8 +191,12 @@ server {
 
         auth_request /aws/credentials/retrieve;
 
-        # Redirect to the proper location based on the client request - either
-        # @s3, @s3PreListing or @error405.
+        # Redirect to the proper location based on the client request -
+        # @s3, @s3_sliced, @s3PreListing or @error404. The @error405 branch
+        # in redirectToS3 is defense-in-depth only: the rewrite-phase guard
+        # above already rejects non-read methods, but a customized cors.conf
+        # that stops returning 204 for OPTIONS would otherwise let a
+        # CORS-enabled preflight through to S3 as a signed request.
 
         js_content s3gateway.redirectToS3;
     }
@@ -307,12 +362,13 @@ server {
         # This value is templated in based on the CORS_ENABLED setting. When
         # CORS is enabled, acceptable methods are GET, HEAD, and OPTIONS.
         # Otherwise, they are GET and HEAD.
-        # Unlike `location /`, an empty limit_except block is not enough here:
-        # nginx explicitly inherits the proxy_pass content handler into
-        # limit_except contexts, so unlisted methods would still be proxied to
-        # S3 with a valid signature (GH-551). deny all rejects them in the
-        # access phase before anything is sent upstream; the resulting 403 is
-        # sanitized to 404 by the error_page directive below.
+        # An empty limit_except block would not be enough here: nginx
+        # explicitly inherits the proxy_pass content handler into limit_except
+        # contexts, so unlisted methods would still be proxied to S3 with a
+        # valid signature (GH-551). deny all rejects them in the access phase
+        # before anything is sent upstream; the resulting 403 is sanitized to
+        # 404 by the error_page directive below. (`location /` instead rejects
+        # non-read methods in the rewrite phase - see GH-496.)
         limit_except ${LIMIT_METHODS_TO} {
             deny all;
         }
@@ -384,6 +440,16 @@ server {
         # it to be applied within different contexts.
         include /etc/nginx/conf.d/gateway/cors.conf;
 
+        # cors.conf only decorates GET and HEAD responses, but this location
+        # also answers non-read methods: the */index.html limit_except
+        # denial is collapsed here to a sanitized 404 (GH-551). Supply the
+        # origin for those from the $cors_error_origin map (empty - header
+        # omitted - when CORS is disabled). No response can carry the header
+        # twice: when a cors.conf if block matches, it declares add_header
+        # directives of its own, and nginx only inherits location-level
+        # add_header directives into a context that declares none.
+        add_header 'Access-Control-Allow-Origin' $cors_error_origin always;
+
         return 404;
     }
 
@@ -423,6 +489,14 @@ server {
     error_page 405 @error405;
     location @error405 {
         add_header Allow "${LIMIT_METHODS_TO_CSV}" always;
+        # Only non-read methods reach this location (GH-496 rewrite-phase
+        # guard in `location /`; when CORS is off, OPTIONS is one of them),
+        # and cors.conf's if blocks never match those methods, so including
+        # it here would add nothing. Supply the origin directly from the
+        # $cors_error_origin map instead (empty - header omitted - when CORS
+        # is disabled): without it a cross-origin caller sees an opaque CORS
+        # failure rather than this 405 + Allow contract.
+        add_header 'Access-Control-Allow-Origin' $cors_error_origin always;
         return 405;
     }
 

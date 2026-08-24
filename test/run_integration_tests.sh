@@ -471,6 +471,40 @@ integration_test_cache_ignore_headers() {
   bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
 }
 
+integration_test_cors() {
+  # The assertion script receives the same origin the gateway is configured
+  # with so that the two can never be passed as a mismatched pair. A
+  # concrete origin (not the '*' default) is used so the test proves exact
+  # pass-through of a configured value rather than a default the gateway
+  # could emit by accident.
+  cors_test_origin="http://cors.example"
+
+  printf "\033[34;1m▶\033[0m"
+  printf "\e[1m Integration test suite with CORS_ENABLED=true\e[22m\n"
+
+  p "Starting Docker Compose Environment"
+  # The six standard configuration values are pinned to the same v4,
+  # no-listing baseline the cache legs use so that URL rewriting cannot leak
+  # in. Changing the environment makes compose recreate the gateway
+  # container, which discards the proxy cache so the 404 assertions cannot
+  # be satisfied by entries warmed under a CORS-off configuration. CORS is
+  # deliberately enabled with the documented "true" form rather than the
+  # normalized "1" so the leg also exercises the parseBoolean path in
+  # 01-set-defaults.envsh.
+  # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" CORS_ENABLED=true CORS_ALLOWED_ORIGIN="${cors_test_origin}" compose up -d
+
+  wait_for_gateway
+
+  # test_api.sh is deliberately not run here: it pins the CORS-off side of
+  # the GH-496 method policy (OPTIONS rejected with 405, Allow "GET, HEAD",
+  # no Access-Control-Allow-Origin), so the CORS-enabled contract lives in
+  # the dedicated script.
+  p "Starting CORS tests"
+  echo "  test/integration/test_cors.sh \"$test_server\" \"$test_dir\" \"${cors_test_origin}\""
+  bash "${test_dir}/integration/test_cors.sh" "${test_server}" "${test_dir}" "${cors_test_origin}"
+}
+
 request_status() {
   "${curl_cmd}" --silent --output /dev/null --write-out '%{http_code}' "$@"
 }
@@ -774,6 +808,11 @@ compose stop nginx-s3-gateway # Restart with new config
 
 p "Testing proxy cache ignore headers with PROXY_CACHE_IGNORE_HEADERS='Cache-Control Expires'"
 integration_test_cache_ignore_headers "Cache-Control Expires"
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing CORS contract with CORS_ENABLED=true"
+integration_test_cors
 
 integration_test_proxy_ssl
 
