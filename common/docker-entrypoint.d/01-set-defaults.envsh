@@ -28,6 +28,14 @@ parseBoolean() {
   esac
 }
 
+# Prints $1 with all trailing slashes removed ("" stays "").
+trimTrailingSlashes() {
+  while [ "${1%/}" != "$1" ]; do
+    set -- "${1%/}"
+  done
+  printf '%s' "$1"
+}
+
 # This line is an addition to the NGINX Docker image's entrypoint script.
 if [ "${DNS_RESOLVERS+x}" = "" ]; then
     resolvers=""
@@ -109,3 +117,24 @@ fi
 # default.conf.template only ever sees '1' or '0'.
 PROXY_CACHE_BYPASS_NO_CACHE="$(parseBoolean "${PROXY_CACHE_BYPASS_NO_CACHE:-false}")"
 export PROXY_CACHE_BYPASS_NO_CACHE
+
+# Normalize STRIP_LEADING_DIRECTORY_PATH and PREFIX_LEADING_DIRECTORY_PATH for
+# the request-path map in default.conf.template, which concatenates
+# $PREFIX_LEADING_DIRECTORY_PATH with paths that always begin with "/": a
+# trailing slash would produce double-slash S3 keys and 404 every request
+# (GH-576). PREFIX also gains a leading slash if missing; STRIP is a regex
+# fragment, so only its trailing slashes are trimmed. Note: the entrypoint
+# runs the whole /docker-entrypoint.d loop in a pipeline subshell, so these
+# exports reach the later entrypoint scripts (including the template renderer)
+# but NOT the exec'd nginx master - nginx.conf therefore deliberately omits
+# `env` directives for these variables so njs can never read the raw,
+# un-normalized values from process.env.
+PREFIX_LEADING_DIRECTORY_PATH="$(trimTrailingSlashes "${PREFIX_LEADING_DIRECTORY_PATH:-}")"
+case "${PREFIX_LEADING_DIRECTORY_PATH}" in
+  "" | /*) ;;
+  *) PREFIX_LEADING_DIRECTORY_PATH="/${PREFIX_LEADING_DIRECTORY_PATH}" ;;
+esac
+export PREFIX_LEADING_DIRECTORY_PATH
+
+STRIP_LEADING_DIRECTORY_PATH="$(trimTrailingSlashes "${STRIP_LEADING_DIRECTORY_PATH:-}")"
+export STRIP_LEADING_DIRECTORY_PATH

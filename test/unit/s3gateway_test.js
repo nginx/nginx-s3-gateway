@@ -411,11 +411,16 @@ function testS3uri() {
     const savedStyle = process.env['S3_STYLE'];
     const bucket = process.env['S3_BUCKET_NAME'];
 
-    function makeRequest(uriPath) {
+    // uri_full_path is the client-facing path from $request_uri; uri_path is
+    // that path after the STRIP/PREFIX_LEADING_DIRECTORY_PATH map. They are
+    // identical unless one of those variables is configured.
+    function makeRequest(uriPath, uriFullPath) {
         const r = {
             "method": "GET",
             "variables": {
                 "uri_path": uriPath,
+                "uri_full_path": uriFullPath === undefined ?
+                    uriPath : uriFullPath,
                 "forIndexPage": "true"
             }
         };
@@ -425,9 +430,9 @@ function testS3uri() {
         return r;
     }
 
-    function check(style, opts, uriPath, expected) {
+    function check(style, opts, uriPath, expected, uriFullPath) {
         process.env['S3_STYLE'] = style;
-        const actual = s3gateway.s3uri(makeRequest(uriPath), opts);
+        const actual = s3gateway.s3uri(makeRequest(uriPath, uriFullPath), opts);
         if (actual !== expected) {
             throw `Unexpected s3uri result for S3_STYLE=${style} ` +
                 `uri_path=${uriPath}` +
@@ -457,6 +462,19 @@ function testS3uri() {
         // page suffix is appended here.
         check('path', undefined, '/a/c/', `/${bucket}/a/c/`);
         check('path', { preserveBasePath: true }, '/a/c/', '/a/c/');
+
+        // When PREFIX_LEADING_DIRECTORY_PATH rewrites the request path,
+        // uri_path carries the prefix but uri_full_path does not. A
+        // gateway-relative URI must be the client-facing path - the front
+        // door re-applies the rewrite on re-entry, so a uri_path-based probe
+        // would gain the prefix a second time (GH-575). Default opts keep
+        // building the S3-addressed URI from the rewritten uri_path.
+        check('virtual-v2', { preserveBasePath: true }, '/b/a/c/', '/a/c/',
+            '/a/c/');
+        check('path', { preserveBasePath: true }, '/b/a/c/', '/a/c/',
+            '/a/c/');
+        check('virtual-v2', undefined, '/b/a/c/', '/b/a/c/', '/a/c/');
+        check('path', undefined, '/b/a/c/', `/${bucket}/b/a/c/`, '/a/c/');
     } finally {
         restoreEnv('S3_STYLE', savedStyle);
     }

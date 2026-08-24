@@ -95,15 +95,23 @@ if [[ $checksum_cmd =~ \/md5$ ]]; then
   checksum_cmd="${checksum_cmd} -r"
 fi
 
+# Builds the request URI for a test path, tolerating a missing leading
+# slash. Sets the global variable `uri` (this file's helpers communicate
+# through globals rather than subshell captures).
+# buildTestUri <path>
+buildTestUri() {
+  if [[ $1 == /* ]]; then
+    uri="${test_server}$1"
+  else
+    uri="${test_server}/$1"
+  fi
+}
+
 assertHttpRequestEquals() {
   method="$1"
   path="$2"
 
-  if [[ $path == /* ]]; then
-    uri="${test_server}${path}"
-  else
-    uri="${test_server}/${path}"
-  fi
+  buildTestUri "${path}"
 
   if [ "${index_page}" == "1" ]; then
     # Follow 302 redirect if testing static hosting
@@ -252,11 +260,7 @@ assertRedirectLocation() {
     curl_args+=(-H "X-Forwarded-Proto: ${forwarded_proto}")
   fi
 
-  if [[ $path == /* ]]; then
-    uri="${test_server}${path}"
-  else
-    uri="${test_server}/${path}"
-  fi
+  buildTestUri "${path}"
 
   printf "  \033[36;1m▲\033[0m "
   echo "Testing redirect: GET ${path} (Host: ${host}, X-Forwarded-Proto: ${forwarded_proto:-<none>})"
@@ -279,6 +283,60 @@ assertRedirectLocation() {
     # would inject an empty X-Forwarded-Proto header (curl treats
     # -H 'Name: ' as header deletion) and change the request under test.
     e "curl command: ${curl_cmd} ${curl_args[*]} -D - -o /dev/null '${uri}'"
+    exit ${test_fail_exit_code}
+  fi
+}
+
+# Fetch a URL with GET and assert a literal substring is present in
+# (mode "contains") or absent from (mode "lacks") the response body.
+# The response is fetched once per path and reused by consecutive assertions
+# against the same path, so a group of assertions observes a single atomic
+# response (mirroring the single-fetch rationale of the 405 checks in
+# assertHttpRequestEquals) instead of paying one round trip per assertion.
+# assertHttpBodyPart <contains|lacks> <path> <literal>
+assertHttpBodyPart() {
+  mode="$1"
+  path="$2"
+  expected_part="$3"
+
+  buildTestUri "${path}"
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Testing body ${mode}: GET ${path} [${expected_part}]"
+
+  if [ "${uri}" != "${body_part_uri:-}" ]; then
+    # "|| true": a transport-level curl failure must fall through to the
+    # status check below for a proper diagnostic instead of killing the
+    # suite via errexit with curl's raw exit code.
+    body_part_response="$(${curl_cmd} -w '\n%{http_code}' "${uri}")" || true
+    body_part_status="${body_part_response##*$'\n'}"
+    body_part_body="${body_part_response%$'\n'*}"
+    body_part_uri="${uri}"
+  fi
+
+  # An error page trivially lacks any forbidden text, so without this check
+  # "lacks" assertions would vacuously pass against a 4xx/5xx response.
+  if [ "${body_part_status:-}" != "200" ]; then
+    e "Response status is not 200. Request [GET ${uri}] Status [${body_part_status:-<none>}]"
+    e "Response body was: ${body_part_body:-}"
+    exit ${test_fail_exit_code}
+  fi
+
+  if [ "${mode}" = "contains" ]; then
+    if [[ ${body_part_body} != *"${expected_part}"* ]]; then
+      e "Response body does not contain expected text. Request [GET ${uri}] Expected [${expected_part}]"
+      e "Response body was: ${body_part_body}"
+      exit ${test_fail_exit_code}
+    fi
+  elif [ "${mode}" = "lacks" ]; then
+    if [[ ${body_part_body} == *"${expected_part}"* ]]; then
+      e "Response body contains text that must be absent. Request [GET ${uri}] Forbidden [${expected_part}]"
+      e "Response body was: ${body_part_body}"
+      exit ${test_fail_exit_code}
+    fi
+  else
+    # A typo'd mode must fail the suite loudly rather than vacuously pass.
+    e "Mode unsupported: [${mode}]"
     exit ${test_fail_exit_code}
   fi
 }
@@ -320,12 +378,75 @@ if [ "${response}" = "000" ] || [ -z "${response}" ]; then
 fi
 
 if [ -n "${prefix_leading_directory_path}" ]; then
+  if [ "${index_page}" == "1" ]; then
+    # Index-page legs run with PREFIX_LEADING_DIRECTORY_PATH=/statichost, so
+    # the /b-shaped assertions below do not apply. GH-575: the index probe
+    # must target the client-facing path so the loopback re-entry applies the
+    # STRIP/PREFIX map exactly once; before that fix the probe always 404'd
+    # and every directory silently fell back to a listing.
+    assertHttpRequestEquals "GET" "/" "data/bucket-1/statichost/index.html"
+    assertHttpRequestEquals "HEAD" "/" "200"
+    assertHttpRequestEquals "GET" "/noindexdir/multipledir/" "data/bucket-1/statichost/noindexdir/multipledir/index.html"
+    # No index.html in noindexdir/ -> falls back to the directory listing.
+    assertHttpBodyPart "contains" "/noindexdir/" '<h1>Index of /noindexdir/</h1>'
+    assertHttpBodyPart "contains" "/noindexdir/" 'href="/noindexdir/noindex.html"'
+
+    if [ -n "${strip_leading_directory}" ]; then
+      # The probe URI is built from the raw client path, so it traverses the
+      # strip map arm on loopback: ${strip_leading_directory}/index.html must
+      # strip and prefix to the same S3 key as /index.html.
+      assertHttpRequestEquals "GET" "${strip_leading_directory}/" "data/bucket-1/statichost/index.html"
+    fi
+
+    # Exit early like the non-index prefix branch below: everything past the
+    # prefix block assumes unprefixed paths.
+    exit 0
+  fi
+
   assertHttpRequestEquals "GET" "/c/d.txt" "data/bucket-1/b/c/d.txt"
 
   if [ -n "${strip_leading_directory}" ]; then
     # When these two flags are used together, stripped value is basically
     # replaced with the specified prefix
     assertHttpRequestEquals "GET" "/tostrip/c/d.txt" "data/bucket-1/b/c/d.txt"
+  fi
+
+  if [ "${allow_directory_list}" == "1" ]; then
+    # Listing links and headings must present client-facing paths: the
+    # gateway prepends PREFIX_LEADING_DIRECTORY_PATH (/b) to every incoming
+    # URI, so a link leaking the internal prefix gets it prepended a second
+    # time when followed and produces an empty listing.
+    assertHttpBodyPart "contains" "/" 'href="/c/"'
+    assertHttpBodyPart "contains" "/" 'href="/e.txt"'
+    # Assert the exact leaked shapes an unstripped implementation would emit
+    # rather than a broad 'href="/b/' canary: a fixture legitimately named
+    # "b" under the exposed subtree would produce a correct stripped link
+    # href="/b/..." and false-fail the broad form.
+    assertHttpBodyPart "lacks" "/" 'href="/b/c/"'
+    assertHttpBodyPart "lacks" "/" 'href="/b/e.txt"'
+    assertHttpBodyPart "contains" "/" '<h1>Index of /</h1>'
+    # The exposed root presents as a root: no ".." row above itself.
+    assertHttpBodyPart "lacks" "/" 'href="../"'
+    # Stripped links must round-trip: following /c/ from the root listing
+    # must itself yield a correct, prefix-free listing.
+    assertHttpBodyPart "contains" "/c/" '<h1>Index of /c/</h1>'
+    assertHttpBodyPart "contains" "/c/" 'href="/c/d.txt"'
+    assertHttpBodyPart "lacks" "/c/" 'href="/b/c/d.txt"'
+    assertHttpBodyPart "contains" "/c/" 'href="../"'
+
+    if [ -n "${strip_leading_directory}" ]; then
+      # The strip+prefix+listing composition: GET ${strip_leading_directory}/
+      # strips to "/", has the prefix prepended, and must yield the same
+      # canonical, prefix-free listing as "/" - links emitted under the strip
+      # alias land back on canonical paths. Without these requests the strip
+      # map arm is never traversed while listing is on.
+      assertHttpBodyPart "contains" "${strip_leading_directory}/" '<h1>Index of /</h1>'
+      assertHttpBodyPart "contains" "${strip_leading_directory}/" 'href="/c/"'
+      assertHttpBodyPart "lacks" "${strip_leading_directory}/" 'href="/b/c/"'
+      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" '<h1>Index of /c/</h1>'
+      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" 'href="/c/d.txt"'
+      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" 'href="../"'
+    fi
   fi
 
   # Exit early for this case since all tests following will fail because of the added prefix

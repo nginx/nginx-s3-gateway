@@ -273,6 +273,7 @@ server {
         # results such that we can output an HTML directory contents list.
         xslt_stylesheet /etc/nginx/include/listing.xsl;
         xslt_string_param rootPath '${DIRECTORY_LISTING_PATH_PREFIX}';
+        xslt_string_param prefixPath '${PREFIX_LEADING_DIRECTORY_PATH}';
         xslt_types application/xml;
 
         # We apply an output filter to the XML input received from S3 before it
@@ -335,6 +336,7 @@ server {
         # results such that we can output an HTML directory contents list.
         xslt_stylesheet /etc/nginx/include/listing.xsl;
         xslt_string_param rootPath '${DIRECTORY_LISTING_PATH_PREFIX}';
+        xslt_string_param prefixPath '${PREFIX_LEADING_DIRECTORY_PATH}';
         xslt_types application/xml;
 
         # We apply an output filter to the XML input received from S3 before it

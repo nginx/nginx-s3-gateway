@@ -4,6 +4,39 @@
     <xsl:strip-space elements="*" />
 
     <xsl:param name="rootPath" />
+    <xsl:param name="prefixPath" />
+
+    <!-- The env value may carry percent-escapes, but njs decodes the full
+         request path (prefix included) before building the S3 list prefix,
+         so S3 echoes Prefix/Key values back decoded. Decode here too or an
+         escaped prefix would never match them and silently not strip. -->
+    <xsl:variable name="decodedPrefixPath"
+                  select="str:decode-uri($prefixPath, 'UTF-8')"/>
+
+    <!-- PREFIX_LEADING_DIRECTORY_PATH as S3 sees it: no leading slash (S3 keys
+         carry none) and exactly one trailing slash, so it can be compared
+         against raw Prefix/Key values. Empty or "/" disables stripping. -->
+    <xsl:variable name="prefixPathNoLeadingSlash">
+        <xsl:choose>
+            <xsl:when test="starts-with($decodedPrefixPath, '/')">
+                <xsl:value-of select="substring($decodedPrefixPath, 2)"/>
+            </xsl:when>
+            <xsl:otherwise>
+                <xsl:value-of select="$decodedPrefixPath"/>
+            </xsl:otherwise>
+        </xsl:choose>
+    </xsl:variable>
+    <xsl:variable name="normalizedPrefixPath">
+        <xsl:choose>
+            <xsl:when test="string-length($prefixPathNoLeadingSlash) = 0"/>
+            <xsl:when test="substring($prefixPathNoLeadingSlash, string-length($prefixPathNoLeadingSlash)) = '/'">
+                <xsl:value-of select="$prefixPathNoLeadingSlash"/>
+            </xsl:when>
+            <xsl:otherwise>
+                <xsl:value-of select="concat($prefixPathNoLeadingSlash, '/')"/>
+            </xsl:otherwise>
+        </xsl:choose>
+    </xsl:variable>
 
     <xsl:template match="/">
         <xsl:choose>
@@ -32,13 +65,21 @@
         <xsl:text disable-output-escaping='yes'>&lt;!DOCTYPE html&gt;</xsl:text>
         <xsl:variable name="globalPrefix"
                       select="*[local-name()='Prefix']/text()"/>
+        <!-- The directory name as the client sees it: the gateway re-prepends
+             PREFIX_LEADING_DIRECTORY_PATH to every incoming URI, so displayed
+             paths and links must not contain it. -->
+        <xsl:variable name="displayPrefix">
+            <xsl:call-template name="strip-prefix">
+                <xsl:with-param name="uri" select="$globalPrefix"/>
+            </xsl:call-template>
+        </xsl:variable>
         <html>
             <head>
-                <title><xsl:value-of select="$globalPrefix"/>
+                <title><xsl:value-of select="$displayPrefix"/>
                 </title>
             </head>
             <body>
-                <h1>Index of /<xsl:value-of select="concat($rootPath, $globalPrefix)"/></h1>
+                <h1>Index of /<xsl:value-of select="concat($rootPath, $displayPrefix)"/></h1>
                 <hr/>
                 <table id="list">
                     <thead>
@@ -51,7 +92,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <xsl:if test="string-length($globalPrefix) > 0">
+                        <xsl:if test="string-length($displayPrefix) > 0">
                             <tr>
                                 <td>
                                     <a href="../">..</a>
@@ -122,11 +163,31 @@
             </tr>
         </xsl:if>
     </xsl:template>
+    <!-- Returns $uri with the internal PREFIX_LEADING_DIRECTORY_PATH removed:
+         the gateway re-prepends that prefix to every incoming URI, so a link
+         that still contains it would be prefixed a second time when followed.
+         URIs that do not carry the prefix pass through unchanged. -->
+    <xsl:template name="strip-prefix">
+        <xsl:param name="uri"/>
+        <xsl:choose>
+            <xsl:when test="string-length($normalizedPrefixPath) > 0 and starts-with($uri, $normalizedPrefixPath)">
+                <xsl:value-of select="substring-after($uri, $normalizedPrefixPath)"/>
+            </xsl:when>
+            <xsl:otherwise>
+                <xsl:value-of select="$uri"/>
+            </xsl:otherwise>
+        </xsl:choose>
+    </xsl:template>
     <!-- This template escapes the URI such that symbols or unicode characters are
          encoded so that they form a valid link that NGINX can parse -->
     <xsl:template name="encode-uri">
         <xsl:param name="uri"/>
-        <xsl:variable name="prefixed_uri" select="concat($rootPath, $uri)" />
+        <xsl:variable name="strippedUri">
+            <xsl:call-template name="strip-prefix">
+                <xsl:with-param name="uri" select="$uri"/>
+            </xsl:call-template>
+        </xsl:variable>
+        <xsl:variable name="prefixed_uri" select="concat($rootPath, $strippedUri)" />
         <xsl:for-each select="str:split($prefixed_uri, '/')">
             <xsl:variable name="encoded" select="str:encode-uri(., 'true', 'UTF-8')" />
             <xsl:variable name="more-encoded" select="
