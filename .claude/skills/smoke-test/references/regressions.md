@@ -9,6 +9,45 @@ anything a new defect. Probe conventions are the same as in
 Each set names its fix commit; `git log <commit> -1` shows the full
 context if a probe's intent is unclear.
 
+## #578 — SigV2 signs the same normalized URI it proxies
+
+Fix commit: the commit that added this entry (PR #582). The v2 signer
+signed the raw client URI bytes while proxying the canonically
+re-encoded `$s3uri`, so every non-canonical encoding variant failed
+upstream with SignatureDoesNotMatch, surfaced as a sanitized 404.
+
+With `S3_STYLE=virtual AWS_SIGS_VERSION=2 ALLOW_DIRECTORY_LIST=true`,
+on a **fresh recreate** (cold cache — encoding variants share one
+cache entry keyed on the normalized `$s3uri`, so a canonical-form
+warm-up masks a signing regression; that masking is GH-579), raw
+forms first:
+
+1. `GET BASE/a/plus+plus.txt` → 200 (raw `+`).
+2. `GET BASE/%61.txt` → 200 (over-encoded `a.txt`).
+3. `GET BASE/b/c/%3d` → 200, body of `b/c/=` (lowercase hex; uses its
+   own object so probe 1's entry cannot serve it).
+4. `GET BASE/a/%25%40!*()%3D%24%23%5E%26%7C.txt` → 200 (raw `!*()`).
+5. Gateway logs contain zero `SignatureDoesNotMatch` occurrences.
+6. `GET BASE/b/` → 200 listing (the CanonicalizedResource still
+   excludes the delimiter/prefix listing parameters).
+
+With `S3_STYLE=path AWS_SIGS_VERSION=2 ALLOW_DIRECTORY_LIST=true`
+(fresh recreate; not a CI matrix leg — #581):
+
+7. `GET BASE/a/plus+plus.txt` → 200 and `GET BASE/` → 200 listing
+   (the signed listing resource is now the spec-correct `/<bucket>`,
+   previously `/<bucket>/`).
+
+Session-token corollary (v2 never signs `X-Amz-Security-Token`;
+`AWS_SESSION_TOKEN` has no compose pass-through key — use an overlay):
+
+8. `AWS_SIGS_VERSION=2` plus a non-empty `AWS_SESSION_TOKEN` (or
+   `AWS_SESSION_TOKEN_FILE`) → the container exits; logs contain
+   `cannot be used with AWS_SIGS_VERSION=2`.
+9. `AWS_SIGS_VERSION=2`, static keys, and a **set-but-empty**
+   `AWS_SESSION_TOKEN` → starts normally (empty counts as absent,
+   matching the njs modules).
+
 ## #577 (also #480, #575, #576) — PREFIX_LEADING_DIRECTORY_PATH hygiene
 
 Fix commit: `432d78c`. The prefix leaked into listing links and

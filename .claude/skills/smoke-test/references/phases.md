@@ -156,18 +156,19 @@ ALLOW_DIRECTORY_LIST=true` (cross-check, not a hole — the suite runs
 several v2 legs, including with listing, under both matrix styles):
 
 3. `GET BASE/a.txt` → 200; `GET BASE/b/` → 200 listing.
-4. Special-character keys in their **pre-normalized** (fully
-   percent-encoded) form → 200. The RAW forms (`a/plus+plus.txt`, raw
-   `!*()`) fail under v2 with a sanitized 404: v2 signs the client's
-   raw URI bytes while sending the gateway-normalized URI upstream, so
-   the origin sees SignatureDoesNotMatch (confirmed live 2026-08; v4 is
-   unaffected because it signs the normalized form). This is known open
-   issue GH-578 — do not re-report it as a new defect while it is open.
-   Probe raw forms LAST or on a fresh cache — the cache key is the
-   normalized URI, so a raw-form failure (an upstream 403, cached under
-   `PROXY_CACHE_VALID_FORBIDDEN`, 30s) masks encoded-form requests, and
-   a prior encoded-form 200 masks the raw-form failure for
-   `PROXY_CACHE_VALID_OK` (the shared-entry masking itself is GH-579).
+4. Special-character keys → 200 in BOTH the pre-normalized (fully
+   percent-encoded) form and the RAW forms (`a/plus+plus.txt`,
+   over-encoded `%61.txt`, lowercase hex, raw `!*()`). v2 signs the
+   same gateway-normalized URI it proxies, so every legal encoding
+   variant authenticates just like under v4. **pin #578** — the
+   pre-fix signer signed the client's raw URI bytes, so raw forms
+   failed with SignatureDoesNotMatch surfaced as a sanitized 404
+   (confirmed fixed live 2026-08). Probe raw forms FIRST on a fresh
+   recreate (cold cache): the cache key is the normalized URI, so a
+   prior encoded-form 200 serves the raw form from the shared entry
+   for `PROXY_CACHE_VALID_OK` and masks a signing regression (the
+   shared-entry masking itself is GH-579). After the raw probes,
+   assert the gateway log contains zero `SignatureDoesNotMatch`.
 5. `HEAD BASE/b/` — the suite pins HEAD on a directory as 404 (an
    origin behavior, not v2-specific); record actual status as
    `expected-behavior`.
@@ -176,7 +177,7 @@ Recreate with `S3_STYLE=virtual-v2 AWS_SIGS_VERSION=2`:
 
 6. `GET BASE/a.txt` → 200.
 
-Covers: path-style HOLE, v2 combination cross-checks.
+Covers: path-style HOLE, v2 combination cross-checks, #578 pin.
 
 ---
 
