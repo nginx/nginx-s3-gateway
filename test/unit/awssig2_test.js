@@ -19,12 +19,17 @@
 import awssig2 from "include/awssig2.js";
 
 
-function _runSignatureV2(r) {
+/*
+ * Golden signatures below were computed outside this codebase with:
+ *   printf 'GET\n\n\nTue, 11 Aug 2020 19:42:14 GMT\n<req_uri>' | \
+ *     openssl dgst -sha1 -hmac 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb' \
+ *     -binary | base64
+ */
+function _runSignatureV2(r, req_uri, expected) {
     r.log = function(msg) {
         console.log(msg);
     }
     const timestamp = new Date('2020-08-11T19:42:14Z');
-    const bucket = 'test-bucket-1';
     const accessKey = 'test-access-key-1';
     const secret = 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb'
     const creds = {
@@ -32,8 +37,6 @@ function _runSignatureV2(r) {
     };
 
     const httpDate = timestamp.toUTCString();
-    const expected = 'AWS test-access-key-1:VviSS4cFhUC6eoB4CYqtRawzDrc=';
-    const req_uri = '/'.concat(bucket, r.variables.uri_path);
     let signature = awssig2.signatureV2(r, req_uri, httpDate, creds);
 
     if (signature !== expected) {
@@ -73,7 +76,13 @@ function testSignatureV2() {
         "status" : 0
     };
 
-    _runSignatureV2(r);
+    _runSignatureV2(r, '/test-bucket-1/a/c/ramen.jpg',
+        'AWS test-access-key-1:VviSS4cFhUC6eoB4CYqtRawzDrc=');
+    // The URI-encoded resource enters the string-to-sign verbatim (GH-578:
+    // the caller must pass the canonically re-encoded path that is proxied
+    // upstream, never the raw client bytes).
+    _runSignatureV2(r, '/test-bucket-1/a/plus%2Bplus.txt',
+        'AWS test-access-key-1:EQjACHhosMdSvkpL2jgtmVwTgXo=');
 }
 
 async function test() {

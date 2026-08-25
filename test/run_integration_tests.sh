@@ -719,6 +719,9 @@ bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"
 p "Testing prefix normalization entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_prefix_normalization.sh" "${docker_cmd}"
 
+p "Testing signature v2 session token guard entrypoint script"
+bash "${test_dir}/integration/test_entrypoint_sigv2_session_token.sh" "${docker_cmd}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
 # integration_test 2 0 0 0 "" ""

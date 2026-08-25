@@ -480,6 +480,81 @@ function testS3uri() {
     }
 }
 
+function testS3ReqParamsForSigV2() {
+    printHeader('testS3ReqParamsForSigV2');
+
+    const savedStyle = process.env['S3_STYLE'];
+    const bucket = process.env['S3_BUCKET_NAME'];
+
+    // The module-level ALLOW_LISTING/PROVIDE_INDEX_PAGE constants are false
+    // in the unit-test environment (captured at import time), so every case
+    // below exercises the object-path branch of s3uri(). The listing-query
+    // branch ('?delimiter=...' stripping and the bucket-root fallback) is
+    // exercised by the v2 + directory-listing integration leg.
+    function makeRequest(uriPath, forIndexPage) {
+        const r = {
+            "method": "GET",
+            "variables": {
+                "uri_path": uriPath,
+                "uri_full_path": uriPath,
+                "forIndexPage": forIndexPage === undefined ?
+                    "true" : forIndexPage
+            }
+        };
+        r.log = function(msg) {
+            console.log(msg);
+        };
+        return r;
+    }
+
+    function check(style, uriPath, expected, forIndexPage) {
+        process.env['S3_STYLE'] = style;
+        const params = s3gateway._s3ReqParamsForSigV2(
+            makeRequest(uriPath, forIndexPage), bucket);
+        if (params.uri !== expected) {
+            throw `Unexpected signed v2 resource for S3_STYLE=${style} ` +
+                `uri_path=${uriPath}` +
+                `\nActual:   [${params.uri}]` +
+                `\nExpected: [${expected}]`;
+        }
+        if (!params.httpDate || !params.httpDate.endsWith(' GMT')) {
+            throw `Missing or malformed httpDate: [${params.httpDate}]`;
+        }
+    }
+
+    try {
+        // Canonical input passes through unchanged (pre-GH-578 behavior).
+        check('virtual-v2', '/a/c/ramen.jpg', `/${bucket}/a/c/ramen.jpg`);
+
+        // GH-578: the signed resource must be the canonically re-encoded
+        // path that proxy_pass sends, never the raw client bytes.
+        check('virtual-v2', '/a/plus+plus.txt',
+            `/${bucket}/a/plus%2Bplus.txt`);                 // raw '+'
+        check('virtual-v2', '/%61.txt', `/${bucket}/a.txt`); // over-encoded
+        check('virtual-v2', '/a/plus%2bplus.txt',
+            `/${bucket}/a/plus%2Bplus.txt`);                 // lowercase hex
+        check('virtual-v2', '/a/%25%40!*()%3D%24%23%5E%26%7C.txt',
+            `/${bucket}/a/%25%40%21%2A%28%29%3D%24%23%5E%26%7C.txt`);
+        check('virtual-v2', '/системы/system.txt',
+            `/${bucket}/%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B/system.txt`);
+
+        // Directories: with PROVIDE_INDEX_PAGE false at import, s3uri()
+        // proxies the escaped directory path itself and the signature must
+        // follow it for both $forIndexPage states (the js_var default
+        // 'true', and 'false' as @s3Directory sets it).
+        check('virtual-v2', '/a/c/', `/${bucket}/a/c/`, 'true');
+        check('virtual-v2', '/a/c/', `/${bucket}/a/c/`, 'false');
+
+        // SigV2's CanonicalizedResource always begins with '/<bucket>':
+        // path style carries it inside s3uri() itself, virtual styles have
+        // it prepended - both must yield the same signed resource.
+        check('path', '/a/plus+plus.txt', `/${bucket}/a/plus%2Bplus.txt`);
+        check('path', '/%61.txt', `/${bucket}/a.txt`);
+    } finally {
+        restoreEnv('S3_STYLE', savedStyle);
+    }
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
@@ -627,6 +702,7 @@ async function test() {
     testTrailslashControl();
     testTrailslashRedirectUri();
     testS3uri();
+    testS3ReqParamsForSigV2();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();

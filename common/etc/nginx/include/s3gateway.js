@@ -204,6 +204,16 @@ function s3auth(r) {
     if (credentials === undefined) {
         throw 'AWS credentials are unavailable; the cached credentials may have expired mid-request';
     }
+    /* Temporary credentials cannot be authenticated with v2 signatures: the
+       v2 string-to-sign covers no x-amz-* headers, so the
+       X-Amz-Security-Token header the gateway sends is never signed and S3
+       rejects the request with SignatureDoesNotMatch (GH-578). The
+       entrypoint blocks the static AWS_SESSION_TOKEN(_FILE) case at
+       startup; this covers dynamic credential sources (EC2/ECS/EKS roles),
+       whose session tokens only appear when the credentials are fetched. */
+    if (sigver == '2' && credentials.sessionToken) {
+        throw 'Temporary credentials (session token) cannot be used with AWS_SIGS_VERSION=2: v2 signatures do not cover the session token. Use AWS_SIGS_VERSION=4.';
+    }
     if (sigver == '2') {
         let req = _s3ReqParamsForSigV2(r, bucket);
         signature = awssig2.signatureV2(r, req.uri, req.httpDate, credentials);
@@ -219,26 +229,41 @@ function s3auth(r) {
 /**
  * Generate request parameters for AWS signature version 2
  *
+ * The SigV2 CanonicalizedResource must be the URI-encoded absolute path
+ * that is actually sent upstream, always prefixed with '/<bucket>'
+ * regardless of addressing style. The path is therefore derived from the
+ * same s3uri() value that proxy_pass sends, so the signed URI and the
+ * proxied URI cannot diverge (GH-578; the v4 signer has been built on
+ * s3uri() since the fix for GH-77).
+ *
  * @see {@link https://docs.aws.amazon.com/AmazonS3/latest/userguide/auth-request-sig-v2.html | AWS signature version 2}
  * @param r {NginxHTTPRequest} HTTP request object
  * @param bucket {string} S3 bucket associated with request
- * @returns {S3ReqParams} s3ReqParams object (host, method, uri, queryParams)
+ * @returns {S3ReqParams} s3ReqParams object (uri, httpDate)
  * @private
  */
 function _s3ReqParamsForSigV2(r, bucket) {
-    /* If the source URI is a directory, we are sending to S3 a query string
-     * local to the root URI, so this is what we need to encode within the
-     * string to sign. For example, if we are requesting /bucket/dir1/ from
-     * nginx, then in S3 we need to request /?delimiter=/&prefix=dir1/
-     * Thus, we can't put the path /dir1/ in the string to sign. */
-    let uri = _isDirectory(r.variables.uri_path) ? '/' : r.variables.uri_path;
-    // To return index pages + index.html
-    if (utils.parseBoolean(r.variables.forIndexPage) && _isDirectory(r.variables.uri_path)){
-        uri = r.variables.uri_path + INDEX_PAGE
+    const baseUri = s3BaseUri(r);
+    const proxiedUri = s3uri(r);
+    /* Directory-listing URIs carry the listing query string, which is not
+     * part of the SigV2 resource (delimiter/prefix are not sub-resources).
+     * A literal '?' can only come from the listing branch of s3uri():
+     * _escapeURIPath() percent-encodes '?' in object paths. */
+    const queryIdx = proxiedUri.indexOf('?');
+    let uri = queryIdx >= 0 ? proxiedUri.substring(0, queryIdx) : proxiedUri;
+    /* A virtual-host-style listing URI is all query string: the resource
+     * path of that request is the bucket root. */
+    if (uri.length === 0) {
+        uri = '/';
+    }
+    /* The SigV2 resource always starts with '/<bucket>' regardless of
+     * addressing style; path style already carries it via s3BaseUri(). */
+    if (baseUri.length === 0) {
+        uri = '/' + bucket + uri;
     }
 
     return {
-        uri: '/' + bucket + uri,
+        uri: uri,
         httpDate: s3date(r)
     };
 }

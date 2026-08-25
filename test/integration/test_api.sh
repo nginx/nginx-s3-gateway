@@ -453,6 +453,34 @@ if [ -n "${prefix_leading_directory_path}" ]; then
   exit 0
 fi
 
+# GH-578: legal but non-canonical request encodings. The gateway re-encodes
+# every URI into one canonical form before proxying and must sign that same
+# form (v2 used to sign the raw client bytes, so every request below failed
+# upstream with SignatureDoesNotMatch, surfaced as a sanitized 404). These
+# assertions must stay ABOVE the first canonical-form request for the same
+# object and method: all encoding variants of an object share one proxy
+# cache entry (the cache key is the normalized $s3uri), so a cache warmed
+# by the canonical form would serve these from memory and hide a signing
+# regression - which is exactly how this bug evaded CI. curl sends these
+# paths byte-for-byte (it does not re-encode; only dot-segments would be
+# rewritten, and none appear here).
+assertHttpRequestEquals "HEAD" "a/plus+plus.txt" "200"
+assertHttpRequestEquals "GET" "a/plus+plus.txt" "data/bucket-1/a/plus+plus.txt"
+assertHttpRequestEquals "HEAD" "%61.txt" "200"
+assertHttpRequestEquals "GET" "%61.txt" "data/bucket-1/a.txt"
+# Lowercase hex needs an object of its own: a/plus%2bplus.txt would share
+# the raw-'+' cache entry warmed just above and never reach upstream.
+assertHttpRequestEquals "HEAD" "b/c/%3d" "200"
+assertHttpRequestEquals "GET" "b/c/%3d" "data/bucket-1/b/c/="
+
+if [ ${is_windows} == "0" ]; then
+  # Raw sub-delims !*() mixed with percent-encoded bytes. %25, %40, %23 and
+  # %26 must stay encoded in any client request: raw '%@' is an invalid
+  # percent-sequence and raw '#'/'&' would not survive as path data.
+  assertHttpRequestEquals "HEAD" 'a/%25%40!*()%3D%24%23%5E%26%7C.txt' "200"
+  assertHttpRequestEquals "GET" 'a/%25%40!*()%3D%24%23%5E%26%7C.txt' 'data/bucket-1/a/%@!*()=$#^&|.txt'
+fi
+
 # Ordinary filenames
 assertHttpRequestEquals "HEAD" "a.txt" "200"
 assertHttpRequestEquals "HEAD" "a.txt?some=param&that=should&be=stripped#aaah" "200"
@@ -481,7 +509,10 @@ assertHttpRequestEquals "HEAD" "b/c/@" "200"
 assertHttpRequestEquals "HEAD" "b/c/%27%281%29.txt" "200"
 assertHttpRequestEquals "HEAD" "b/c/'(1).txt" "200"
 
-# These URLs do not work unencoded
+# Canonical forms of objects exercised raw above (GH-578); these resolve
+# from the shared cache entry keyed on the normalized $s3uri and assert the
+# encoding variants converge on one object. The %bad%file%name% path has no
+# requestable raw form: raw '%ba' is an invalid percent-sequence.
 assertHttpRequestEquals "HEAD" 'a/plus%2Bplus.txt' "200"
 assertHttpRequestEquals "HEAD" "%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B/%25bad%25file%25name%25" "200"
 
@@ -499,7 +530,9 @@ if [ ${is_windows} == "0" ]; then
   assertHttpRequestEquals "HEAD" "b/%E3%83%96%E3%83%84%E3%83%96%E3%83%84.txt" "200"
   assertHttpRequestEquals "HEAD" "b/ブツブツ.txt" "200"
 
-  # These URLs do not work unencoded
+  # Fully-encoded forms. The first is the canonical twin of the raw !*()
+  # case above (GH-578); the second has no raw form at all (a request line
+  # cannot carry raw spaces).
   assertHttpRequestEquals "HEAD" 'a/%25%40%21%2A%28%29%3D%24%23%5E%26%7C.txt' "200"
   assertHttpRequestEquals "HEAD" 'a/%E3%81%93%E3%82%8C%E3%81%AF%E3%80%80This%20is%20ASCII%20%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B%20%20%D7%97%D7%9F%20.txt' "200"
 fi
@@ -570,7 +603,7 @@ if [ -n "${strip_leading_directory}" ]; then
   assertHttpRequestEquals "GET" "/my-bucket/a.txt" "data/bucket-1/a.txt"
 fi
 
-# These URLs do not work unencoded
+# Canonical twin of the raw a/plus+plus.txt GET above (GH-578).
 assertHttpRequestEquals "GET" 'a/plus%2Bplus.txt' "data/bucket-1/a/plus+plus.txt"
 
 # Testing these files does not currently work on Windows
