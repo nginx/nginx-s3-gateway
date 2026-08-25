@@ -32,7 +32,7 @@ forms first:
    excludes the delimiter/prefix listing parameters).
 
 With `S3_STYLE=path AWS_SIGS_VERSION=2 ALLOW_DIRECTORY_LIST=true`
-(fresh recreate; not a CI matrix leg — #581):
+(fresh recreate; now a CI matrix leg — #581):
 
 7. `GET BASE/a/plus+plus.txt` → 200 and `GET BASE/` → 200 listing
    (the signed listing resource is now the spec-correct `/<bucket>`,

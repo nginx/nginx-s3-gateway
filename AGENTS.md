@@ -53,8 +53,8 @@ Notes:
   (rebuilds first); `make retest` would test the stale copy.
 - Integration tests spin up MinIO via `test/docker-compose.yaml` (compose
   project `ngt`) and hit the gateway on `localhost:8989`.
-- `S3_STYLE` (`virtual` or `virtual-v2`) selects the S3 addressing style under
-  test; CI runs both.
+- `S3_STYLE` (`virtual`, `virtual-v2`, or `path`) selects the S3 addressing
+  style under test; CI runs all three.
 - The `latest-njs` variant runs the njs CLI with `-m` instead of `-t module`
   (transitional flag fork while njs migrates its CLI).
 - NGINX Plus builds/tests require repo certs in `plus/etc/ssl/nginx/` and a

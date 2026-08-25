@@ -94,6 +94,23 @@ if ! { [ "${UNPRIVILEGED}" == "0" ] || [ "${UNPRIVILEGED}" == "1" ]; }; then
   exit ${no_dep_exit_code}
 fi
 
+# Validate S3_STYLE when set: every downstream consumer fails open - an
+# unrecognized value silently selects virtual-style addressing, and an empty
+# one (e.g. from a broken workflow expression) falls to the compose file's
+# virtual-v2 default - so the suite would pass while testing the wrong style.
+# Unset is fine - the compose file supplies the virtual-v2 default. Harness-only check: the runtime image additionally
+# accepts 'default' (see docs/getting_started.md), which the suite never
+# uses, so do not hoist this into the entrypoint scripts.
+if [ -n "${S3_STYLE+x}" ]; then
+  case "${S3_STYLE}" in
+    virtual|virtual-v2|path) ;;
+    *)
+      e "Invalid S3_STYLE value: '${S3_STYLE}' - must be 'virtual', 'virtual-v2' or 'path'"
+      exit ${no_dep_exit_code}
+      ;;
+  esac
+fi
+
 # The unprivileged image rewrites 'listen 80;' to 'listen 8080;' at build
 # time (Dockerfile.unprivileged); every listen-related assertion keys off
 # this single value.

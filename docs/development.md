@@ -102,6 +102,8 @@ Other useful targets:
 - `make test-latest-njs` / `make test-unprivileged` — build and test the
   image variants.
 - `make test-matrix` — reproduce the CI matrix locally.
+- `make test S3_STYLE=path` (or `virtual` / `virtual-v2`) — reproduce a single
+  CI matrix leg; plain `make test` covers only the default `virtual-v2` style.
 - `make lint` — run the linters (checkmake + shellcheck).
 
 Run `make help` for the full target list.

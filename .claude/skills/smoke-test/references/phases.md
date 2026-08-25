@@ -139,21 +139,23 @@ Covers: #577/#575/#576/#480 pins, strip/prefix composition.
 
 ## P3: Addressing styles × signature versions
 
-The suite's CI matrix runs the two virtual-host styles (`virtual`,
-`virtual-v2`) with both signature versions; path style never runs. This
-phase covers the path-style hole and cross-checks the v2 combinations.
+The suite's CI matrix runs all three addressing styles (`virtual`,
+`virtual-v2`, `path`) with both signature versions. This phase
+cross-checks the style/signature combinations most likely to regress.
 
 Recreate with `S3_STYLE=path AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=true`
-(**HOLE** — path style is never a matrix leg). Note: path style keeps the
-bucket out of the upstream hostname, so it also works for buckets that
-lack a virtual-host DNS alias on the compose network.
+(cross-check, not a hole — path style is now a matrix leg; issue #581
+tracks the gap it closed). The path + v2 combination is not probed in this
+phase; regressions.md item 7 covers it. Note: path style keeps the bucket
+out of the upstream hostname, so it also works for buckets that lack a
+virtual-host DNS alias on the compose network.
 
 1. Banner shows `Addressing Style: path`; `GET BASE/a.txt` → 200.
 2. `GET BASE/b/` → 200 listing; a Unicode key → 200.
 
 Recreate with `S3_STYLE=virtual AWS_SIGS_VERSION=2
 ALLOW_DIRECTORY_LIST=true` (cross-check, not a hole — the suite runs
-several v2 legs, including with listing, under both matrix styles):
+several v2 legs, including with listing, under every matrix style):
 
 3. `GET BASE/a.txt` → 200; `GET BASE/b/` → 200 listing.
 4. Special-character keys → 200 in BOTH the pre-normalized (fully
@@ -177,7 +179,8 @@ Recreate with `S3_STYLE=virtual-v2 AWS_SIGS_VERSION=2`:
 
 6. `GET BASE/a.txt` → 200.
 
-Covers: path-style HOLE, v2 combination cross-checks, #578 pin.
+Covers: addressing-style cross-checks, v2 combination cross-checks,
+#578 pin.
 
 ---
 
