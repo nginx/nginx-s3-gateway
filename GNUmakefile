@@ -30,7 +30,8 @@ DOCKER            ?= docker
 # NGINX flavor to build and test: oss or plus
 NGINX_TYPE        ?= oss
 
-# S3 addressing style exercised by the integration tests: virtual or virtual-v2
+# S3 addressing style exercised by the integration tests: virtual, virtual-v2,
+# or path
 S3_STYLE          ?= virtual-v2
 
 # Output directory for generated JSDoc documentation
@@ -70,7 +71,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -111,6 +112,19 @@ check-nginx-type:
 	@case "$(NGINX_TYPE)" in \
 		oss|plus) ;; \
 		*) echo "ERROR: Invalid NGINX_TYPE '$(NGINX_TYPE)' - must be 'oss' or 'plus'"; exit 2;; \
+	esac
+
+# Internal: validate S3_STYLE where the test harness consumes it, mirroring
+# check-nginx-type. Every downstream consumer fails open - an unrecognized
+# style silently selects virtual-style addressing (01-set-defaults.envsh,
+# s3gateway.js) - so a typo here or in the CI matrix would otherwise produce
+# a green run that tested the wrong style. Harness-only: the runtime image
+# additionally accepts 'default' (see docs/getting_started.md), which the
+# test suite never uses.
+check-s3-style:
+	@case "$(S3_STYLE)" in \
+		virtual|virtual-v2|path) ;; \
+		*) echo "ERROR: Invalid S3_STYLE '$(S3_STYLE)' - must be 'virtual', 'virtual-v2' or 'path'"; exit 2;; \
 	esac
 
 # Internal: fail fast with actionable errors when NGINX Plus credentials are absent
@@ -175,9 +189,13 @@ test-unprivileged: build-unprivileged ## Build the unprivileged variant then tes
 # S3_STYLE and NGINX_TYPE are passed as explicit sub-make arguments (not env
 # prefixes) so they take precedence over command-line variables a user passed
 # to this invocation, which would otherwise leak into sub-makes via MAKEFLAGS.
-test-matrix: build ## Reproduce the CI matrix locally: NGINX_TYPE x {virtual,virtual-v2} + latest-njs + unprivileged
+# The retest legs must stay ahead of the variant legs: test-latest-njs and
+# test-unprivileged retag the floating image, which retest's NONVARIANT_GUARD
+# then rejects.
+test-matrix: build ## Reproduce the CI matrix locally: {virtual,virtual-v2,path} + latest-njs + unprivileged
 	$(MAKE) retest NGINX_TYPE=$(NGINX_TYPE) S3_STYLE=virtual
 	$(MAKE) retest NGINX_TYPE=$(NGINX_TYPE) S3_STYLE=virtual-v2
+	$(MAKE) retest NGINX_TYPE=$(NGINX_TYPE) S3_STYLE=path
 	$(MAKE) test-latest-njs NGINX_TYPE=$(NGINX_TYPE) S3_STYLE=virtual-v2
 	$(MAKE) test-unprivileged NGINX_TYPE=$(NGINX_TYPE) S3_STYLE=virtual-v2
 	@echo "$(NGINX_TYPE) test matrix passed"
@@ -214,14 +232,14 @@ test-unit: ## Run only the njs unit tests against the currently tagged image
 	$(call NONVARIANT_GUARD,latest-njs)
 	$(RUN_UNIT_TESTS)
 
-test-integration: check-nginx-type check-tools ## Run only the integration suite against the currently tagged image
+test-integration: check-nginx-type check-s3-style check-tools ## Run only the integration suite against the currently tagged image
 	$(call NONVARIANT_GUARD,unprivileged)
 	$(RUN_INTEGRATION_TESTS)
 
 # check-tools fails fast on a missing integration dependency (mc, curl,
 # compose, md5sum) before the unit suite spends a minute in docker, matching
 # the up-front dependency checks the legacy test.sh ran at startup.
-retest: check-nginx-type check-tools ## Test the currently tagged image without rebuilding
+retest: check-nginx-type check-s3-style check-tools ## Test the currently tagged image without rebuilding
 	$(call NONVARIANT_GUARD,latest-njs)
 	$(call NONVARIANT_GUARD,unprivileged)
 	$(RUN_UNIT_TESTS)
@@ -235,12 +253,12 @@ VARIANT_GUARD = @variant_id="$$($(DOCKER) image inspect -f '{{.Id}}' $(IMAGE_NAM
 	{ [ -n "$$variant_id" ] && [ "$$floating_id" = "$$variant_id" ]; } || { \
 	echo "ERROR: '$(IMAGE_NAME)' is not the $(1)-$(NGINX_TYPE) variant image; run 'make build-$(1)' (or 'make test-$(1)') first"; exit 2; }
 
-retest-latest-njs: check-nginx-type check-tools ## Test the current image with latest-njs semantics, no rebuild
+retest-latest-njs: check-nginx-type check-s3-style check-tools ## Test the current image with latest-njs semantics, no rebuild
 	$(call VARIANT_GUARD,latest-njs)
 	NJS_LATEST=1 $(RUN_UNIT_TESTS)
 	$(RUN_INTEGRATION_TESTS)
 
-retest-unprivileged: check-nginx-type check-tools ## Test the current image in unprivileged mode, no rebuild
+retest-unprivileged: check-nginx-type check-s3-style check-tools ## Test the current image in unprivileged mode, no rebuild
 	$(call VARIANT_GUARD,unprivileged)
 	$(RUN_UNIT_TESTS)
 	UNPRIVILEGED=1 $(RUN_INTEGRATION_TESTS)

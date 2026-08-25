@@ -28,7 +28,7 @@ concurrency:
 #   │ Lint │
 #   └──────┘
 #   ┌────────────────────────────────────────┐
-#   │ Test OSS  (matrix: virtual, virtual-v2)├──┐
+#   │ Test OSS  (virtual, virtual-v2, path)  ├──┐
 #   └────────────────────────────────────────┘  │
 #   ┌────────────────────────────────────────┐  │  ┌──────────────────────────┐
 #   │ Test OSS + latest njs                  ├──┼─►│ Tag and push (main only) │
@@ -94,12 +94,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
-      # Report both addressing styles instead of cancelling the second one as
+      # Report all three addressing styles instead of cancelling the others as
       # soon as the first fails; they exercise different signing paths and the
       # legs run concurrently, so nothing is saved by stopping early.
       fail-fast: false
       matrix:
-        path_style: [virtual, virtual-v2]
+        s3_style: [virtual, virtual-v2, path]
     steps:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,7 +108,7 @@ jobs:
         uses: ./.github/actions/install-mc
 
       - name: Build and test - stable njs version
-        run: make test NGINX_TYPE=oss S3_STYLE=${{ matrix.path_style }}
+        run: make test NGINX_TYPE=oss S3_STYLE=${{ matrix.s3_style }}
 
   test-latest-njs:
     name: Test NGINX OSS image using latest njs commit
@@ -121,8 +121,10 @@ jobs:
       - name: Install MinIO Client
         uses: ./.github/actions/install-mc
 
+      # S3_STYLE is pinned the same way the local test-matrix target pins it,
+      # so a change to the GNUmakefile default cannot silently repoint this job.
       - name: Build and test - latest njs version
-        run: make test-latest-njs NGINX_TYPE=oss
+        run: make test-latest-njs NGINX_TYPE=oss S3_STYLE=virtual-v2
 
   test-unprivileged:
     name: Test NGINX OSS unprivileged image
@@ -135,8 +137,10 @@ jobs:
       - name: Install MinIO Client
         uses: ./.github/actions/install-mc
 
+      # S3_STYLE is pinned the same way the local test-matrix target pins it,
+      # so a change to the GNUmakefile default cannot silently repoint this job.
       - name: Build and test - unprivileged
-        run: make test-unprivileged NGINX_TYPE=oss
+        run: make test-unprivileged NGINX_TYPE=oss S3_STYLE=virtual-v2
 
 
 # Publishing (main only). Multi-architecture images go to both Docker Hub and
