@@ -4,8 +4,9 @@
 # (report) and `make fmt-md` (apply fixes).
 
 [global]
-# .opencode/ holds the local rule digests (kept verbatim, mirrored to .claude
-# via symlink); node_modules is dependency noise.
+# .claude/ holds agent skills (deliberately formatted probe tables and
+# command examples that must not be reflowed) plus per-developer tool state;
+# .opencode is a local mirror of it; node_modules is dependency noise.
 exclude = [".opencode", ".claude", "node_modules"]
 
 # GitHub issue/PR templates conventionally open with a task-oriented heading

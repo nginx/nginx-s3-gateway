@@ -59,6 +59,11 @@ Notes:
   (transitional flag fork while njs migrates its CLI).
 - NGINX Plus builds/tests require repo certs in `plus/etc/ssl/nginx/` and a
   `license.jwt` — skip Plus targets if you don't have them.
+- An agent-driven smoke-test skill lives at `.claude/skills/smoke-test/` — it
+  stands up the integration stack from `test/docker-compose.yaml`, probes every
+  major gateway feature live, and root-causes failures. See its `SKILL.md` for
+  invocation modes (full sweep, `quick`, `holes`, `regressions`, `issue <N>`,
+  or a feature area).
 
 ## JavaScript rules (njs, not Node.js)
 
