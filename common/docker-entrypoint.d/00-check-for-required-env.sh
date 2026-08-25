@@ -224,6 +224,18 @@ if [ "${AWS_SIGS_VERSION}" != "2" ] && [ "${AWS_SIGS_VERSION}" != "4" ]; then
   failed=1
 fi
 
+# Temporary credentials cannot work with signature v2: the gateway's v2
+# signer covers no x-amz-* headers, so the X-Amz-Security-Token header it
+# sends is never part of the signature and S3 rejects every request with
+# SignatureDoesNotMatch. Fail fast instead of starting a gateway that
+# 404s on every object (GH-578). A set-but-empty variable counts as absent,
+# matching the njs modules (an env-file line with no value or a compose
+# pass-through of an unset variable leaves the variable set but empty).
+if [ "${AWS_SIGS_VERSION}" = "2" ] && { [ -n "${AWS_SESSION_TOKEN:-}" ] || [ -n "${AWS_SESSION_TOKEN_FILE:-}" ]; }; then
+  >&2 echo "AWS_SESSION_TOKEN(_FILE) cannot be used with AWS_SIGS_VERSION=2: v2 signatures do not cover the session token, so S3 rejects every request. Use AWS_SIGS_VERSION=4 or remove the session token."
+  failed=1
+fi
+
 parseBoolean() {
   case "$1" in
     TRUE | true | True | YES | Yes | 1)
