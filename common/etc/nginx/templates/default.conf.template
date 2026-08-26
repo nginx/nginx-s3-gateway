@@ -6,12 +6,12 @@ js_import /etc/nginx/include/s3gateway.js;
 # we plan to use.
 include /etc/nginx/conf.d/gateway/v${AWS_SIGS_VERSION}_js_vars.conf;
 
-# Extracts only the path from the requested URI. This strips out all query
-# parameters and anchors in order to prevent extraneous data from being sent
-# to S3.
-map $request_uri $uri_full_path {
-    "~^(?P<path>.*?)(\?.*)*$"  $path;
-}
+# The client-facing request path: $request_uri with the query string
+# stripped (to prevent extraneous data from being sent to S3) and runs of
+# duplicate literal slashes collapsed (GH-88). Collapsing must happen here,
+# BEFORE the STRIP/PREFIX map below chooses its rewrite arm - a map cannot
+# do a global replace, so this variable is njs-derived.
+js_set $uri_full_path s3gateway.uriFullPath;
 
 # Remove/replace a portion of request URL (if configured)
 map $uri_full_path $uri_path {

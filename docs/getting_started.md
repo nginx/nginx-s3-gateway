@@ -186,6 +186,21 @@ S3 bucket in a subfolder on an ALB. For example, if you wanted to expose the
 root of a bucket under the path `www.mysite.com/somepath`, you would set this
 variable to `/somepath`.
 
+### Path Normalization
+
+Runs of duplicate literal slashes in a request path are collapsed into a single slash before the gateway signs and
+proxies the request, on every code path (object fetch, index-page probing, and directory listing):
+`/pathFoo//file.txt` is served as the S3 key `pathFoo/file.txt`, and `GET /pathFoo//sub///` lists the prefix
+`pathFoo/sub/`. S3 keys are flat strings, so a forwarded duplicate slash could only ever match a key that literally
+contains consecutive slashes; every other double-slash request failed upstream and surfaced as a sanitized `404`.
+Collapsing happens before `STRIP_LEADING_DIRECTORY_PATH`/`PREFIX_LEADING_DIRECTORY_PATH` rewriting, so a
+duplicate-slash spelling follows the same strip/prefix rewrite as its canonical form.
+
+Only literal slashes are collapsed. A percent-encoded slash (`%2F`) is object-key data, not a path separator, so a
+key that genuinely contains consecutive slashes (e.g. `b//e.txt`) remains addressable by encoding the extra slash:
+`GET /b/%2Fe.txt`. Because all duplicate-slash spellings of a path normalize to one S3 request URI, they share one
+cache entry (see [Byte-Range Requests and Caching](#byte-range-requests-and-caching)).
+
 ## Byte-Range Requests and Caching
 
 The gateway caches [byte-range](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests) (requests sent with a
@@ -214,9 +229,10 @@ Error responses from the origin are cached just like successful ones: an upstrea
 `PROXY_CACHE_VALID_NOTFOUND` (default `1m`) and an upstream `403` for `PROXY_CACHE_VALID_FORBIDDEN` (default `30s`).
 Because cache entries are keyed by the effective S3 request identity (see
 [Byte-Range Requests and Caching](#byte-range-requests-and-caching)), a cached error is shared exactly like a cached
-object: percent-encoding variants of an object URL normalize to the same key (except that with `ALLOW_DIRECTORY_LIST`
-or `PROVIDE_INDEX_PAGE` enabled, a directory's trailing slash must be sent literally — `/dir%2F` is keyed as an object
-request, separately from `/dir/`), and the viewer's `Host` header is not part of the key, so whichever request reaches
+object: percent-encoding variants of an object URL normalize to the same key and duplicate literal slashes are
+collapsed (see [Path Normalization](#path-normalization)) — except that with `ALLOW_DIRECTORY_LIST`
+or `PROVIDE_INDEX_PAGE` enabled, a directory's trailing slash must be sent literally (`/dir%2F` is keyed as an object
+request, separately from `/dir/`) — and the viewer's `Host` header is not part of the key, so whichever request reaches
 the origin first decides what every client using the same request method sees for that object until the entry expires
 (a cached `GET` error is not returned to `HEAD` probes such as `curl -I`).
 

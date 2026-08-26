@@ -475,6 +475,22 @@ function testS3uri() {
             '/a/c/');
         check('virtual-v2', undefined, '/b/a/c/', '/b/a/c/', '/a/c/');
         check('path', undefined, '/b/a/c/', `/${bucket}/b/a/c/`, '/a/c/');
+
+        // GH-88: runs of duplicate literal slashes collapse on both the
+        // S3-addressed and the gateway-addressed (index-probe) paths, for
+        // every addressing style.
+        check('virtual-v2', undefined, '/pathFoo//file.txt',
+            '/pathFoo/file.txt');
+        check('virtual-v2', undefined, '//pathFoo//sub///', '/pathFoo/sub/');
+        check('path', undefined, '/pathFoo//file.txt',
+            `/${bucket}/pathFoo/file.txt`);
+        check('path', { preserveBasePath: true }, '/pathFoo//file.txt',
+            '/pathFoo/file.txt');
+        check('virtual-v2', undefined, '//', '/');
+        // The %2F escape hatch: an encoded slash is never collapsed and
+        // survives decode/re-encode as the empty path component that
+        // addresses a key containing consecutive slashes.
+        check('virtual-v2', undefined, '/b/%2Fe.txt', '/b//e.txt');
     } finally {
         restoreEnv('S3_STYLE', savedStyle);
     }
@@ -550,13 +566,138 @@ function testS3ReqParamsForSigV2() {
         // it prepended - both must yield the same signed resource.
         check('path', '/a/plus+plus.txt', `/${bucket}/a/plus%2Bplus.txt`);
         check('path', '/%61.txt', `/${bucket}/a.txt`);
+
+        // GH-88: duplicate literal slashes collapse into the signed v2
+        // resource exactly as they collapse into the proxied URI.
+        check('virtual-v2', '/a//c///ramen.jpg', `/${bucket}/a/c/ramen.jpg`);
+        check('path', '/a//c///ramen.jpg', `/${bucket}/a/c/ramen.jpg`);
+        // The %2F escape hatch signs the preserved empty component.
+        check('virtual-v2', '/b/%2Fe.txt', `/${bucket}/b//e.txt`);
     } finally {
         restoreEnv('S3_STYLE', savedStyle);
     }
 }
 
+function testS3ReqParamsForSigV4() {
+    printHeader('testS3ReqParamsForSigV4');
+
+    const savedStyle = process.env['S3_STYLE'];
+    const bucket = process.env['S3_BUCKET_NAME'];
+    const host = 'unit.test.example.com';
+
+    function makeRequest(uriPath, forIndexPage) {
+        const r = {
+            "method": "GET",
+            "variables": {
+                "uri_path": uriPath,
+                "uri_full_path": uriPath,
+                "forIndexPage": forIndexPage
+            }
+        };
+        r.log = function(msg) {
+            console.log(msg);
+        };
+        return r;
+    }
+
+    function check(style, uriPath, forIndexPage, expectedUri,
+        expectedQueryParams) {
+        process.env['S3_STYLE'] = style;
+        const params = s3gateway._s3ReqParamsForSigV4(
+            makeRequest(uriPath, forIndexPage), bucket, host);
+        if (params.uri !== expectedUri ||
+            params.queryParams !== expectedQueryParams) {
+            throw `Unexpected signed v4 params for S3_STYLE=${style} ` +
+                `uri_path=${uriPath} forIndexPage=${forIndexPage}` +
+                `\nActual:   [${params.uri}] [${params.queryParams}]` +
+                `\nExpected: [${expectedUri}] [${expectedQueryParams}]`;
+        }
+    }
+
+    try {
+        // GH-88: _s3ReqParamsForSigV4 reads $uri_path independently of
+        // s3uri(), so it must collapse duplicate literal slashes the same
+        // way or the signature diverges from the proxied request. Object
+        // paths sign the collapsed s3uri() value...
+        check('virtual-v2', '/a//c///ramen.jpg', 'true',
+            '/a/c/ramen.jpg', '');
+        // ...and directory-listing query params are derived from the
+        // collapsed prefix ($forIndexPage is 'false' as @s3Directory sets
+        // it; _s3DirQueryParams has no ALLOW_LISTING gate, so the listing
+        // params are unit-testable even though s3uri()'s listing branch is
+        // not - see testS3ReqParamsForSigV2's comment).
+        check('virtual-v2', '/b//c///', 'false',
+            '/', 'delimiter=%2F&prefix=b%2Fc%2F');
+        check('path', '/b//c///', 'false',
+            `/${bucket}`, 'delimiter=%2F&prefix=b%2Fc%2F');
+        // '//' collapses to the bucket root: delimiter only, no prefix.
+        check('virtual-v2', '//', 'false', '/', 'delimiter=%2F');
+    } finally {
+        restoreEnv('S3_STYLE', savedStyle);
+    }
+}
+
+function testCollapseDuplicateSlashes() {
+    printHeader('testCollapseDuplicateSlashes');
+    const testCases = [
+        ['/pathFoo//file.txt', '/pathFoo/file.txt'],
+        ['//pathFoo//sub///', '/pathFoo/sub/'],
+        ['//', '/'],
+        ['/', '/'],
+        ['/already/clean.txt', '/already/clean.txt'],
+        // A percent-encoded slash is object-key data, not a separator
+        ['/b/%2Fe.txt', '/b/%2Fe.txt'],
+        ['/b/%2F//e.txt', '/b/%2F/e.txt']
+    ];
+
+    testCases.forEach(function(testCase) {
+        const actual = s3gateway._collapseDuplicateSlashes(testCase[0]);
+        console.log(`  ## testCollapseDuplicateSlashes: ` +
+            `${testCase[0]} => ${testCase[1]}`);
+        if (actual !== testCase[1]) {
+            throw `Collapsed [${testCase[0]}] to [${actual}]` +
+                `\nExpected: [${testCase[1]}]`;
+        }
+    });
+}
+
+function testUriFullPath() {
+    printHeader('testUriFullPath');
+    // $uri_full_path is js_set-derived: the query string is stripped and
+    // duplicate literal slashes collapse BEFORE the STRIP/PREFIX map reads
+    // this value, so every slash spelling takes the same rewrite arm (GH-88).
+    const testCases = [
+        ['/a//b.txt?some=param&other=param', '/a/b.txt'],
+        ['//tostrip//c///d.txt', '/tostrip/c/d.txt'],
+        ['/plain.txt', '/plain.txt'],
+        // A percent-encoded slash is object-key data, never collapsed.
+        ['/b/%2Fe.txt?x=1', '/b/%2Fe.txt'],
+        ['//?delimiter=/', '/']
+    ];
+
+    testCases.forEach(function(testCase) {
+        const r = {
+            "variables": {
+                "request_uri": testCase[0]
+            }
+        };
+        const actual = s3gateway.uriFullPath(r);
+        console.log(`  ## testUriFullPath: ` +
+            `${testCase[0]} => ${testCase[1]}`);
+        if (actual !== testCase[1]) {
+            throw `uriFullPath([${testCase[0]}]) returned [${actual}]` +
+                `\nExpected: [${testCase[1]}]`;
+        }
+    });
+}
+
 function testEscapeURIPathPreservesDoubleSlashes() {
     printHeader('testEscapeURIPathPreservesDoubleSlashes');
+    // _escapeURIPath must keep preserving empty path components: duplicate
+    // LITERAL slashes are collapsed earlier, on the still-encoded path
+    // (s3uri()/the signers, GH-88), so any '//' reaching this function is
+    // the decoded form of an intentional %2F and is the only remaining way
+    // to address a key that genuinely contains consecutive slashes.
     var doubleSlashed = '/testbucketer2/foo3//bar3/somedir/license';
     var actual = s3gateway._escapeURIPath(doubleSlashed);
     var expected = '/testbucketer2/foo3//bar3/somedir/license';
@@ -703,6 +844,9 @@ async function test() {
     testTrailslashRedirectUri();
     testS3uri();
     testS3ReqParamsForSigV2();
+    testS3ReqParamsForSigV4();
+    testCollapseDuplicateSlashes();
+    testUriFullPath();
     testEscapeURIPathPreservesDoubleSlashes();
     await testEcsCredentialRetrieval();
     await testEc2CredentialRetrieval();

@@ -35,11 +35,14 @@ Env: Step 2 defaults (v4 signatures, listing off, index off).
 6. `GET BASE/no-such-object` → 404; the body must be the gateway's
    sanitized error page — it must not contain origin XML (`<Error>`,
    request-id fields) or the bucket name.
-7. `GET BASE/b//e.txt` → 404. Double slashes are preserved as distinct
-   object-key bytes; `b//e.txt` is not `b/e.txt` (pinned suite behavior).
+7. `GET BASE/b//e.txt` → 200 with the body of `test/data/bucket-1/b/e.txt`:
+   runs of duplicate literal slashes collapse before signing and proxying
+   (pin #88). `GET BASE/b/%2Fe.txt` → 404 — a percent-encoded slash is
+   object-key data, never collapsed, and must not alias the `b/e.txt`
+   cache entry.
 8. `GET BASE/soap` → 404 (the SOAP API location is blocked).
 
-Covers: `/health` HOLE, sanitized-404 contract, double-slash pin.
+Covers: `/health` HOLE, sanitized-404 contract, #88 double-slash pin.
 
 ---
 
