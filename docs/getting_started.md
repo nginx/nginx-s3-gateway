@@ -43,8 +43,8 @@ running as a Container or as a Systemd service.
 | `PROXY_CACHE_INACTIVE`                | No        |                                                                                                                                                       | `60m`                                               | Cached data that are not accessed during the time specified by the parameter get removed from the cache regardless of their freshness                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `PROXY_CACHE_SLICE_SIZE`              | No        |                                                                                                                                                       | `1m`                                                | For requests with a `Range` header included, determines the size of the chunks in which the file is fetched. Values much smaller than the requests can lead to inefficiencies due to reading and writing many files. See [below for more details](#byte-range-requests-and-caching)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `PROXY_CACHE_VALID_OK`                | No        |                                                                                                                                                       | `1h`                                                | Sets caching time for response code 200 and 302                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `PROXY_CACHE_VALID_NOTFOUND`          | No        |                                                                                                                                                       | `1m`                                                | Sets caching time for response code 404                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `PROXY_CACHE_VALID_FORBIDDEN`         | No        |                                                                                                                                                       | `30s`                                               | Sets caching time for response code 403                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `PROXY_CACHE_VALID_NOTFOUND`          | No        |                                                                                                                                                       | `1m`                                                | Sets caching time for response code 404. A cached error is shared by every client that requests the same object with the same request method — see [Caching of Error Responses](#caching-of-error-responses)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `PROXY_CACHE_VALID_FORBIDDEN`         | No        |                                                                                                                                                       | `30s`                                               | Sets caching time for response code 403, which is delivered to clients as a sanitized `404` on every hit. A cached `403` is shared by every client that requests the same object with the same request method; set `0s` to not cache `403`s at all (caching headers returned by the origin still take priority). See [Caching of Error Responses](#caching-of-error-responses)                                                                                                                                                                                                                                                                                                                                                                                       |
 | `PROXY_CACHE_USE_STALE`               | No        |                                                                                                                                                       | `error timeout http_500 http_502 http_503 http_504` | Sets conditions under which stale cached data can be used. See the [`proxy_cache_use_stale` directive docs](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_use_stale) for more details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PROXY_CACHE_BYPASS_NO_CACHE`         | No        | `true`, `false`                                                                                                                                       | `false`                                             | When `true`, a request whose `Cache-Control` header contains the `no-cache` directive (for example a browser hard refresh) bypasses the local cache and fetches a fresh copy from S3. Off by default because clients can use it to drive up S3 request costs. See [Bypassing the Local Cache with Cache-Control: no-cache](#bypassing-the-local-cache-with-cache-control-no-cache)                                                                                                                                                                                                                                                                                                                                                                                   |
 | `PROXY_CACHE_IGNORE_HEADERS`          | No        | `X-Accel-Redirect`, `X-Accel-Expires`, `X-Accel-Limit-Rate`, `X-Accel-Buffering`, `X-Accel-Charset`, `Expires`, `Cache-Control`, `Set-Cookie`, `Vary` |                                                     | A space-separated list of S3 response header fields whose caching effect is ignored, so that the `PROXY_CACHE_VALID_*` settings alone decide how long a response is cached. Needed for origins such as Google Cloud Storage that return `Cache-Control: private, max-age=0`, which otherwise disables the cache entirely. See [Caching Objects from Origins that Send Cache-Control](#caching-objects-from-origins-that-send-cache-control)                                                                                                                                                                                                                                                                                                                          |
@@ -207,6 +207,41 @@ different frontend hostnames, or through different gateway URL aliases that reso
 `STRIP_LEADING_DIRECTORY_PATH`, `PREFIX_LEADING_DIRECTORY_PATH`, or static-site index handling, share one cache entry.
 This prevents clients from fragmenting the cache by varying `Host` while still keeping different origins, S3 hosts,
 request methods, and byte-range slices separate.
+
+## Caching of Error Responses
+
+Error responses from the origin are cached just like successful ones: an upstream `404` is cached for
+`PROXY_CACHE_VALID_NOTFOUND` (default `1m`) and an upstream `403` for `PROXY_CACHE_VALID_FORBIDDEN` (default `30s`).
+Because cache entries are keyed by the effective S3 request identity (see
+[Byte-Range Requests and Caching](#byte-range-requests-and-caching)), a cached error is shared exactly like a cached
+object: percent-encoding variants of an object URL normalize to the same key (except that with `ALLOW_DIRECTORY_LIST`
+or `PROVIDE_INDEX_PAGE` enabled, a directory's trailing slash must be sent literally — `/dir%2F` is keyed as an object
+request, separately from `/dir/`), and the viewer's `Host` header is not part of the key, so whichever request reaches
+the origin first decides what every client using the same request method sees for that object until the entry expires
+(a cached `GET` error is not returned to `HEAD` probes such as `curl -I`).
+
+The cache stores the origin's real status code, while
+[error sanitization](#disable-default-404-error-message) runs at delivery time — so a cached upstream `403` is
+re-collapsed to a sanitized `404` on every hit. During a transient upstream auth failure (rotated credentials,
+container clock skew), this turns a brief window of `403`s into up to `PROXY_CACHE_VALID_FORBIDDEN` of
+confident-looking `404`s for all clients: objects appear deleted rather than access appearing broken. The reverse also
+holds — a previously cached `200` masks a new upstream `403` or `404` until it expires (`PROXY_CACHE_VALID_OK`,
+default `1h`); if the origin instead fails with connection errors, timeouts, or `5xx` responses, the default
+`PROXY_CACHE_USE_STALE` keeps serving the stale `200` even past that expiry, for as long as the entry stays in the
+cache. With error sanitization enabled (the default), a cached error is held as a status-only entry in the cache's
+shared memory zone and never appears as a file under `/var/cache/nginx/s3_proxy`, so an empty cache directory does
+not prove that no error is being served from the cache.
+
+Caching `403`s is intentional: it shields the origin from request storms against denied objects. Deployments that
+prefer origin pressure over masking can lower `PROXY_CACHE_VALID_FORBIDDEN`, or set it to `0s` to not cache `403`s at
+all, so every request reaches the origin. As with all `PROXY_CACHE_VALID_*` settings, caching headers returned by the
+origin take priority — see
+[Caching Objects from Origins that Send Cache-Control](#caching-objects-from-origins-that-send-cache-control).
+
+The slice cache defines no validity for `403` or `404`, so the gateway's own settings never cache an error response
+to a ranged request that the slice cache serves (caching headers returned by the origin, which take priority, still
+can). Note that not every ranged request is sliced: with `PROVIDE_INDEX_PAGE` enabled, or on directory-listing paths,
+`Range` requests bypass the slice cache entirely and their error responses are cached as described above.
 
 ## Bypassing the Local Cache with Cache-Control: no-cache
 
@@ -775,15 +810,30 @@ metadata:
 
 The default behavior of the container is to return a `404` error message for any non-`200` response code. This is
 implemented as a security feature to sanitize any error response from the S3 bucket being proxied. For container
-debugging purposes, this sanitization can be turned off by commenting out the following lines within
-[`default.conf.template`][default-conf-template].
+debugging purposes, this sanitization can be turned off by commenting out the `error_page` line shown below within
+[`s3_location_common.conf.template`][s3-location-common-template] (the object-proxying path — its list omits `404`,
+which is routed to trailing-slash handling instead) and all three equivalent `error_page` lines in
+[`default.conf.template`][default-conf-template] (directory listings and index pages, whose lists do include `404`).
+The templates are re-rendered on every container start, so rather than rebuilding the image you can bind-mount an
+edited copy of a template over its path under `/etc/nginx/templates/`.
 
-[default-conf-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/master/common/etc/nginx/templates/default.conf.template
+[default-conf-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/default.conf.template
+[s3-location-common-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/gateway/s3_location_common.conf.template
 
 ```bash
-proxy_intercept_errors on;
-error_page 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 418 420 422 423 424 426 428 429 431 444 449 450 451 500 501 502 503 504 505 506 507 508 509 510 511 =404 @error404;
+error_page 400 401 402 403 405 406 407 408 409 410 411 412 413 414 415 416 417 418 420 422 423 424 426 428 429 431 444 449 450 451 500 501 502 503 504 505 506 507 508 509 510 511 =404 @error404;
 ```
+
+Leave the adjacent `proxy_intercept_errors on;` directive in place: in `s3_location_common.conf.template` it also
+drives the `error_page 404 @trailslashControl;` line below it, and commenting it out breaks the trailing-slash
+redirects behind static-site index navigation. Also note that the `error_page` lists in `default.conf.template`
+additionally collapse the access-phase method rejections described below (GH-551) into the sanitized `404`, so
+disabling them changes those responses too.
+
+Sanitization applies at delivery time, including on cache hits, so a cached upstream error keeps being delivered as
+the sanitized `404` until its cache entry expires. An error cached before you disabled sanitization is stored
+status-only (no S3 error body), so its S3 error message stays unavailable until the entry expires — see
+[Caching of Error Responses](#caching-of-error-responses).
 
 Note that not every `404` originates from S3. On the object paths it
 proxies, the read-only gateway rejects non-read request methods (anything
