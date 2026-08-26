@@ -9,6 +9,48 @@ anything a new defect. Probe conventions are the same as in
 Each set names its fix commit; `git log <commit> -1` shows the full
 context if a probe's intent is unclear.
 
+## #88 — duplicate literal slashes collapse before signing and proxying
+
+Fix commit: the commit that added this entry. The raw `$request_uri`
+bytes flowed into the S3 key and the ListObjectsV2 prefix, so a `//` in
+a request path could only match a key literally containing consecutive
+slashes and everything else surfaced as a sanitized 404 or an empty
+listing.
+
+Step 2 defaults (listing off, index off), fresh recreate (slash
+spellings share one cache entry keyed on the normalized `$s3uri` —
+probe raw forms first, same masking caveat as #578):
+
+1. `GET BASE/b//e.txt` → 200, body of `b/e.txt`;
+   `GET BASE/b//c///d.txt` → 200, body of `b/c/d.txt`.
+2. `GET BASE/b/%2Fe.txt` → 404 (a percent-encoded slash is object-key
+   data, never collapsed — the escape hatch for keys containing `//`).
+3. `GET BASE//` → 404 — the collapsed root must hit `redirectToS3`'s
+   root guard, never proxy a signed bucket-root GET (an object-listing
+   leak while listing is disabled).
+
+With `ALLOW_DIRECTORY_LIST=true`:
+
+4. `GET BASE/b//c///` → 200 listing with heading `Index of /b/c/` and
+   an `href="/b/c/d.txt"` entry (the v4 signer derives the listing
+   params from an independent read of the path, so the signed and
+   proxied prefixes must both be the collapsed form).
+5. `GET BASE//` → 200 root listing.
+
+With `AWS_SIGS_VERSION=2 ALLOW_DIRECTORY_LIST=true` (fresh recreate):
+
+6. Probes 1 and 4 again — v2 signs the `s3uri()`-derived resource, so
+   the collapsed form must authenticate; logs contain zero
+   `SignatureDoesNotMatch` occurrences.
+
+With `STRIP_LEADING_DIRECTORY_PATH=/my-bucket` (fresh recreate):
+
+7. `GET BASE//my-bucket//a.txt` → 200, body of `test/data/bucket-1/a.txt`.
+   The collapse runs before the STRIP/PREFIX map chooses its rewrite arm
+   (`$uri_full_path` is js_set-derived and pre-collapsed), so a doubled
+   slash at the stripped prefix cannot bypass the strip and address the
+   unstripped S3 key.
+
 ## #578 — SigV2 signs the same normalized URI it proxies
 
 Fix commit: the commit that added this entry (PR #582). The v2 signer

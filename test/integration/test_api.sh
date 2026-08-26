@@ -21,6 +21,9 @@ set -o pipefail  # don't hide errors within pipes
 
 test_server=$1
 test_dir=$2
+# Accepted to keep the caller CLI contract stable but currently unused: the
+# last signature-version branch (the v4-only //statichost redirect gate) was
+# removed by GH-88, which made the assertion hold under both versions.
 signature_version=$3
 allow_directory_list=$4
 index_page=$5
@@ -396,12 +399,32 @@ if [ -n "${prefix_leading_directory_path}" ]; then
       # strip map arm on loopback: ${strip_leading_directory}/index.html must
       # strip and prefix to the same S3 key as /index.html.
       assertHttpRequestEquals "GET" "${strip_leading_directory}/" "data/bucket-1/statichost/index.html"
+      # GH-88: the collapse precedes the strip on the index probe's loopback
+      # re-entry too - a doubled-slash spelling of the stripped prefix must
+      # land on the same index page instead of bypassing the strip.
+      assertHttpRequestEquals "GET" "/${strip_leading_directory}//" "data/bucket-1/statichost/index.html"
     fi
 
     # Exit early like the non-index prefix branch below: everything past the
     # prefix block assumes unprefixed paths.
     exit 0
   fi
+
+  if [ -n "${strip_leading_directory}" ]; then
+    # GH-88: duplicate slashes collapse BEFORE the STRIP map chooses its
+    # rewrite arm, so a doubled slash at the stripped prefix must take the
+    # same strip+prefix rewrite as the canonical spelling - uncollapsed it
+    # would fail the map's anchored regex, skip the strip, and address the
+    # wrong S3 key. Cold-cache: stays ABOVE every other request for
+    # b/c/d.txt (all slash spellings share one cache entry keyed on the
+    # normalized $s3uri, and a warmed entry would mask the regression).
+    assertHttpRequestEquals "GET" "/${strip_leading_directory}//c/d.txt" "data/bucket-1/b/c/d.txt"
+  fi
+
+  # GH-88: duplicate client slashes collapse after the PREFIX map prepends
+  # /b, so the rewritten path reaches S3 without empty segments. Cold-cache
+  # in no-strip legs: stays above the canonical /c/d.txt request below.
+  assertHttpRequestEquals "GET" "/c//d.txt" "data/bucket-1/b/c/d.txt"
 
   assertHttpRequestEquals "GET" "/c/d.txt" "data/bucket-1/b/c/d.txt"
 
@@ -481,16 +504,37 @@ if [ ${is_windows} == "0" ]; then
   assertHttpRequestEquals "GET" 'a/%25%40!*()%3D%24%23%5E%26%7C.txt' 'data/bucket-1/a/%@!*()=$#^&|.txt'
 fi
 
+# GH-88: runs of duplicate literal slashes collapse before the request is
+# signed and proxied, so these alias the canonical keys requested below.
+# They must stay ABOVE the first canonical-form request for the same
+# object, for the same cold-cache reason as the GH-578 block above: all
+# slash spellings share one cache entry keyed on the normalized $s3uri,
+# so a cache warmed by the canonical form would hide a signing or
+# normalization regression.
+assertHttpRequestEquals "HEAD" "b//e.txt" "200"
+assertHttpRequestEquals "GET" "b//e.txt" "data/bucket-1/b/e.txt"
+assertHttpRequestEquals "GET" "b//c///d.txt" "data/bucket-1/b/c/d.txt"
+# The escape hatch: a percent-encoded slash is object-key data, never a
+# path separator, and is not collapsed. b/%2Fe.txt addresses the distinct
+# key 'b//e.txt' (which no fixture carries) under its own cache key
+# '/b//e.txt', so it must NOT alias the b/e.txt entry warmed above.
+assertHttpRequestEquals "HEAD" "b/%2Fe.txt" "404"
+
+if [ -n "${strip_leading_directory}" ]; then
+  # GH-88: duplicate slashes collapse BEFORE the STRIP map chooses its
+  # rewrite arm, so a leading doubled slash must not bypass the strip
+  # (uncollapsed, '//<strip>/...' fails the map's anchored regex and the
+  # unstripped path becomes the S3 key). Cold-cache: a.txt's canonical
+  # spelling is first requested below.
+  assertHttpRequestEquals "HEAD" "/${strip_leading_directory}//a.txt" "200"
+fi
+
 # Ordinary filenames
 assertHttpRequestEquals "HEAD" "a.txt" "200"
 assertHttpRequestEquals "HEAD" "a.txt?some=param&that=should&be=stripped#aaah" "200"
 assertHttpRequestEquals "HEAD" "b/c/d.txt" "200"
 assertHttpRequestEquals "HEAD" "b/c/../e.txt" "200"
 assertHttpRequestEquals "HEAD" "b/e.txt" "200"
-# Double slashes are preserved in the S3 URI, so this is a distinct missing
-# object rather than an alias for b/e.txt. A cache key based on nginx's
-# normalized $uri would incorrectly reuse the b/e.txt entry here.
-assertHttpRequestEquals "HEAD" "b//e.txt" "404"
 assertHttpRequestEquals "HEAD" "a/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.txt" "200"
 
 # Byte range requests
@@ -545,9 +589,15 @@ fi
 if [ "${append_slash}" == "1" ] && [ "${index_page}" == "0" ]; then
   assertHttpRequestEquals "HEAD" "not%20found" "302"
   assertHttpRequestEquals "HEAD" "b/c" "302"
+  # GH-88: b//c collapses to b/c and follows the same append-slash path.
+  assertHttpRequestEquals "HEAD" "b//c" "302"
+  # The Location is built from nginx's slash-merged $uri, so the duplicate
+  # slash cannot survive into the redirect target either.
+  assertRedirectLocation "/b//c" "a.example" "/b/c/"
 else
   assertHttpRequestEquals "HEAD" "not%20found" "404"
   assertHttpRequestEquals "HEAD" "b/c" "404"
+  assertHttpRequestEquals "HEAD" "b//c" "404"
 fi
 
 # Directory HEAD 404s
@@ -565,9 +615,6 @@ fi
 assertHttpRequestEquals "HEAD" "b/" "404"
 assertHttpRequestEquals "HEAD" "/b/c/" "404"
 assertHttpRequestEquals "HEAD" "/soap" "404"
-# As with b//e.txt above, b//c is a distinct S3 key and must not inherit the
-# normalized /b/c response from another cache entry.
-assertHttpRequestEquals "HEAD" "b//c" "404"
 
 if [ "${index_page}" == "1" ]; then
 assertHttpRequestEquals "HEAD" "/statichost/" "200"
@@ -672,12 +719,13 @@ assertHttpRequestEquals "GET" "/statichost/noindexdir/multipledir/" "data/bucket
   assertRedirectLocation "/%23foo" "a.example" "/%23foo/"
   assertRedirectLocation "/%25foo" "a.example" "/%25foo/"
   assertRedirectLocation "/foo%0D%0AX-Evil%3A%20yes" "a.example" "/foo%0D%0AX-Evil%3A%20yes/"
-  # MinIO's SigV2 handling returns a plain 404 for this distinct double-slash
-  # key before the gateway reaches @trailslash. SigV4 reaches the redirect and
-  # proves the emitted Location cannot become a scheme-relative `//...` URL.
-  if [ "${signature_version}" == "4" ]; then
-    assertRedirectLocation "//statichost" "a.example" "/statichost/"
-  fi
+  # GH-88: the duplicate slash is collapsed before signing and proxying
+  # under BOTH signature versions (pre-fix, MinIO's SigV2 handling 404'd
+  # the raw double-slash key upstream, so this only held for v4), so S3
+  # returns a plain 404 for 'statichost' and @trailslash emits the
+  # collapsed Location - which also proves it cannot become a
+  # scheme-relative `//...` URL.
+  assertRedirectLocation "//statichost" "a.example" "/statichost/"
   fi
 
   if [ "${allow_directory_list}" == "1" ]; then
@@ -698,6 +746,20 @@ if [ "${allow_directory_list}" == "1" ]; then
   assertHttpRequestEquals "GET" "b/クズ箱/" "200"
   assertHttpRequestEquals "GET" "%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B/" "200"
   assertHttpRequestEquals "GET" "системы/" "200"
+  # GH-88: duplicate slashes collapse in ListObjectsV2 prefixes too, and
+  # '//' aliases the root listing. The body assertion matters: an
+  # uncollapsed '//' would list the (nonexistent) prefix '/' and still
+  # render a 200 "No Files Available for Listing" page. With
+  # PROVIDE_INDEX_PAGE on, the collapsed root instead resolves to the root
+  # index page before the listing branch is consulted.
+  if [ "${index_page}" == "0" ]; then
+    assertHttpRequestEquals "GET" "//" "200"
+    assertHttpBodyPart "contains" "//" '<h1>Index of /</h1>'
+  else
+    assertHttpRequestEquals "GET" "//" "data/bucket-1/index.html"
+  fi
+  assertHttpBodyPart "contains" "b//c///" '<h1>Index of /b/c/</h1>'
+  assertHttpBodyPart "contains" "b//c///" 'href="/b/c/d.txt"'
   if [ "$append_slash" == "1" ]; then
     if [ "${index_page}" == "0" ]; then
       assertHttpRequestEquals "GET" "b" "302"
@@ -707,6 +769,13 @@ if [ "${allow_directory_list}" == "1" ]; then
   fi
 elif [ "${index_page}" == "1" ]; then
   assertHttpRequestEquals "GET" "/" "data/bucket-1/index.html"
+  # GH-88: '//' collapses to the root and serves the same index page.
+  assertHttpRequestEquals "GET" "//" "data/bucket-1/index.html"
 else
   assertHttpRequestEquals "GET" "/" "404"
+  # GH-88 guard: '//' collapses to the root and must hit the same 404
+  # guard in redirectToS3 - not bypass the uriPath === '/' check and
+  # proxy a signed bucket-root GET upstream, which would leak an object
+  # listing while directory listing is disabled.
+  assertHttpRequestEquals "GET" "//" "404"
 fi

@@ -96,10 +96,16 @@ const SERVICE = process.env['S3_SERVICE'] || "s3";
  * @param r {NginxHTTPRequest} HTTP request
  */
 function editHeaders(r) {
+    // Classify on the raw path: only a literal trailing slash routes as a
+    // directory (redirectToS3/s3uri), while a trailing %2F is object-key
+    // data proxied as an object request (GH-88's escape hatch) - decoding
+    // here would strip the object response's headers as if it were a
+    // listing. Duplicate literal slashes need no collapsing for this
+    // check: collapsing never changes the final character.
     const isDirectoryHeadRequest =
         ALLOW_LISTING &&
         r.method === 'HEAD' &&
-        _isDirectory(decodeURIComponent(r.variables.uri_path));
+        _isDirectory(r.variables.uri_path);
 
     /* Strips all x-amz- (if x-amz- is not in ADDITIONAL_HEADER_PREFIXES_ALLOWED) headers from the output HTTP headers so that the
      * requesters to the gateway will not know you are proxying S3. */
@@ -280,9 +286,15 @@ function _s3ReqParamsForSigV2(r, bucket) {
  */
 function _s3ReqParamsForSigV4(r, bucket, host) {
     const baseUri = s3BaseUri(r);
+    /* Collapse duplicate slashes exactly as s3uri() does: the listing
+     * queryParams signed here must be derived from the same normalized
+     * path that s3uri() turns into the proxied prefix, or the signature
+     * diverges from the proxied request (GH-88; the same
+     * signed-equals-proxied invariant as GH-578). */
+    const uriPath = _collapseDuplicateSlashes(r.variables.uri_path);
     const computed_url = !utils.parseBoolean(r.variables.forIndexPage)
-        ? r.variables.uri_path
-        : r.variables.uri_path + INDEX_PAGE;
+        ? uriPath
+        : uriPath + INDEX_PAGE;
     const queryParams = _s3DirQueryParams(computed_url, r.method);
     let uri;
     if (queryParams.length > 0) {
@@ -329,6 +341,30 @@ function s3BaseUri(r) {
 }
 
 /**
+ * Builds the value of the $uri_full_path variable: the client-facing request
+ * path, i.e. $request_uri with the query string removed and runs of
+ * duplicate literal slashes collapsed (GH-88). The collapse must happen
+ * here, before the STRIP/PREFIX_LEADING_DIRECTORY_PATH map derives
+ * $uri_path from this variable, so that every duplicate-slash spelling of a
+ * path takes the same strip/prefix rewrite arm as its canonical spelling -
+ * an uncollapsed '//stripped-prefix/...' would fail the map's anchored
+ * regex and bypass the strip entirely. The rewrite can itself join a '//'
+ * back into $uri_path (a PREFIX value with a trailing slash), so s3uri()
+ * and the signers still collapse the paths they read.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object
+ * @returns {string} query-stripped, slash-collapsed client-facing path
+ */
+function uriFullPath(r) {
+    const requestUri = r.variables.request_uri;
+    const queryIdx = requestUri.indexOf('?');
+    const path = queryIdx === -1
+        ? requestUri
+        : requestUri.substring(0, queryIdx);
+    return _collapseDuplicateSlashes(path);
+}
+
+/**
  * Returns the s3 path given the incoming request
  *
  * @param r {NginxHTTPRequest} HTTP request
@@ -340,6 +376,10 @@ function s3BaseUri(r) {
  *   path ($uri_full_path) instead of the rewritten $uri_path, because the
  *   gateway re-applies the STRIP/PREFIX_LEADING_DIRECTORY_PATH rewrite to
  *   every incoming request (GH-575).
+ *
+ * Runs of duplicate literal slashes in the request path are collapsed
+ * before the URI is built (GH-88); percent-encoded slashes (%2F) are
+ * preserved as object-key data.
  * @returns {string} uri for s3 request
  */
 function s3uri(r, opts) {
@@ -360,10 +400,10 @@ function s3uri(r, opts) {
         // structurally - a probe must never become a "?delimiter=..."
         // listing URI.
         basePath = '';
-        uriPath = r.variables.uri_full_path;
+        uriPath = _collapseDuplicateSlashes(r.variables.uri_full_path);
     } else {
         basePath = s3BaseUri(r);
-        uriPath = r.variables.uri_path;
+        uriPath = _collapseDuplicateSlashes(r.variables.uri_path);
     }
 
     // Create query parameters only if directory listing is enabled.
@@ -436,7 +476,12 @@ function redirectToS3(r) {
         return;
     }
 
-    const uriPath = r.variables.uri_path;
+    /* Route on the same normalized path that s3uri() will proxy. In
+     * particular 'GET //' must collapse to '/' and hit the root guard
+     * below - uncollapsed it would bypass the uriPath === "/" check and
+     * proxy a signed bucket-root GET upstream, leaking an object listing
+     * while directory listing is disabled (GH-88). */
+    const uriPath = _collapseDuplicateSlashes(r.variables.uri_path);
     const isDirectoryListing = ALLOW_LISTING && _isDirectory(uriPath);
 
     if (isDirectoryListing && (r.method === 'GET' || r.method === 'HEAD')) {
@@ -476,8 +521,11 @@ function trailslashControl(r) {
         // on sequences nginx accepts (e.g. invalid UTF-8 such as %C3) and
         // then misclassify any encoded dots elsewhere in the same path.
         // Unlike $uri, the result is deliberately not normalized
-        // (dot-segments and duplicate slashes are kept) - the decoded path
-        // is used for classification only, never emitted in the redirect.
+        // (dot-segments and duplicate slashes are kept - collapsing cannot
+        // change the trailing-slash or final-segment-extension
+        // classification, and s3uri()/the signers collapse duplicate
+        // slashes themselves per GH-88) - the decoded path is used for
+        // classification only, never emitted in the redirect.
         if (path.indexOf('%') !== -1) {
             path = path.replace(/%([0-9A-Fa-f]{2})/g, function (_match, hex) {
                 return String.fromCharCode(parseInt(hex, 16));
@@ -676,6 +724,33 @@ function _escapeURIPathComponents(path) {
 }
 
 /**
+ * Collapses every run of duplicate literal '/' characters in a raw,
+ * still-percent-encoded URI path into a single slash. S3 keys are flat
+ * strings, so a forwarded duplicate slash can only match a key that
+ * literally contains consecutive slashes - every other double-slash
+ * request failed upstream and surfaced as a sanitized 404 (GH-88).
+ * Collapsing happens before the path is percent-decoded, so a
+ * percent-encoded slash (%2F) is key data, never a separator: a key
+ * genuinely containing consecutive slashes stays addressable as e.g.
+ * /b/%2Fe.txt - _escapeURIPath() decodes and re-encodes per component
+ * afterwards, preserving the empty component the encoded slash produces.
+ *
+ * @param uriPath {string} raw, percent-encoded URI path
+ * @returns {string} path with runs of literal slashes collapsed
+ * @private
+ */
+function _collapseDuplicateSlashes(uriPath) {
+    // Almost no request contains '//', and this runs several times per
+    // request ($uri_full_path, s3uri(), the signers, redirectToS3), so skip
+    // the comparatively expensive njs regex replace on the common case -
+    // the same guard idiom as _escapeURIPath's indexOf('%') check.
+    if (uriPath.indexOf('//') === -1) {
+        return uriPath;
+    }
+    return uriPath.replace(/\/{2,}/g, '/');
+}
+
+/**
  * Determines if a given path is a directory based on whether or not the last
  * character in the path is a forward slash (/).
  *
@@ -723,6 +798,7 @@ export default {
     s3date,
     s3auth,
     s3uri,
+    uriFullPath,
     trailslashControl,
     trailslashRedirectUri,
     redirectToS3,
@@ -733,6 +809,7 @@ export default {
     // unit tests can run against them.
     _s3ReqParamsForSigV2,
     _s3ReqParamsForSigV4,
+    _collapseDuplicateSlashes,
     _encodeURIComponent,
     _escapeURIPath,
     _hasExtension,
