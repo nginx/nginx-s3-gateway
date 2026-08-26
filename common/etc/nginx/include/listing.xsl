@@ -111,6 +111,32 @@
                         </xsl:apply-templates>
                     </tbody>
                 </table>
+                <!-- The client-facing continuation marker: NextMarker with
+                     the response Prefix stripped, computed once so the
+                     guard below and the href always agree on one value. -->
+                <xsl:variable name="nextMarker"
+                              select="substring-after(*[local-name()='NextMarker']/text(), $globalPrefix)"/>
+                <!-- S3 truncates ListObjects responses at max-keys (at most
+                     1000 keys); with a delimiter the V1 API returns
+                     NextMarker on every truncated response. The emitted
+                     marker is relative to the listed directory: njs
+                     re-prepends the S3 prefix (including any
+                     PREFIX_LEADING_DIRECTORY_PATH) when building the next
+                     list request, so the internal prefix never leaks into
+                     the link. The href is a query-only relative reference,
+                     resolved against the current directory URL, so no
+                     rootPath handling applies. The guard tests the STRIPPED
+                     marker: when a backend truncates without NextMarker, or
+                     with one that leaves no directory-relative remainder (a
+                     marker equal to the prefix, or an opaque token that
+                     does not contain it), no link renders - njs treats an
+                     empty ?marker= as absent, so an empty-valued link would
+                     reload the same page forever. The no-link fallback is
+                     the same output as before pagination existed. -->
+                <xsl:if test="*[local-name()='IsTruncated']/text() = 'true' and string-length($nextMarker) &gt; 0">
+                    <hr/>
+                    <p><a><xsl:attribute name="href">?marker=<xsl:call-template name="encode-marker"><xsl:with-param name="value" select="$nextMarker"/></xsl:call-template></xsl:attribute>Next page</a></p>
+                </xsl:if>
             </body>
         </html>
     </xsl:template>
@@ -189,16 +215,36 @@
         </xsl:variable>
         <xsl:variable name="prefixed_uri" select="concat($rootPath, $strippedUri)" />
         <xsl:for-each select="str:split($prefixed_uri, '/')">
-            <xsl:variable name="encoded" select="str:encode-uri(., 'true', 'UTF-8')" />
-            <xsl:variable name="more-encoded" select="
+            <xsl:call-template name="encode-marks"><xsl:with-param name="encoded" select="str:encode-uri(., 'true', 'UTF-8')"/></xsl:call-template><xsl:if test="position() != last()">/</xsl:if></xsl:for-each>
+    </xsl:template>
+    <!-- Percent-encodes a string for use as a URL query-parameter VALUE:
+         unlike encode-uri, the '/' separator must be encoded too (the
+         marker is a single value, not a path) and no rootPath or
+         prefix-stripping applies. njs decodes and re-encodes the value on
+         the next request, so any residual bare character still
+         round-trips. -->
+    <xsl:template name="encode-marker">
+        <xsl:param name="value"/>
+        <xsl:call-template name="encode-marks">
+            <xsl:with-param name="encoded" select="str:encode-uri($value, 'true', 'UTF-8')"/>
+        </xsl:call-template>
+    </xsl:template>
+    <!-- Normalizes the mark characters that str:encode-uri leaves bare
+         even with escape-reserved (it encodes the URI delimiters,
+         including '/', '&', '=', '+' and '%', but not the marks) to the
+         percent-encoded forms njs _encodeURIComponent() produces. Shared
+         by encode-uri (per path segment) and encode-marker (whole query
+         value) so the client-facing encoding alphabet is defined once. -->
+    <xsl:template name="encode-marks">
+        <xsl:param name="encoded"/>
+        <xsl:value-of select="
+            str:replace(
                 str:replace(
                     str:replace(
                         str:replace(
-                            str:replace(
-                                str:replace($encoded, '@', '%40'), '(', '%28'),
+                            str:replace($encoded, '@', '%40'), '(', '%28'),
                         ')', '%29'),
                     '!', '%21'),
-                '*', '%2A')" />
-            <xsl:value-of select="$more-encoded" /><xsl:if test="position() != last()">/</xsl:if></xsl:for-each>
+                '*', '%2A')"/>
     </xsl:template>
 </xsl:stylesheet>

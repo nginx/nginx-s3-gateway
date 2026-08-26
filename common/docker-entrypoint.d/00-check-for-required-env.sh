@@ -317,6 +317,30 @@ if [ -n "${IPV6_ENABLED:-}" ]; then
   esac
 fi
 
+# DIRECTORY_LISTING_PAGE_SIZE is optional (unset and empty mean no max-keys
+# parameter is sent, so S3's own 1000-key page cap applies), but when it is
+# set it must be a positive integer: njs ignores any other value and would
+# silently fall back to unpaginated listings.
+if [ -n "${DIRECTORY_LISTING_PAGE_SIZE:-}" ]; then
+  case "${DIRECTORY_LISTING_PAGE_SIZE}" in
+    *[!0-9]* | 0*)
+      >&2 echo "DIRECTORY_LISTING_PAGE_SIZE contains an invalid value (${DIRECTORY_LISTING_PAGE_SIZE}). Valid values: a positive integer (e.g. 500), or unset for no page limit"
+      failed=1
+      ;;
+    *)
+      # S3 parses max-keys as a 32-bit signed integer and rejects larger
+      # values with 400 InvalidArgument, which the gateway sanitizes into a
+      # 404 on every listing with nothing in the logs to explain why. The
+      # length guard runs first: an arbitrarily long digit string would
+      # overflow the numeric comparison.
+      if [ "${#DIRECTORY_LISTING_PAGE_SIZE}" -gt 10 ] || [ "${DIRECTORY_LISTING_PAGE_SIZE}" -gt 2147483647 ]; then
+        >&2 echo "DIRECTORY_LISTING_PAGE_SIZE is too large (${DIRECTORY_LISTING_PAGE_SIZE}). Valid values: a positive integer no larger than 2147483647, or unset for no page limit"
+        failed=1
+      fi
+      ;;
+  esac
+fi
+
 
 # PREFIX_LEADING_DIRECTORY_PATH is rendered verbatim into the nginx
 # configuration: into the request-path map and into listing.xsl's

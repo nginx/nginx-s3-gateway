@@ -319,6 +319,7 @@ echo "AWS Signatures Version: v${AWS_SIGS_VERSION}"
 echo "DNS Resolvers: ${DNS_RESOLVERS}"
 echo "Directory Listing Enabled: ${ALLOW_DIRECTORY_LIST}"
 echo "Directory Listing path prefix: ${DIRECTORY_LISTING_PATH_PREFIX}"
+echo "Directory Listing page size: ${DIRECTORY_LISTING_PAGE_SIZE:-}"
 echo "Cache size limit: ${PROXY_CACHE_MAX_SIZE}"
 echo "Cache inactive timeout: ${PROXY_CACHE_INACTIVE}"
 echo "Slice of slice for byte range requests: ${PROXY_CACHE_SLICE_SIZE}"
@@ -402,6 +403,8 @@ cat > "/etc/nginx/environment" << EOF
 ALLOW_DIRECTORY_LIST=${ALLOW_DIRECTORY_LIST:-'false'}
 # Enables or disables directory listing for the S3 Gateway (true=enabled, false=disabled)
 DIRECTORY_LISTING_PATH_PREFIX=${DIRECTORY_LISTING_PATH_PREFIX:-''}
+# Number of keys requested per directory-listing page; empty sends no max-keys parameter (optional)
+DIRECTORY_LISTING_PAGE_SIZE=${DIRECTORY_LISTING_PAGE_SIZE:-''}
 # AWS Authentication signature version (2=v2 authentication, 4=v4 authentication)
 AWS_SIGS_VERSION=${AWS_SIGS_VERSION}
 # Name of S3 bucket to proxy requests to
@@ -731,6 +734,7 @@ env ALLOW_DIRECTORY_LIST;
 env PROVIDE_INDEX_PAGE;
 env APPEND_SLASH_FOR_POSSIBLE_DIRECTORY;
 env DIRECTORY_LISTING_PATH_PREFIX;
+env DIRECTORY_LISTING_PAGE_SIZE;
 env PROXY_CACHE_MAX_SIZE;
 env PROXY_CACHE_INACTIVE;
 env PROXY_CACHE_SLICE_SIZE;

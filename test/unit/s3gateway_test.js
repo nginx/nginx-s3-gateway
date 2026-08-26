@@ -585,7 +585,7 @@ function testS3ReqParamsForSigV4() {
     const bucket = process.env['S3_BUCKET_NAME'];
     const host = 'unit.test.example.com';
 
-    function makeRequest(uriPath, forIndexPage) {
+    function makeRequest(uriPath, forIndexPage, rawMarker) {
         const r = {
             "method": "GET",
             "variables": {
@@ -594,6 +594,9 @@ function testS3ReqParamsForSigV4() {
                 "forIndexPage": forIndexPage
             }
         };
+        if (rawMarker !== undefined) {
+            r.variables.arg_marker = rawMarker;
+        }
         r.log = function(msg) {
             console.log(msg);
         };
@@ -601,10 +604,10 @@ function testS3ReqParamsForSigV4() {
     }
 
     function check(style, uriPath, forIndexPage, expectedUri,
-        expectedQueryParams) {
+        expectedQueryParams, rawMarker) {
         process.env['S3_STYLE'] = style;
         const params = s3gateway._s3ReqParamsForSigV4(
-            makeRequest(uriPath, forIndexPage), bucket, host);
+            makeRequest(uriPath, forIndexPage, rawMarker), bucket, host);
         if (params.uri !== expectedUri ||
             params.queryParams !== expectedQueryParams) {
             throw `Unexpected signed v4 params for S3_STYLE=${style} ` +
@@ -632,8 +635,118 @@ function testS3ReqParamsForSigV4() {
             `/${bucket}`, 'delimiter=%2F&prefix=b%2Fc%2F');
         // '//' collapses to the bucket root: delimiter only, no prefix.
         check('virtual-v2', '//', 'false', '/', 'delimiter=%2F');
+
+        // GH-150: a marker continuation and a configured page size are part
+        // of the signed canonical query, in ASCII-sorted position. The
+        // marker re-prepends the collapsed, decoded prefix.
+        const savedPageSize = process.env['DIRECTORY_LISTING_PAGE_SIZE'];
+        try {
+            process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '3';
+            check('virtual-v2', '/b//c///', 'false', '/',
+                'delimiter=%2F&marker=b%2Fc%2Fd.txt&max-keys=3&prefix=b%2Fc%2F',
+                'd.txt');
+            check('path', '/b//c///', 'false', `/${bucket}`,
+                'delimiter=%2F&marker=b%2Fc%2Fd.txt&max-keys=3&prefix=b%2Fc%2F',
+                'd.txt');
+            // Index-page requests never become listings: the marker and
+            // page size are inert and the object path is signed instead.
+            check('virtual-v2', '/b/c/', 'true', '/b/c/', '', 'd.txt');
+        } finally {
+            restoreEnv('DIRECTORY_LISTING_PAGE_SIZE', savedPageSize);
+        }
     } finally {
         restoreEnv('S3_STYLE', savedStyle);
+    }
+}
+
+function testS3DirQueryParams() {
+    printHeader('testS3DirQueryParams');
+
+    const savedPageSize = process.env['DIRECTORY_LISTING_PAGE_SIZE'];
+
+    function makeRequest(rawMarker) {
+        const r = {
+            "variables": {}
+        };
+        if (rawMarker !== undefined) {
+            r.variables.arg_marker = rawMarker;
+        }
+        r.log = function(msg) {
+            console.log(msg);
+        };
+        return r;
+    }
+
+    function check(uriPath, method, rawMarker, expected) {
+        const actual = s3gateway._s3DirQueryParams(
+            makeRequest(rawMarker), uriPath, method);
+        if (actual !== expected) {
+            throw `Unexpected directory listing query params for ` +
+                `uri_path=${uriPath} method=${method} marker=${rawMarker}` +
+                `\nActual:   [${actual}]` +
+                `\nExpected: [${expected}]`;
+        }
+    }
+
+    try {
+        delete process.env['DIRECTORY_LISTING_PAGE_SIZE'];
+
+        // Without a marker or page size the query strings are byte-identical
+        // to the pre-pagination gateway: they are inserted verbatim into the
+        // SigV4 canonical request.
+        check('/', 'GET', undefined, 'delimiter=%2F');
+        check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
+        check('/b/c/', 'HEAD', undefined, '');
+        check('/b/c.txt', 'GET', undefined, '');
+        check('/b/index.html', 'GET', undefined, '');
+
+        // GH-150: the marker is the only client query parameter forwarded
+        // to S3. The client value is relative to the listed directory, so
+        // the S3 marker re-prepends the decoded prefix.
+        check('/', 'GET', 'a%2F', 'delimiter=%2F&marker=a%2F');
+        check('/b/c/', 'GET', 'd.txt',
+            'delimiter=%2F&marker=b%2Fc%2Fd.txt&prefix=b%2Fc%2F');
+        // Reserved and special characters survive the decode/re-encode
+        // canonicalization (mirrors the fixture 'a/%@!*()=$#^&|.txt'): only
+        // unreserved characters and percent-escapes reach the S3 URL.
+        check('/a/', 'GET', '%25%40%21%2A%28%29%3D%24%23%5E%26%7C.txt',
+            'delimiter=%2F&marker=a%2F%25%40%21%2A%28%29%3D%24%23%5E%26%7C.txt&prefix=a%2F');
+        // A CommonPrefixes-derived marker carries an encoded slash, and
+        // Unicode round-trips.
+        check('/b/', 'GET', '%E3%82%AF%E3%82%BA%E7%AE%B1%2F',
+            'delimiter=%2F&marker=b%2F%E3%82%AF%E3%82%BA%E7%AE%B1%2F&prefix=b%2F');
+        // A malformed percent-sequence must not throw (a throw inside a
+        // js_set handler surfaces as a 500) - the marker is ignored and the
+        // listing restarts from the first page.
+        check('/b/c/', 'GET', '%zz', 'delimiter=%2F&prefix=b%2Fc%2F');
+        // Markers are inert on non-listing requests.
+        check('/b/c/', 'HEAD', 'd.txt', '');
+        check('/b/c.txt', 'GET', 'd.txt', '');
+
+        // DIRECTORY_LISTING_PAGE_SIZE becomes max-keys, ASCII-sorted between
+        // marker and prefix.
+        process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '5';
+        check('/', 'GET', undefined, 'delimiter=%2F&max-keys=5');
+        check('/b/c/', 'GET', 'd.txt',
+            'delimiter=%2F&marker=b%2Fc%2Fd.txt&max-keys=5&prefix=b%2Fc%2F');
+        // Invalid page sizes degrade to the unpaginated default instead of
+        // failing the request or corrupting the signed query.
+        process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '0';
+        check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
+        process.env['DIRECTORY_LISTING_PAGE_SIZE'] = 'abc';
+        check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
+        // Values past S3's 32-bit max-keys range draw 400 InvalidArgument
+        // from AWS on every listing, so they degrade like any other invalid
+        // value. Only a unit test can pin this: MinIO parses max-keys as
+        // 64-bit and would accept the oversized value.
+        process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '2147483648';
+        check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
+        // The 32-bit boundary value itself is still accepted.
+        process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '2147483647';
+        check('/b/c/', 'GET', undefined,
+            'delimiter=%2F&max-keys=2147483647&prefix=b%2Fc%2F');
+    } finally {
+        restoreEnv('DIRECTORY_LISTING_PAGE_SIZE', savedPageSize);
     }
 }
 
@@ -845,6 +958,7 @@ async function test() {
     testS3uri();
     testS3ReqParamsForSigV2();
     testS3ReqParamsForSigV4();
+    testS3DirQueryParams();
     testCollapseDuplicateSlashes();
     testUriFullPath();
     testEscapeURIPathPreservesDoubleSlashes();

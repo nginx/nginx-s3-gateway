@@ -60,6 +60,7 @@ S3 Backend Environment:
   IPv6 Listen: ${ipv6_listen}
   Directory Listing Enabled: ${ALLOW_DIRECTORY_LIST}
   Directory Listing Path Prefix: ${DIRECTORY_LISTING_PATH_PREFIX}
+  Directory Listing Page Size: ${DIRECTORY_LISTING_PAGE_SIZE:-}
   Provide Index Pages Enabled: ${PROVIDE_INDEX_PAGE}
   Append slash for directory enabled: ${APPEND_SLASH_FOR_POSSIBLE_DIRECTORY}
   Stripping the following headers from responses: x-amz-;${HEADER_PREFIXES_TO_STRIP}

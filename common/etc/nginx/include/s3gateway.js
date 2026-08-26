@@ -91,6 +91,24 @@ const INDEX_PAGE = "index.html";
 const SERVICE = process.env['S3_SERVICE'] || "s3";
 
 /**
+ * Matches a positive decimal integer with no leading zeros. Module scope so
+ * the pattern compiles once at import: njs recompiles regex literals on
+ * every evaluation, and _listMaxKeys() runs several times per listing
+ * request (once per signing pass and once per $s3uri evaluation).
+ * @type {RegExp}
+ */
+const POSITIVE_INTEGER_REGEX = /^[1-9][0-9]*$/;
+
+/**
+ * Largest accepted DIRECTORY_LISTING_PAGE_SIZE. S3 parses max-keys as a
+ * 32-bit signed integer and rejects larger values with 400 InvalidArgument,
+ * which the gateway would sanitize into a 404 on every listing request.
+ * (S3 separately caps the effective page size at 1000 keys.)
+ * @type {number}
+ */
+const MAX_LIST_PAGE_SIZE = 2147483647;
+
+/**
  * Transform the headers returned from S3 such that there isn't information
  * leakage about S3 and do other tasks needed for appropriate gateway output.
  * @param r {NginxHTTPRequest} HTTP request
@@ -295,7 +313,7 @@ function _s3ReqParamsForSigV4(r, bucket, host) {
     const computed_url = !utils.parseBoolean(r.variables.forIndexPage)
         ? uriPath
         : uriPath + INDEX_PAGE;
-    const queryParams = _s3DirQueryParams(computed_url, r.method);
+    const queryParams = _s3DirQueryParams(r, computed_url, r.method);
     let uri;
     if (queryParams.length > 0) {
         if (baseUri.length > 0) {
@@ -365,6 +383,74 @@ function uriFullPath(r) {
 }
 
 /**
+ * Reads the `marker` query argument from the client request - the only
+ * client query parameter the gateway forwards to S3 (uriFullPath() strips
+ * the query string from every proxied path, and _s3DirQueryParams() only
+ * consults this value for directory-listing GETs - GH-150). $arg_marker is
+ * the raw, still-percent-encoded first value: r.args would return a
+ * decoded value (and an array for a duplicated key), which could not be
+ * safely re-encoded. The value is decoded here and re-encoded by the
+ * caller with _encodeURIComponent() - the same decode/re-encode
+ * canonicalization the list prefix gets (GH-77) - so only unreserved
+ * characters and percent-escapes ever reach the S3 URL. A malformed
+ * percent-sequence is treated as an absent marker (the listing restarts
+ * from the first page) rather than thrown: an exception inside a js_set
+ * handler would surface as a 500.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object
+ * @returns {string} decoded marker value, or '' when absent or malformed
+ * @private
+ */
+function _listRequestMarker(r) {
+    const rawMarker = r.variables.arg_marker;
+    if (!rawMarker) {
+        return '';
+    }
+    try {
+        return decodeURIComponent(rawMarker);
+    } catch (e) {
+        utils.debug_log(r,
+            'Ignoring malformed marker query value: ' + rawMarker);
+        return '';
+    }
+}
+
+/**
+ * The number of keys to request per directory-listing page (the S3
+ * `max-keys` parameter), from the optional DIRECTORY_LISTING_PAGE_SIZE
+ * environment variable. Unset or empty means no `max-keys` parameter is
+ * sent and S3's own 1000-key page cap applies. Read per call (like
+ * s3BaseUri() reads S3_STYLE) rather than captured in an import-time
+ * constant so unit tests can exercise multiple configurations in a single
+ * run.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object (for debug logging)
+ * @returns {string} validated positive-integer page size, or ''
+ * @private
+ */
+function _listMaxKeys(r) {
+    const pageSize = process.env['DIRECTORY_LISTING_PAGE_SIZE'];
+    if (!pageSize) {
+        return '';
+    }
+    // 00-check-for-required-env.sh rejects invalid values at container
+    // startup; this guard covers standalone installs and keeps a bad value
+    // out of the signed canonical query. The upper bound matters even for
+    // digit strings: S3 parses max-keys as a 32-bit signed integer and
+    // rejects anything larger with 400 InvalidArgument, which would
+    // surface as a sanitized 404 on every listing. Falling back to ''
+    // degrades to the unpaginated default rather than failing every
+    // listing request.
+    if (!POSITIVE_INTEGER_REGEX.test(pageSize) ||
+        Number(pageSize) > MAX_LIST_PAGE_SIZE) {
+        utils.debug_log(r,
+            'Ignoring invalid DIRECTORY_LISTING_PAGE_SIZE: ' + pageSize);
+        return '';
+    }
+    return pageSize;
+}
+
+/**
  * Returns the s3 path given the incoming request
  *
  * @param r {NginxHTTPRequest} HTTP request
@@ -411,7 +497,7 @@ function s3uri(r, opts) {
     // must never become listing queries - see the invariant comment above.
     if (ALLOW_LISTING && !opts.preserveBasePath &&
         !utils.parseBoolean(r.variables.forIndexPage)) {
-        const queryParams = _s3DirQueryParams(uriPath, r.method);
+        const queryParams = _s3DirQueryParams(r, uriPath, r.method);
         if (queryParams.length > 0) {
             path = `${basePath}?${queryParams}`;
         } else {
@@ -431,14 +517,23 @@ function s3uri(r, opts) {
 
 /**
  * Create and encode the query parameters needed to query S3 for an object
- * listing.
+ * listing: `delimiter` always, `marker` when the client requests a
+ * continuation page (GH-150), `max-keys` when DIRECTORY_LISTING_PAGE_SIZE
+ * is configured, and `prefix` for non-root directories.
  *
+ * The parameters MUST stay ASCII-sorted by name (delimiter < marker <
+ * max-keys < prefix): awssig4 inserts this string verbatim into the SigV4
+ * canonical request, which requires a sorted canonical query string, and
+ * the proxied listing URI must stay byte-identical to the signed one.
+ *
+ * @see {@link https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjects.html | S3 ListObjects (V1)}
+ * @param r {NginxHTTPRequest} HTTP request object
  * @param uriPath request URI path
  * @param method request HTTP method
  * @returns {string} query parameters to use with S3 request
  * @private
  */
-function _s3DirQueryParams(uriPath, method) {
+function _s3DirQueryParams(r, uriPath, method) {
     if (!_isDirectory(uriPath) || method !== 'GET') {
         return '';
     }
@@ -449,13 +544,34 @@ function _s3DirQueryParams(uriPath, method) {
         return '';
     }
 
-    let path = 'delimiter=%2F'
-
+    /* The decoded S3 list prefix: empty at the bucket root. */
+    let prefix = '';
     if (uriPath !== '/') {
-        let decodedUriPath = decodeURIComponent(uriPath);
-        let without_leading_slash = decodedUriPath.charAt(0) === '/' ?
+        const decodedUriPath = decodeURIComponent(uriPath);
+        prefix = decodedUriPath.charAt(0) === '/' ?
             decodedUriPath.substring(1, decodedUriPath.length) : decodedUriPath;
-        path += '&prefix=' + _encodeURIComponent(without_leading_slash);
+    }
+
+    let path = 'delimiter=%2F';
+
+    const marker = _listRequestMarker(r);
+    if (marker.length > 0) {
+        /* The client-facing marker is relative to the listed directory
+         * (listing.xsl strips the response Prefix from NextMarker), so the
+         * S3 marker re-prepends the same decoded prefix sent as `prefix=`.
+         * Keeping the client value prefix-relative makes the marker survive
+         * the STRIP/PREFIX_LEADING_DIRECTORY_PATH rewrites and never leaks
+         * the internal prefix to clients. */
+        path += '&marker=' + _encodeURIComponent(prefix + marker);
+    }
+
+    const maxKeys = _listMaxKeys(r);
+    if (maxKeys.length > 0) {
+        path += '&max-keys=' + maxKeys;
+    }
+
+    if (prefix.length > 0) {
+        path += '&prefix=' + _encodeURIComponent(prefix);
     }
 
     return path;
@@ -807,6 +923,7 @@ export default {
     loadContent,
     // These functions do not need to be exposed, but they are exposed so that
     // unit tests can run against them.
+    _s3DirQueryParams,
     _s3ReqParamsForSigV2,
     _s3ReqParamsForSigV4,
     _collapseDuplicateSlashes,
