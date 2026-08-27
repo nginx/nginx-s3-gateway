@@ -746,7 +746,7 @@ if [ "${allow_directory_list}" == "1" ]; then
   assertHttpRequestEquals "GET" "b/クズ箱/" "200"
   assertHttpRequestEquals "GET" "%D1%81%D0%B8%D1%81%D1%82%D0%B5%D0%BC%D1%8B/" "200"
   assertHttpRequestEquals "GET" "системы/" "200"
-  # GH-88: duplicate slashes collapse in ListObjectsV2 prefixes too, and
+  # GH-88: duplicate slashes collapse in ListObjects (V1) prefixes too, and
   # '//' aliases the root listing. The body assertion matters: an
   # uncollapsed '//' would list the (nonexistent) prefix '/' and still
   # render a 200 "No Files Available for Listing" page. With
@@ -760,6 +760,9 @@ if [ "${allow_directory_list}" == "1" ]; then
   fi
   assertHttpBodyPart "contains" "b//c///" '<h1>Index of /b/c/</h1>'
   assertHttpBodyPart "contains" "b//c///" 'href="/b/c/d.txt"'
+  # GH-150: without DIRECTORY_LISTING_PAGE_SIZE the fixture set fits in one
+  # listing response, so no pagination link may render.
+  assertHttpBodyPart "lacks" "b//c///" 'Next page'
   if [ "$append_slash" == "1" ]; then
     if [ "${index_page}" == "0" ]; then
       assertHttpRequestEquals "GET" "b" "302"

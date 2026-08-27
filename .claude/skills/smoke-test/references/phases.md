@@ -92,7 +92,21 @@ Recreate with `PROVIDE_INDEX_PAGE=true` (listing still on):
    outer path-adding proxy. **HOLE** — the suite never sets this and
    the compose file has no key for it.
 
-Covers: listing-prefix HOLE, append-slash contract, URI-escaping surface.
+Recreate with listing on plus `DIRECTORY_LISTING_PAGE_SIZE=2` (the compose
+file has a pass-through key for it):
+
+10. `GET BASE/` → 200 listing holding exactly two entries plus a
+    `Next page` link (`href="?marker=..."` — a query-only relative
+    reference whose marker is percent-encoded and relative to the listed
+    directory). Following the link must yield the next entries with no
+    repeats, and the final page renders no link. A malformed marker
+    (`GET BASE/b/?marker=%zz`) → 200 first page; a past-the-end marker
+    (`?marker=%F4%8F%BF%BF`) → the empty-listing page. The marker is the
+    only client query parameter the gateway forwards to S3; anything
+    else in the query string is still stripped.
+
+Covers: listing-prefix HOLE, append-slash contract, URI-escaping surface,
+marker pagination (`DIRECTORY_LISTING_PAGE_SIZE`).
 
 ---
 

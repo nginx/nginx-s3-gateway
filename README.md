@@ -16,7 +16,8 @@ service. This allows you to proxy a private S3 bucket without requiring users
 to authenticate to it. Within the proxy layer, additional functionality can be
 configured such as:
 
-- Listing the contents of a S3 bucket
+- Listing the contents of a S3 bucket, with marker-based pagination for
+  directories holding more entries than one S3 response can carry
 - Providing an authentication gateway using an alternative authentication
   system to S3
 - Caching frequently accessed S3 objects for lower latency delivery and

@@ -403,7 +403,11 @@ integration_test() {
 
   p "Starting Docker Compose Environment"
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=$1 ALLOW_DIRECTORY_LIST=$2 PROVIDE_INDEX_PAGE=$3 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=$4 STRIP_LEADING_DIRECTORY_PATH=$5 PREFIX_LEADING_DIRECTORY_PATH=$6 compose up -d
+  # DIRECTORY_LISTING_PAGE_SIZE is pinned empty so a value exported in the
+  # developer's shell cannot leak through the compose interpolation and
+  # paginate these legs' listings (test_api.sh asserts that no 'Next page'
+  # link renders when no page size is configured).
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=$1 ALLOW_DIRECTORY_LIST=$2 PROVIDE_INDEX_PAGE=$3 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=$4 STRIP_LEADING_DIRECTORY_PATH=$5 PREFIX_LEADING_DIRECTORY_PATH=$6 DIRECTORY_LISTING_PAGE_SIZE="" compose up -d
 
   wait_for_gateway
 
@@ -416,6 +420,41 @@ integration_test() {
   # on a count of zero, which must reach the check below rather than abort
   # the script through errexit before it can print the diagnostic.
   sig_versions_found_count=$(compose logs nginx-s3-gateway | grep -c "AWS Signatures Version: v$1\|AWS v$1 Auth" || true)
+
+  if [ "${sig_versions_found_count}" -lt 3 ]; then
+    e "NGINX was not detected as using the correct signatures version - examine logs"
+    compose logs nginx-s3-gateway
+    exit "$test_fail_exit_code"
+  fi
+}
+
+integration_test_directory_listing_pagination() {
+  sigs_version=$1                   # AWS signatures version for the phase
+  prefix_leading_directory_path=$2  # "" or an internal prefix such as "/b"
+
+  printf "\033[34;1m▶\033[0m"
+  printf "\e[1m Integration test suite for directory listing pagination (v%s signatures, PREFIX_LEADING_DIRECTORY_PATH='%s')\e[22m\n" "${sigs_version}" "${prefix_leading_directory_path}"
+
+  p "Starting Docker Compose Environment"
+  # DIRECTORY_LISTING_PAGE_SIZE=2 makes the checked-in fixture set span
+  # multiple listing pages, so pagination is provable without seeding
+  # thousands of objects. APPEND_SLASH_FOR_POSSIBLE_DIRECTORY is on so the
+  # marker's survival across the @trailslash redirect can be asserted.
+  # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION="${sigs_version}" ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="${prefix_leading_directory_path}" DIRECTORY_LISTING_PAGE_SIZE=2 compose up -d
+
+  wait_for_gateway
+
+  p "Starting directory listing pagination tests (v${sigs_version} signatures)"
+  echo "  test/integration/test_directory_listing_pagination.sh \"$test_server\" \"$test_dir\" \"${prefix_leading_directory_path}\""
+  bash "${test_dir}/integration/test_directory_listing_pagination.sh" "${test_server}" "${test_dir}" "${prefix_leading_directory_path}"
+
+  # The same signature-version proof integration_test performs: the v2 leg
+  # exists to exercise marker signing under SigV2, which is only proven if
+  # the gateway actually ran with v2 signatures. `|| true` because grep -c
+  # exits 1 on a count of zero, which must reach the check below rather
+  # than abort the script through errexit before it prints the diagnostic.
+  sig_versions_found_count=$(compose logs nginx-s3-gateway | grep -c "AWS Signatures Version: v${sigs_version}\|AWS v${sigs_version} Auth" || true)
 
   if [ "${sig_versions_found_count}" -lt 3 ]; then
     e "NGINX was not detected as using the correct signatures version - examine logs"
@@ -826,6 +865,16 @@ integration_test 4 1 1 1 "/tostrip" "/statichost"
 
 p "Test API with AWS Signature V4, trailing-slash prefix leading directory path and directory listing on"
 integration_test 4 1 0 0 "" "/b/"
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing directory listing pagination with AWS Signature V4"
+integration_test_directory_listing_pagination 4 ""
+
+compose stop nginx-s3-gateway # Restart with new config
+
+p "Testing directory listing pagination with AWS Signature V2 and prefix leading directory path"
+integration_test_directory_listing_pagination 2 "/b"
 
 compose stop nginx-s3-gateway # Restart with new config
 
