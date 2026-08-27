@@ -110,7 +110,7 @@ out/
 # jsdoc build directory
 reference/
 
-# minio storage
+# object-store scratch data
 data/
 
 # mpeltonen/sbt-idea plugin

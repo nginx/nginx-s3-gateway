@@ -18,7 +18,7 @@
 
 # Integration tests for the PROXY_CACHE_BYPASS_NO_CACHE feature. The gateway
 # must already be running with the feature configured; this script only
-# issues requests and mutates objects in the MinIO backend to prove whether
+# issues requests and mutates objects in the S3 origin to prove whether
 # a request with Cache-Control: no-cache bypasses the local proxy cache.
 #
 # The test relies on PROXY_CACHE_VALID_OK being long (1h in the test compose
@@ -32,8 +32,8 @@ test_server=$1
 test_dir=$2
 phase=$3
 mc_cmd=$4
-minio_alias=$5
-minio_bucket=$6
+origin_alias=$5
+origin_bucket=$6
 
 test_fail_exit_code=2
 no_dep_exit_code=3
@@ -65,13 +65,13 @@ if ! [ -x "${mc_cmd}" ]; then
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${minio_alias}" ]; then
-  e "missing fifth parameter: mc alias of the MinIO backend"
+if [ -z "${origin_alias}" ]; then
+  e "missing fifth parameter: mc alias of the S3 origin"
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${minio_bucket}" ]; then
-  e "missing sixth parameter: name of the MinIO bucket"
+if [ -z "${origin_bucket}" ]; then
+  e "missing sixth parameter: name of the S3 origin bucket"
   exit ${no_dep_exit_code}
 fi
 
@@ -106,7 +106,7 @@ if [[ $checksum_cmd =~ \/md5$ ]]; then
   checksum_cmd="${checksum_cmd} -r"
 fi
 
-fixture_dir="${test_dir}/data/${minio_bucket}/cache-bypass"
+fixture_dir="${test_dir}/data/${origin_bucket}/cache-bypass"
 
 # Populates the curl_args array with the optional Host and Cache-Control
 # request headers shared by the assertion helpers below, so the two helpers
@@ -185,14 +185,14 @@ assertRangeGetEquals() {
   fi
 }
 
-# Overwrites an object in the MinIO backend with the contents of a local
+# Overwrites an object in the S3 origin with the contents of a local
 # file, without touching the gateway's cache.
 # overwriteObject <local_src_file> <object_key>
 overwriteObject() {
   local_src="$1"
   object_key="$2"
-  echo "  Overwriting object ${minio_bucket}/${object_key} with contents of $(basename "${local_src}")"
-  "${mc_cmd}" cp "${local_src}" "${minio_alias}/${minio_bucket}/${object_key}" > /dev/null
+  echo "  Overwriting object ${origin_bucket}/${object_key} with contents of $(basename "${local_src}")"
+  "${mc_cmd}" cp "${local_src}" "${origin_alias}/${origin_bucket}/${object_key}" > /dev/null
 }
 
 # Check to see if HTTP server is available
@@ -261,7 +261,7 @@ if [ "${phase}" = "disabled" ]; then
   assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 10 19 "" "different slice range stays independent" "b.example"
 
   # Restore the overwritten objects so that the enabled phase and any rerun
-  # against a warm MinIO start from the checked-in fixture content.
+  # against a warm origin start from the checked-in fixture content.
   overwriteObject "${fixture_dir}/enabled.txt" "cache-bypass/enabled.txt"
   overwriteObject "${fixture_dir}/disabled.txt" "cache-bypass/disabled.txt"
   overwriteObject "${fixture_dir}/sliced.txt" "cache-bypass/sliced.txt"
@@ -289,9 +289,9 @@ else
   assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 0 9 "no-cache" "no-cache bypasses the slice cache"
   assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/updated.txt" 0 9 "" "bypass refreshed the slice cache"
 
-  # Restore the overwritten object and bypass once more so that both MinIO
+  # Restore the overwritten object and bypass once more so that both the origin
   # and the slice cache end the phase holding the checked-in fixture content,
-  # keeping reruns against a warm gateway/MinIO deterministic.
+  # keeping reruns against a warm gateway/origin deterministic.
   overwriteObject "${fixture_dir}/sliced.txt" "cache-bypass/sliced.txt"
   assertRangeGetEquals "/cache-bypass/sliced.txt" "${fixture_dir}/sliced.txt" 0 9 "no-cache" "restored object re-primed into the slice cache"
 fi

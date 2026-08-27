@@ -76,7 +76,8 @@ not invoke it directly.
 
 Automated tests require `docker`, `docker compose`, `curl`, `md5sum` (or `md5`
 on macOS), and `mc` (the
-[MinIO client](https://min.io/docs/minio/linux/reference/minio-mc.html)) to be
+[MinIO client](https://min.io/docs/minio/linux/reference/minio-mc.html), used
+as a generic S3 client against the RustFS test origin) to be
 installed; run `make check-tools` to verify all prerequisites are present.
 
 To build the gateway image and run the full unit and integration test suite:
@@ -127,7 +128,7 @@ Integration tests live in `test/integration/` and are driven by
 `test/docker-compose.dynamic-credentials.yaml` override supplying an ECS
 credential-endpoint mock for the dynamic-credentials phase and the
 `test/docker-compose.secret-file-credentials.yaml` override supplying the
-static credentials as mounted secret files), seeds MinIO with
+static credentials as mounted secret files), seeds the RustFS S3 origin with
 the fixtures in `test/data/`, and invokes the test scripts across a matrix of
 gateway configurations, including HTTPS origins with TLS verification and a
 CORS-enabled phase. New

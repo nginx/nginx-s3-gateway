@@ -2,7 +2,8 @@
 name: Install MinIO Client
 description: >
   Installs the pinned MinIO client (mc) into ./.bin, where the GNUmakefile's
-  check-tools target and test/run_integration_tests.sh both look for it.
+  check-tools target and test/run_integration_tests.sh both look for it. mc
+  is used as a generic S3 client against the RustFS test origin.
 inputs:
   release:
     description: >

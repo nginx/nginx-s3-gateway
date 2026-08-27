@@ -290,6 +290,46 @@ assertRedirectLocation() {
   fi
 }
 
+# Asserts that a path carrying percent-encoded control bytes cannot inject a
+# response header. Origins differ on the upstream answer for such keys - AWS
+# and MinIO return 404, which makes @trailslash emit a redirect, while RustFS
+# rejects control bytes in object keys with 400 and no redirect is emitted at
+# all. Both shapes are safe, so the redirect itself is optional here; what
+# must never happen is the decoded CR/LF splitting a header, and when a
+# Location IS emitted it must still carry the bytes percent-encoded.
+# assertRedirectSafeFromHeaderInjection <path> <host_header> <expected_location_when_redirected> <injected_header_name>
+assertRedirectSafeFromHeaderInjection() {
+  path="$1"
+  host="$2"
+  expected_location="$3"
+  injected_header_name="$4"
+
+  buildTestUri "${path}"
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Testing header-injection safety: GET ${path} (Host: ${host})"
+
+  headers="$(${curl_cmd} -H "Host: ${host}" -D - -o /dev/null "${uri}")"
+  actual_location=""
+  while IFS= read -r header; do
+    case "${header}" in
+      [Ll]ocation:\ *)
+        actual_location="${header#*: }"
+        actual_location="${actual_location%$'\r'}"
+        ;;
+      "${injected_header_name}:"*)
+        e "Header injection detected: response contains a '${injected_header_name}' header. Request [GET ${uri} Host: ${host}]"
+        exit ${test_fail_exit_code}
+        ;;
+    esac
+  done <<< "${headers}"
+
+  if [ -n "${actual_location}" ] && [ "${expected_location}" != "${actual_location}" ]; then
+    e "Redirect location didn't match expectation. Request [GET ${uri} Host: ${host}] Expected [${expected_location}] Actual [${actual_location}]"
+    exit ${test_fail_exit_code}
+  fi
+}
+
 # Fetch a URL with GET and assert a literal substring is present in
 # (mode "contains") or absent from (mode "lacks") the response body.
 # The response is fetched once per path and reused by consecutive assertions
@@ -602,7 +642,8 @@ fi
 
 # Directory HEAD 404s
 # Unfortunately, the logic here can't be properly encoded into the test.
-# With minio, we can't return anything *but* a 404 for HEAD requests to a directory.
+# With RustFS (as with MinIO before it), we can't return anything *but* a 404
+# for HEAD requests to a directory.
 # With AWS S3, HEAD requests to a directory will return 200 *only* when we are
 # running with v4 signatures.
 # Now, both of these cases have the exception of HEAD returning 200 on the root
@@ -718,10 +759,11 @@ assertHttpRequestEquals "GET" "/statichost/noindexdir/multipledir/" "data/bucket
   assertRedirectLocation "/%3Ffoo" "a.example" "/%3Ffoo/"
   assertRedirectLocation "/%23foo" "a.example" "/%23foo/"
   assertRedirectLocation "/%25foo" "a.example" "/%25foo/"
-  assertRedirectLocation "/foo%0D%0AX-Evil%3A%20yes" "a.example" "/foo%0D%0AX-Evil%3A%20yes/"
+  assertRedirectSafeFromHeaderInjection "/foo%0D%0AX-Evil%3A%20yes" "a.example" "/foo%0D%0AX-Evil%3A%20yes/" "X-Evil"
   # GH-88: the duplicate slash is collapsed before signing and proxying
-  # under BOTH signature versions (pre-fix, MinIO's SigV2 handling 404'd
-  # the raw double-slash key upstream, so this only held for v4), so S3
+  # under BOTH signature versions (pre-fix, the then-MinIO origin's SigV2
+  # handling 404'd the raw double-slash key upstream, so this only held
+  # for v4), so S3
   # returns a plain 404 for 'statichost' and @trailslash emits the
   # collapsed Location - which also proves it cannot become a
   # scheme-relative `//...` URL.

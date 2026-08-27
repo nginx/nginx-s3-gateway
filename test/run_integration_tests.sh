@@ -21,7 +21,7 @@
 # by the GNUmakefile (make test-integration / make retest) - not intended to
 # be run directly, although doing so is harmless.
 #
-# The suite starts MinIO plus the gateway, seeds test data, then drives
+# The suite starts RustFS plus the gateway, seeds test data, then drives
 # test/integration/test_api.sh and test_cache_bypass.sh through a matrix of
 # gateway configurations. The entrypoint-script tests run first since they
 # only need the image, not the compose environment.
@@ -59,14 +59,16 @@ dynamic_credentials_compose_config="${test_dir}/docker-compose.dynamic-credentia
 secret_file_credentials_compose_config="${test_dir}/docker-compose.secret-file-credentials.yaml"
 test_compose_project="${COMPOSE_PROJECT:-ngt}"
 
-minio_server="http://localhost:9090"
-minio_user="AKIAIOSFODNN7EXAMPLE"
-minio_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-minio_name="${test_compose_project}_minio_1"
-minio_bucket="bucket-1"
+# The S3 origin is RustFS (see test/docker-compose.yaml); mc, used purely as
+# a generic S3 client, still talks to it for seeding and object mutation.
+s3_origin_server="http://localhost:9090"
+s3_origin_user="AKIAIOSFODNN7EXAMPLE"
+s3_origin_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+s3_origin_container="${test_compose_project}_rustfs_1"
+s3_origin_bucket="bucket-1"
 test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
 test_secrets_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-secrets"
-minio_mc_args=()
+mc_extra_args=()
 
 DOCKER="${DOCKER:-docker}"
 NGINX_TYPE="${NGINX_TYPE:-oss}"
@@ -260,27 +262,30 @@ compose_secret_file_credentials() {
 }
 
 # Configure the compose environment and mc/curl endpoints for an HTTP or
-# HTTPS MinIO origin. Kept as one function so the two origin modes cannot
+# HTTPS S3 origin. Kept as one function so the two origin modes cannot
 # drift apart when a new TEST_* knob is added.
 # set_test_origin <http|https>
 set_test_origin() {
   origin_proto="$1"
-  export TEST_S3_SERVER="minio"
+  export TEST_S3_SERVER="rustfs"
   export TEST_S3_SERVER_PORT="9000"
   export TEST_S3_SERVER_PROTO="${origin_proto}"
   export TEST_S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-  export TEST_MINIO_SERVER_PROTO="${origin_proto}"
+  export TEST_S3_ORIGIN_PROTO="${origin_proto}"
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
   export TEST_PROXY_CACHE_SLICE_SIZE="1m"
-  minio_server="${origin_proto}://localhost:9090"
+  s3_origin_server="${origin_proto}://localhost:9090"
   if [ "${origin_proto}" = "https" ]; then
-    # Mount point of the generated test certificates inside the MinIO
-    # container; MinIO serves TLS when its certs dir contains a key pair.
-    export TEST_MINIO_CERTS_DIR="/tmp/test-certs"
-    minio_mc_args=(--insecure)
+    # Mount point of the generated test certificates inside the origin
+    # container. RustFS serves TLS only when RUSTFS_TLS_PATH names a
+    # directory holding rustfs_cert.pem/rustfs_key.pem - and refuses to
+    # start when the path is set but missing or empty, so the HTTP branch
+    # must leave the variable empty rather than point at a placeholder.
+    export TEST_S3_TLS_PATH="/tls"
+    mc_extra_args=(--insecure)
   else
-    export TEST_MINIO_CERTS_DIR="/root/.minio/certs"
-    minio_mc_args=()
+    export TEST_S3_TLS_PATH=""
+    mc_extra_args=()
   fi
 }
 
@@ -303,18 +308,22 @@ generate_tls_test_certs() {
         -keyout /certs/ca.key -out /certs/ca.crt -days 1 \
         -subj "/CN=nginx-s3-gateway test CA" >/dev/null 2>&1
       openssl req -newkey rsa:2048 -nodes \
-        -keyout /certs/private.key -out /certs/server.csr \
-        -subj "/CN=minio" >/dev/null 2>&1
+        -keyout /certs/rustfs_key.pem -out /certs/server.csr \
+        -subj "/CN=rustfs" >/dev/null 2>&1
       printf "%s\n" \
         "basicConstraints=CA:FALSE" \
         "keyUsage=digitalSignature,keyEncipherment" \
         "extendedKeyUsage=serverAuth" \
-        "subjectAltName=DNS:minio,DNS:bucket-1.minio" > /certs/server.ext
+        "subjectAltName=DNS:rustfs,DNS:bucket-1.rustfs" > /certs/server.ext
       openssl x509 -req -in /certs/server.csr \
         -CA /certs/ca.crt -CAkey /certs/ca.key -CAcreateserial \
-        -out /certs/public.crt -days 1 -extfile /certs/server.ext >/dev/null 2>&1
-      chmod 0644 /certs/ca.crt /certs/public.crt
-      chmod 0600 /certs/ca.key /certs/private.key
+        -out /certs/rustfs_cert.pem -days 1 -extfile /certs/server.ext >/dev/null 2>&1
+      chmod 0644 /certs/ca.crt /certs/rustfs_cert.pem
+      # The throwaway server key must be readable by the RustFS process,
+      # which runs as uid 10001 while this container generates the files as
+      # root; the CA key is never read inside a container so it stays 0600.
+      chmod 0644 /certs/rustfs_key.pem
+      chmod 0600 /certs/ca.key
     '
 }
 
@@ -331,19 +340,20 @@ integration_test_data() {
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true compose up -d
 
-  seed_minio_data
+  seed_origin_data
 }
 
-seed_minio_data() {
+seed_origin_data() {
 
-  # Hit minio's health check end point to see if it has started up
+  # Hit the origin's health check end point to see if it has started up
   for (( i=1; i<=3; i++ ))
   do
-    echo "Querying minio server to see if it is ready"
-    # `|| true` keeps errexit from aborting the retry loop when minio is not
-    # listening yet (curl exits 7 on connection refused but still prints 000).
-    minio_is_up="$(${curl_cmd} --insecure -s -o /dev/null -w '%{http_code}' "${minio_server}"/minio/health/cluster || true)"
-    if [ "${minio_is_up}" = "200" ]; then
+    echo "Querying the S3 origin to see if it is ready"
+    # `|| true` keeps errexit from aborting the retry loop when the origin is
+    # not listening yet (curl exits 7 on connection refused but still prints
+    # 000).
+    origin_is_up="$(${curl_cmd} --insecure -s -o /dev/null -w '%{http_code}' "${s3_origin_server}"/health || true)"
+    if [ "${origin_is_up}" = "200" ]; then
       break
     else
       sleep 2
@@ -353,17 +363,19 @@ seed_minio_data() {
   p "Adding test data to container"
   # ${arr[@]+...} keeps the empty-array expansion from tripping `set -o
   # nounset` on bash < 4.4 (macOS ships bash 3.2).
-  "${mc_cmd}" alias set ${minio_mc_args[@]+"${minio_mc_args[@]}"} "$minio_name" "$minio_server" "$minio_user" "$minio_passwd"
+  "${mc_cmd}" alias set ${mc_extra_args[@]+"${mc_extra_args[@]}"} "$s3_origin_container" "$s3_origin_server" "$s3_origin_user" "$s3_origin_passwd"
   # --ignore-existing keeps a bucket left behind by an aborted previous run
   # (compose containers survive a failed teardown) from failing the seeding
   # step under errexit on every subsequent run.
-  "${mc_cmd}" mb ${minio_mc_args[@]+"${minio_mc_args[@]}"} --ignore-existing "$minio_name/$minio_bucket"
-  echo "Copying contents of ${test_dir}/data/$minio_bucket to Docker container $minio_name"
-  for file in "${test_dir}/data/$minio_bucket"/*; do
-    "${mc_cmd}" cp ${minio_mc_args[@]+"${minio_mc_args[@]}"} -r "${file}" "$minio_name/$minio_bucket"
+  "${mc_cmd}" mb ${mc_extra_args[@]+"${mc_extra_args[@]}"} --ignore-existing "$s3_origin_container/$s3_origin_bucket"
+  echo "Copying contents of ${test_dir}/data/$s3_origin_bucket to Docker container $s3_origin_container"
+  for file in "${test_dir}/data/$s3_origin_bucket"/*; do
+    "${mc_cmd}" cp ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "${file}" "$s3_origin_container/$s3_origin_bucket"
   done
-  echo "Docker diff output:"
-  "${docker_cmd}" diff "$minio_name"
+  # RustFS declares VOLUME /data, so `docker diff` (which the old MinIO
+  # seeding printed here) would show nothing; list the seeded objects instead.
+  echo "Seeded bucket contents:"
+  "${mc_cmd}" ls ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "$s3_origin_container/$s3_origin_bucket"
 }
 
 integration_test_listen_directives() {
@@ -494,8 +506,8 @@ integration_test_cache_bypass() {
   wait_for_gateway
 
   p "Starting cache bypass tests (phase: ${bypass_phase})"
-  echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${mc_cmd}\" \"${minio_name}\" \"${minio_bucket}\""
-  bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
+  echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${mc_cmd}\" \"${s3_origin_container}\" \"${s3_origin_bucket}\""
+  bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${s3_origin_container}" "${s3_origin_bucket}"
 }
 
 integration_test_cache_ignore_headers() {
@@ -523,8 +535,8 @@ integration_test_cache_ignore_headers() {
   wait_for_gateway
 
   p "Starting cache ignore headers tests (phase: ${ignore_phase})"
-  echo "  test/integration/test_cache_ignore_headers.sh \"$test_server\" \"$test_dir\" ${ignore_phase} \"${mc_cmd}\" \"${minio_name}\" \"${minio_bucket}\""
-  bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${mc_cmd}" "${minio_name}" "${minio_bucket}"
+  echo "  test/integration/test_cache_ignore_headers.sh \"$test_server\" \"$test_dir\" ${ignore_phase} \"${mc_cmd}\" \"${s3_origin_container}\" \"${s3_origin_bucket}\""
+  bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${mc_cmd}" "${s3_origin_container}" "${s3_origin_bucket}"
 }
 
 integration_test_cors() {
@@ -603,7 +615,7 @@ assert_gateway_logs_contain() {
 start_tls_gateway() {
   trusted_cert_path=$1
   tls_s3_style=${2:-${S3_STYLE:-virtual-v2}}
-  tls_s3_server=${3:-minio}
+  tls_s3_server=${3:-rustfs}
   export TEST_S3_TRUSTED_CERT_PATH="${trusted_cert_path}"
   export TEST_S3_SERVER="${tls_s3_server}"
   COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose up -d
@@ -637,11 +649,11 @@ integration_test_proxy_ssl() {
   compose stop nginx-s3-gateway
 
   p "Verifying HTTPS S3 origin hostname validation"
-  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "minio"
+  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "rustfs"
   assert_request_status 200 "trusted path-style origin" "${test_server}/a.txt"
 
   compose stop nginx-s3-gateway
-  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "minio-mismatch"
+  start_tls_gateway "/etc/nginx/test-certs/ca.crt" "path" "rustfs-mismatch"
   assert_request_not_status 200 "mismatched origin hostname" "${test_server}/a.txt"
   assert_gateway_logs_contain "upstream SSL certificate does not match" "mismatched origin hostname verification"
 }
@@ -656,7 +668,7 @@ integration_test_dynamic_credentials() {
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
   wait_for_gateway
-  seed_minio_data
+  seed_origin_data
 
   assert_request_status 200 "dynamic credentials first object request" "${test_server}/a.txt"
 
@@ -693,13 +705,13 @@ integration_test_secret_file_credentials() {
   # was killed before finish() could clean up would make the redirections below
   # fail with EACCES - even for their own owner - and abort the whole suite.
   rm -f "${test_secrets_dir}"/aws_access_key_id "${test_secrets_dir}"/aws_secret_access_key
-  printf '%s\n' "${minio_user}" > "${test_secrets_dir}/aws_access_key_id"
-  printf '%s\n' "${minio_passwd}" > "${test_secrets_dir}/aws_secret_access_key"
+  printf '%s\n' "${s3_origin_user}" > "${test_secrets_dir}/aws_access_key_id"
+  printf '%s\n' "${s3_origin_passwd}" > "${test_secrets_dir}/aws_secret_access_key"
   chmod 0444 "${test_secrets_dir}"/aws_*
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_secret_file_credentials up -d
   wait_for_gateway
-  seed_minio_data
+  seed_origin_data
 
   # A signed request only succeeds if the credentials made it out of the files
   # and through the nginx.conf env allowlist into the njs modules - a missing
@@ -713,7 +725,7 @@ integration_test_secret_file_credentials() {
   # failing the pipeline - and so passing this check - exactly when the secret
   # is found.
   gateway_env="$(compose_secret_file_credentials exec -T nginx-s3-gateway env 2>&1)"
-  if grep -qF "${minio_passwd}" <<< "${gateway_env}"; then
+  if grep -qF "${s3_origin_passwd}" <<< "${gateway_env}"; then
     e "FAIL [secret file credentials]: the secret access key must not be in the container environment"
     exit "$test_fail_exit_code"
   fi
@@ -736,7 +748,7 @@ finish() {
 
   p "Cleaning up Docker compose environment"
   compose_dynamic_credentials down --volumes --remove-orphans || true
-  "${mc_cmd}" alias rm "$minio_name" || true
+  "${mc_cmd}" alias rm "$s3_origin_container" || true
   # Try a plain removal first: the cert dir is created by the invoking user,
   # so its entries are usually unlinkable without root even though the files
   # themselves are root-owned. Only spin up a root container (1-2s, and
