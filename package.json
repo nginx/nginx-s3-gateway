@@ -3,6 +3,11 @@
     "better-docs": "^2.7.3",
     "jsdoc": "^4.0.5",
     "njs-types": "^1.0.0",
-    "taffydb": "^2.7.3"
+    "taffydb": "npm:@jsdoc/salty@^0.2.12"
+  },
+  "overrides": {
+    "better-docs": {
+      "vue-docgen-api": "^4.79.2"
+    }
   }
 }
