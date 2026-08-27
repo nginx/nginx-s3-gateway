@@ -218,6 +218,54 @@ function testSignatureV4CacheInvalidatedOnCredentialRotation() {
     }
 }
 
+function testSignatureV4CacheHitsWithColonAccessKeyId() {
+    printHeader('testSignatureV4CacheHitsWithColonAccessKeyId');
+    /* S3-compatible stores accept operator-chosen access key ids that may
+       contain the ':' separator the cache entry format splits on. The
+       validity token percent-encodes the id so such an entry still matches
+       on the next request; a raw ':' would make every request a cache miss,
+       silently defeating the signing-key cache. Cache writes are counted
+       through an accessor so a permanent-miss regression is observable. */
+    const timestamp = new Date('2020-08-11T19:42:14Z');
+    const eightDigitDate = utils.getEightDigitDate(timestamp);
+    const amzDatetime = utils.getAmzDatetime(timestamp, eightDigitDate);
+    const region = 'us-west-2';
+    const service = 's3';
+    const canonicalRequest = 'GET\n/\n\nhost:example.com\n\nhost\npayload-hash';
+    const creds = {accessKeyId: 'svc:reader',
+        secretAccessKey: 'colon-key-secret', sessionToken: null};
+
+    let cacheWrites = 0;
+    let cachedEntry = '';
+    const r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        variables: {
+            cache_signing_key_enabled: 1
+        }
+    };
+    Object.defineProperty(r.variables, 'signing_key_hash', {
+        get: function() { return cachedEntry; },
+        set: function(value) { cacheWrites++; cachedEntry = value; }
+    });
+
+    const signatureFirst = awssig4._buildSignatureV4(r,
+        amzDatetime, eightDigitDate, creds, region, service, canonicalRequest);
+    const signatureSecond = awssig4._buildSignatureV4(r,
+        amzDatetime, eightDigitDate, creds, region, service, canonicalRequest);
+
+    if (signatureFirst !== signatureSecond) {
+        throw 'A cache hit must reproduce the signature of the miss that ' +
+        'populated the entry';
+    }
+    if (cacheWrites !== 1) {
+        throw 'A colon-bearing access key id must hit the signing key ' +
+        'cache on the second request.\n' +
+        'Cache writes: [' + cacheWrites + '] Expected: [1]';
+    }
+}
+
 function testSignatureV4DebugLogsRedactSecrets() {
     printHeader('testSignatureV4DebugLogsRedactSecrets');
     const logs = [];
@@ -441,6 +489,7 @@ async function test() {
     testSignatureV4();
     testSignatureV4Cache();
     testSignatureV4CacheInvalidatedOnCredentialRotation();
+    testSignatureV4CacheHitsWithColonAccessKeyId();
     testSignatureV4DebugLogsRedactSecrets();
     testSignRequestV4Deterministic();
     testSignRequestV4WithSessionToken();

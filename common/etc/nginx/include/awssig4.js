@@ -91,10 +91,11 @@ function signatureV4(r, timestamp, region, service, uri, queryParams, host, cred
  * as opposed to a proxied client request: every request component is an
  * explicit parameter rather than being read from r.
  *
- * The signing-key cache used by signatureV4 is deliberately bypassed here:
- * its entries are not scoped by region or service (see _buildSignatureV4),
- * so caching a key derived for one region/service pair would poison the
- * signatures of every other pair sharing the cache entry.
+ * The signing-key cache used by signatureV4 is deliberately bypassed here
+ * (the bypassCache argument to _buildSignatureV4): its entries are not
+ * scoped by region or service, so caching a key derived for one
+ * region/service pair would poison the signatures of every other pair
+ * sharing the cache entry.
  *
  * @see {@link https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html | Create a signed AWS API request}
  * @param r {NginxHTTPRequest} HTTP request object (used only for debug logging)
@@ -122,21 +123,8 @@ function signRequestV4(r, timestamp, region, service, method, uri, queryParams,
     const canonicalRequest = _buildCanonicalRequest(r,
         method, uri, queryParams, host, amzDatetime, credentials.sessionToken,
         payloadHash);
-
-    if (utils.debugEnabled) {
-        utils.debug_log(r, 'AWS v4 signed request canonical request: [' +
-            _canonicalRequestForDebug(canonicalRequest, credentials.sessionToken) + ']');
-    }
-
-    const canonicalRequestHash = mod_hmac.createHash('sha256')
-        .update(canonicalRequest)
-        .digest('hex');
-    const stringToSign = _buildStringToSign(
-        amzDatetime, eightDigitDate, region, service, canonicalRequestHash);
-    const kSigningHash = _buildSigningKeyHash(
-        credentials.secretAccessKey, eightDigitDate, region, service);
-    const signature = mod_hmac.createHmac('sha256', kSigningHash)
-        .update(stringToSign).digest('hex');
+    const signature = _buildSignatureV4(r, amzDatetime, eightDigitDate,
+        credentials, region, service, canonicalRequest, true);
     const authHeader = _buildAuthHeader(
         r, credentials, eightDigitDate, region, service, signature);
 
@@ -203,11 +191,16 @@ function _buildCanonicalRequest(r,
  * @param region {string} API region associated with request
  * @param service {string} service code (for example, s3, lambda)
  * @param canonicalRequest {string} string with concatenated request parameters
+ * @param bypassCache {boolean|undefined} skip the signing-key cache entirely;
+ *        used by signRequestV4 because the cache entries are not scoped by
+ *        region or service, so a key derived for one pair (such as sts)
+ *        would poison the signatures of every other pair sharing the entry
  * @returns {string} hex encoded hash of signature HMAC value
  * @private
  */
 function _buildSignatureV4(
-    r, amzDatetime, eightDigitDate, creds, region, service, canonicalRequest) {
+    r, amzDatetime, eightDigitDate, creds, region, service, canonicalRequest,
+    bypassCache) {
     /* Fingerprinting and redaction hash and copy request-sized strings, so
        skip that work entirely on the hot path unless debug logging is on. */
     if (utils.debugEnabled) {
@@ -239,17 +232,23 @@ function _buildSignatureV4(
      * operations that have to be performed per incoming request. The signing
      * key expires every day, so our cache key can persist for 24 hours safely.
      */
-    if ("variables" in r && r.variables.cache_signing_key_enabled == 1) {
-        // cached value is in the format: [eightDigitDate].[accessKeyId]:[signingKeyHash]
+    if (!bypassCache && "variables" in r && r.variables.cache_signing_key_enabled == 1) {
+        // cached value is in the format: [eightDigitDate].[encodedAccessKeyId]:[signingKeyHash]
         /* The validity token binds the entry to the access key id as well as
            the date: temporary credentials (AssumeRole, IMDS, ECS, web
            identity) rotate within a day, and a key derived from the previous
            secret would otherwise keep signing requests until the UTC date
            rolls over, failing every one of them with SignatureDoesNotMatch
            (GH-122). The access key id is the observable proxy for the secret
-           it was issued with; neither it nor the date can contain the ':'
-           separator _splitCachedValues splits on. */
-        const cacheValidityToken = eightDigitDate + '.' + creds.accessKeyId;
+           it was issued with. It is percent-encoded because S3-compatible
+           stores accept operator-chosen ids that may contain the ':'
+           separator _splitCachedValues splits on (a raw ':' would make the
+           token unmatchable and silently defeat the cache on every request).
+           The encoding is injective, so distinct ids can never collide on
+           one token - a collision would reuse a signing key derived from a
+           different secret. */
+        const cacheValidityToken = eightDigitDate + '.' +
+            encodeURIComponent(creds.accessKeyId);
         const cached = "signing_key_hash" in r.variables ? r.variables.signing_key_hash : "";
         const fields = _splitCachedValues(cached);
         const cacheIsValid = fields.length === 2 && fields[0] === cacheValidityToken;

@@ -217,6 +217,35 @@ assertValidationAnnounces "a stray role ARN inside an ECS task without static cr
   -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \
   -e AWS_ROLE_ARN="${test_role_arn}"
 
+# The same tolerance applies to EKS pod identity: without static credentials
+# njs ignores the stray ARN and serves via pod identity, so the pod identity
+# branch must win the announcement and the stray-ARN fail-fast must NOT fire.
+assertValidationAnnounces "a stray role ARN with EKS pod identity without static credentials" \
+  "Running inside EKS with EKS pod identity" \
+  -e AWS_SIGS_VERSION=4 \
+  -e AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token \
+  -e AWS_ROLE_ARN="${test_role_arn}"
+
+# The sigv2 guard must only fire when AssumeRole is actually active: a stray
+# ARN without statics inside an ECS task leaves njs on the container
+# credentials, so signature v2 validation must not blame a mode that is off.
+assertValidationAnnounces "a stray role ARN with signature v2 inside an ECS task" \
+  "Running inside an ECS task, using container credentials" \
+  -e AWS_SIGS_VERSION=2 \
+  -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \
+  -e AWS_ROLE_ARN="${test_role_arn}"
+
+# The S3_SESSION_TOKEN deprecation is unconditional: a fully configured
+# AssumeRole mode (or any other ladder branch) must not shadow it into a
+# silent ignore.
+assertValidationRejects "a deprecated S3_SESSION_TOKEN alongside AssumeRole" \
+  "Deprecated the S3_SESSION_TOKEN!" \
+  -e AWS_SIGS_VERSION=4 \
+  -e S3_SESSION_TOKEN=deprecated-token \
+  -e AWS_ROLE_ARN="${test_role_arn}" \
+  -e AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+  -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
 # A set-but-empty role ARN must count as absent: a bare compose pass-through
 # key of an unset host variable leaves the variable set but empty, and the
 # njs modules treat that as no role at all.

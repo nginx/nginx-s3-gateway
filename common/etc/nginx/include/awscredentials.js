@@ -715,7 +715,13 @@ function _parseStsEndpointUrl(endpoint) {
     }
     const hostAndPath = endpoint.slice(schemeEnd + schemeSeparator.length);
     const pathStart = hostAndPath.indexOf('/');
-    if (pathStart === 0) {
+    /* Both empty-host shapes must be rejected: 'https:///path' (pathStart
+       of 0) and the bare 'https://' (empty remainder, e.g. a template
+       interpolating an unset host variable). Otherwise the empty host is
+       signed into the canonical request and every AssumeRole call fails
+       with an opaque per-request fetch error instead of this clear
+       configuration error. */
+    if (pathStart === 0 || hostAndPath.length === 0) {
         throw `STS endpoint has an empty host (${endpoint})`;
     }
     if (pathStart < 0) {

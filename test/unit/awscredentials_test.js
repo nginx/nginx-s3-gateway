@@ -1537,7 +1537,11 @@ function testParseStsEndpointUrl() {
        signatures the server can never verify. */
     var rejected = ['sts.amazonaws.com', 'ftp://sts.amazonaws.com',
         'https://my-store:9000/?sts', 'https://my-store:9000?region=x',
-        'https://sts.amazonaws.com/sts#frag', 'https:///no-host'];
+        'https://sts.amazonaws.com/sts#frag', 'https:///no-host',
+        /* Scheme-only endpoints (e.g. a template interpolating an unset
+           host variable) have an empty host too, just without the
+           leading-slash shape of the case above. */
+        'https://', 'http://'];
     for (var i = 0; i < rejected.length; i++) {
         var threw = false;
         try {

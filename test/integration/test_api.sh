@@ -321,12 +321,17 @@ assertRedirectSafeFromHeaderInjection() {
         actual_location="${header#*: }"
         actual_location="${actual_location%$'\r'}"
         ;;
-      "${injected_header_name}:"*)
-        e "Header injection detected: response contains a '${injected_header_name}' header. Request [GET ${uri} Host: ${host}]"
-        exit ${test_fail_exit_code}
-        ;;
     esac
   done <<< "${headers}"
+
+  # Header names are case-insensitive and some stacks normalize them on
+  # output (HTTP/2 lowercases every name), so the injected header must be
+  # detected in any case - an exact-case match would let a real injection
+  # regression slip through as 'x-evil'.
+  if printf '%s\n' "${headers}" | grep -qi "^${injected_header_name}:"; then
+    e "Header injection detected: response contains a '${injected_header_name}' header. Request [GET ${uri} Host: ${host}]"
+    exit ${test_fail_exit_code}
+  fi
 
   # Both safe upstream shapes are 3xx (redirect emitted) or 4xx (origin
   # rejected the control bytes). A 2xx means the decoded key unexpectedly

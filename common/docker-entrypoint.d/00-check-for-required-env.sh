@@ -130,18 +130,41 @@ checkCredentialFile() {
   fi
 }
 
+# STS AssumeRole mode flags (GH-122), mirroring _isAssumeRoleMode in
+# awscredentials.js. The environment cannot change while this script runs, so
+# the mode is computed once and every consumer below tests these flags -
+# otherwise the ladder, the sigv2 guard and the njs runtime could each
+# classify the same configuration into a different credential mode. [ -n ]
+# rather than [[ -v ]] so a set-but-empty variable (e.g. a bare compose
+# pass-through key) counts as unset, matching the njs modules.
+assume_role_selected=0 # a role ARN and no web identity token file
+assume_role_active=0   # selected, plus the statics that must sign AssumeRole
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  assume_role_selected=1
+  if { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+    && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+    assume_role_active=1
+  fi
+fi
+
+# The S3_SESSION_TOKEN deprecation must fail no matter which credential mode
+# the ladder below announces: as an elif inside the ladder it was silently
+# skipped whenever an earlier branch matched first (the AssumeRole branch
+# since GH-122, the ECS branch before that), starting a gateway that ignores
+# a session token the operator believes is in effect.
+if [[ -v S3_SESSION_TOKEN ]]; then
+  echo "Deprecated the S3_SESSION_TOKEN! Use the environment variable of AWS_SESSION_TOKEN instead"
+  failed=1
+fi
+
 # Require some form of authentication to be configured.
 
-# Fully configured STS AssumeRole mode (GH-122): a role ARN, no web identity
-# token file, and non-empty static credentials in either form. This
-# announcement-only branch mirrors _isAssumeRoleMode in awscredentials.js and
-# must stay ahead of the ECS check because njs gives AssumeRole precedence
-# over the instance providers (environment credentials win, as in the AWS
-# SDKs) - a container credentials URI configured alongside these variables is
-# not the mode the gateway will run in.
-if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
-  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
-  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+# Fully configured STS AssumeRole mode (GH-122). This announcement-only
+# branch must stay ahead of the ECS check because njs gives AssumeRole
+# precedence over the instance providers (environment credentials win, as in
+# the AWS SDKs) - a container credentials URI configured alongside these
+# variables is not the mode the gateway will run in.
+if [ "${assume_role_active}" = 1 ]; then
   echo "AWS_ROLE_ARN set with static credentials - fetching S3 credentials via STS AssumeRole"
 
 # a) Using container credentials. This is indicated by AWS_CONTAINER_CREDENTIALS_RELATIVE_URI being set.
@@ -150,21 +173,19 @@ if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
 elif [[ -v AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ]]; then
   echo "Running inside an ECS task, using container credentials"
 
-elif [[ -v S3_SESSION_TOKEN ]]; then
-  echo "Deprecated the S3_SESSION_TOKEN! Use the environment variable of AWS_SESSION_TOKEN instead"
-  failed=1
-
 # A role ARN without the static credentials that must sign the AssumeRole
 # request (GH-122). The fully configured mode was announced by the first
 # branch above, so reaching this one means the config is ambiguous - the ARN
 # would otherwise be silently ignored at request time (njs falls through to
-# the instance credential providers without statics) - and it always fails.
-# It must come before the session-token and IMDS branches so that neither
-# temporary source credentials nor an IMDS-capable host skips the
-# requirement. [ -n ] rather than [[ -v ]] so a set-but-empty variable (e.g.
-# a bare compose pass-through key) counts as unset, matching the njs modules.
+# the instance credential providers without statics) - and it fails unless
+# a provider njs would actually use is configured: the ECS branch above
+# already wins by ordering, and EKS pod identity is exempted here for the
+# same reason (njs serves via pod identity and ignores the stray ARN). The
+# check must still come before the session-token and IMDS branches so that
+# neither temporary source credentials nor an IMDS-capable host skips the
+# requirement.
 # See https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
-elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+elif [ "${assume_role_selected}" = 1 ] && [[ ! -v AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE ]]; then
   echo "AWS_ROLE_ARN selects STS AssumeRole mode, but the static credentials that must sign the AssumeRole request are missing - add them or remove AWS_ROLE_ARN"
   requireStaticCredential "AWS_ACCESS_KEY_ID"
   requireStaticCredential "AWS_SECRET_ACCESS_KEY"
@@ -267,8 +288,11 @@ fi
 
 # STS AssumeRole always returns temporary credentials whose session token a
 # v2 signature cannot cover - the same failure mode as the AWS_SESSION_TOKEN
-# check above (GH-578/GH-122) - so reject the combination up front.
-if [ "${AWS_SIGS_VERSION}" = "2" ] && [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+# check above (GH-578/GH-122) - so reject the combination up front. Only the
+# fully configured mode trips this: without the statics njs never runs
+# AssumeRole, and the ladder above has already either failed the config or
+# announced the instance provider njs will actually use.
+if [ "${AWS_SIGS_VERSION}" = "2" ] && [ "${assume_role_active}" = 1 ]; then
   >&2 echo "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2: STS AssumeRole always yields a session token, which v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4."
   failed=1
 fi
