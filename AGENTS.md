@@ -93,7 +93,7 @@ Module structure, top to bottom:
 3. `@typedef` blocks for shared structures.
 4. ES `import`s of first-party modules — relative path with `.js` extension,
    **default imports only** (njs rejects named and namespace imports).
-5. `const mod_x = require('...')` for njs built-ins (`crypto`, `fs`).
+5. `const mod_x = require('...')` for njs built-ins (`crypto`, `fs`, `xml`).
 6. Documented module-level constants.
 7. Functions.
 8. A single `export default { ... }` map at the bottom of the file.
