@@ -19,14 +19,14 @@
 # Integration tests for the PROXY_CACHE_IGNORE_HEADERS feature (GH-64). The
 # gateway must already be running with the feature configured; this script
 # seeds objects that carry a cache-defeating Cache-Control value, then issues
-# requests and mutates the objects in the MinIO backend to prove whether the
+# requests and mutates the objects in the S3 origin to prove whether the
 # gateway honored or ignored that header.
 #
 # The disabled phase is what reproduces GH-64: an origin that returns
 # 'Cache-Control: private, max-age=0' - the Google Cloud Storage default for
 # authenticated reads - makes NGINX treat every response as uncacheable, so
 # nothing is ever written to /var/cache/nginx/s3_proxy. That phase also keeps
-# the enabled phase honest: if MinIO ever stopped returning the header, the
+# the enabled phase honest: if the origin ever stopped returning the header, the
 # disabled phase would fail here rather than the enabled phase passing
 # vacuously.
 #
@@ -41,8 +41,8 @@ test_server=$1
 test_dir=$2
 phase=$3
 mc_cmd=$4
-minio_alias=$5
-minio_bucket=$6
+origin_alias=$5
+origin_bucket=$6
 
 test_fail_exit_code=2
 no_dep_exit_code=3
@@ -81,13 +81,13 @@ if ! [ -x "${mc_cmd}" ]; then
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${minio_alias}" ]; then
-  e "missing fifth parameter: mc alias of the MinIO backend"
+if [ -z "${origin_alias}" ]; then
+  e "missing fifth parameter: mc alias of the S3 origin"
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${minio_bucket}" ]; then
-  e "missing sixth parameter: name of the MinIO bucket"
+if [ -z "${origin_bucket}" ]; then
+  e "missing sixth parameter: name of the S3 origin bucket"
   exit ${no_dep_exit_code}
 fi
 
@@ -115,9 +115,9 @@ if [[ $checksum_cmd =~ \/md5$ ]]; then
   checksum_cmd="${checksum_cmd} -r"
 fi
 
-fixture_dir="${test_dir}/data/${minio_bucket}/cache-ignore-headers"
+fixture_dir="${test_dir}/data/${origin_bucket}/cache-ignore-headers"
 
-# Writes a local file to an object in the MinIO backend with the
+# Writes a local file to an object in the S3 origin with the
 # cache-defeating Cache-Control metadata attached. Used both to seed and to
 # mutate, so the header is present on every response the gateway sees - the
 # generic fixture upload in run_integration_tests.sh sets no metadata.
@@ -125,9 +125,9 @@ fixture_dir="${test_dir}/data/${minio_bucket}/cache-ignore-headers"
 putObjectWithCacheControl() {
   local_src="$1"
   object_key="$2"
-  echo "  Writing ${minio_bucket}/${object_key} from $(basename "${local_src}") with ${cache_control_attr}"
+  echo "  Writing ${origin_bucket}/${object_key} from $(basename "${local_src}") with ${cache_control_attr}"
   "${mc_cmd}" cp --attr "${cache_control_attr}" "${local_src}" \
-    "${minio_alias}/${minio_bucket}/${object_key}" > /dev/null
+    "${origin_alias}/${origin_bucket}/${object_key}" > /dev/null
 }
 
 # Asserts that a GET of <url_path> returns a body identical to <local_file>.

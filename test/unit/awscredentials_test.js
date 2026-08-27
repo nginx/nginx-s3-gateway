@@ -508,7 +508,7 @@ async function testEcsCredentialRetrieval() {
             throw `No or wrong ECS credentials fetch URL recorded: ${recordedUrl}`;
         }
 
-        /* The integration ECS mock cannot serve a Token (MinIO rejects
+        /* The integration ECS mock cannot serve a Token (the S3 origin rejects
            fabricated session tokens), so the Token -> sessionToken -> cache
            seam is pinned here instead. */
         var cached = JSON.parse(globalThis.ngx.shared.instance_credential_cache

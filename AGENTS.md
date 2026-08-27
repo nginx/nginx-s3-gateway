@@ -31,7 +31,7 @@ and test workflows. The test logic lives in `test/run_unit_tests.sh` and
 deprecated wrapper that only forwards to the equivalent make targets — never
 invoke or recommend it. Run `make help` for the full target list,
 `make check-tools` to verify prerequisites (docker, docker compose, curl,
-mc/MinIO client).
+and the mc S3 client).
 
 - `make build` — build the gateway image (`NGINX_TYPE=oss` default, or `plus`).
 - `make test` — build, then run the full unit + integration suite.
@@ -51,7 +51,7 @@ Notes:
   (`/etc/nginx/include/`), not the working tree — only `test/unit/` is
   bind-mounted. After editing `common/etc/nginx/include/*.js`, run `make test`
   (rebuilds first); `make retest` would test the stale copy.
-- Integration tests spin up MinIO via `test/docker-compose.yaml` (compose
+- Integration tests spin up a RustFS S3 origin via `test/docker-compose.yaml` (compose
   project `ngt`) and hit the gateway on `localhost:8989`.
 - `S3_STYLE` (`virtual`, `virtual-v2`, or `path`) selects the S3 addressing
   style under test; CI runs all three.

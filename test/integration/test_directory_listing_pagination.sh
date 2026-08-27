@@ -24,10 +24,10 @@
 # every page ending in a truncated response must render a "Next page" link
 # whose marker is relative to the listed directory.
 #
-# Markers are treated as opaque: AWS returns the last key of the page as
-# NextMarker, but MinIO decorates it with an internal continuation hint
-# (e.g. 'e.txt[minio_cache:v2,return:]'), so assertions check that a marker
-# STARTS WITH the expected relative key and otherwise navigate with the
+# Markers are treated as opaque: AWS and RustFS return the last key of the
+# page as NextMarker, but some S3-compatible backends decorate it with an
+# internal continuation hint appended to the key, so assertions check that
+# a marker STARTS WITH the expected relative key and otherwise navigate with the
 # marker extracted from the page, exactly like a browsing client. All
 # expected strings are asserted in their percent-encoded (ASCII) form so the
 # assertions are safe on shells with broken UTF-8 handling.
@@ -124,10 +124,11 @@ next_marker() {
   sed -n 's/.*href="?marker=\([^"]*\)".*/\1/p' "${tmp_dir}/page.html"
 }
 
-# The backend decides the exact marker value (AWS: the last key; MinIO: the
-# last key plus an internal hint), but the marker must always begin with the
-# page's last entry relative to the listed directory - anything else means
-# the gateway leaked an internal prefix or the stylesheet mis-stripped it.
+# The backend decides the exact marker value (AWS/RustFS: the last key;
+# other backends may append an internal hint), but the marker must always
+# begin with the page's last entry relative to the listed directory -
+# anything else means the gateway leaked an internal prefix or the
+# stylesheet mis-stripped it.
 assert_next_marker_starts_with() {
   expected_prefix=$1
   message=$2
