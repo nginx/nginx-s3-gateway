@@ -50,19 +50,31 @@ requireStaticCredentials() {
   done
 }
 
-if [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
+# Fully configured STS AssumeRole mode (GH-122): a role ARN, no web identity
+# token file, and non-empty static credentials in either form. This branch
+# mirrors _isAssumeRoleMode in awscredentials.js and must stay ahead of the
+# ECS check because njs gives AssumeRole precedence over the instance
+# providers (environment credentials win, as in the AWS SDKs). On this
+# install the ordering also decides behavior, not just the message:
+# uses_iam_creds=0 makes the statics and STS variables reach nginx through
+# /etc/nginx/environment, aligning the systemd install with the container
+# image for this variable combination.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
+  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+  echo "AWS_ROLE_ARN set with static credentials - fetching S3 credentials via STS AssumeRole"
+  uses_iam_creds=0
+elif [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
   echo "Running inside an ECS task, using container credentials"
   uses_iam_creds=1
-# Fetching credentials via STS AssumeRole signed with static credentials
-# (GH-122): AWS_ROLE_ARN holds a value and no web identity token file is
-# configured. The static credentials sign the AssumeRole request itself, so
-# they are required, and the check must precede the IMDS probes so an
-# IMDS-capable host does not skip it.
+# A role ARN without the static credentials that must sign the AssumeRole
+# request (GH-122): the fully configured mode was announced above, so this
+# config is ambiguous - the ARN would otherwise be silently ignored at
+# request time - and it always fails. The check must precede the IMDS probes
+# so an IMDS-capable host does not skip it.
 elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
-  echo "AWS_ROLE_ARN set without a web identity token file - fetching S3 credentials via STS AssumeRole signed with the configured static credentials"
+  echo "AWS_ROLE_ARN selects STS AssumeRole mode, but the static credentials that must sign the AssumeRole request are missing - add them or remove AWS_ROLE_ARN"
   requireStaticCredentials
-  # Static credentials plus the STS variables must be written into the
-  # environment file below, exactly as in the plain static-credential mode.
   uses_iam_creds=0
 elif TOKEN=$(curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") && \
   curl -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then 

@@ -13,6 +13,9 @@ AWS_SESSION_TOKEN=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 #AWS_ROLE_ARN=arn:aws:iam::123456789012:role/s3-read-only
 #AWS_ROLE_SESSION_NAME=nginx-s3-gateway
 #STS_ENDPOINT=https://sts.us-east-1.amazonaws.com
+# AssumeRole requests are signed with AWS_REGION, else S3_REGION, else
+# us-east-1; set AWS_REGION when the STS endpoint's region differs.
+#AWS_REGION=us-east-1
 S3_SERVER=s3.us-east-1.amazonaws.com
 S3_SERVER_PORT=443
 S3_SERVER_PROTO=https

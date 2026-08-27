@@ -87,8 +87,8 @@ const STS_GLOBAL_ENDPOINT = 'https://sts.amazonaws.com';
 
 /**
  * SigV4 credential-scope region for requests to the STS global endpoint, and
- * the fallback signing region for a custom STS_ENDPOINT when AWS_REGION is
- * not set.
+ * the last-resort signing region for a custom STS_ENDPOINT when neither
+ * AWS_REGION nor S3_REGION is set.
  * @see {@link https://docs.aws.amazon.com/general/latest/gr/sts.html | AWS STS endpoints}
  * @type {string}
  */
@@ -637,10 +637,17 @@ async function _fetchEKSPodIdentityCredentials() {
 /**
  * Resolve the STS endpoint URL and the region used in the SigV4 credential
  * scope for signed requests to it: an explicit STS_ENDPOINT wins (signed
- * with AWS_REGION, falling back to us-east-1); otherwise
+ * with AWS_REGION when set, else S3_REGION, else us-east-1); otherwise
  * AWS_STS_REGIONAL_ENDPOINTS='regional' derives the endpoint from AWS_REGION
  * (required in that mode); otherwise the global endpoint, whose credential
  * scope AWS requires to be us-east-1.
+ *
+ * S3_REGION participates in the custom-endpoint fallback because a custom
+ * STS endpoint is usually a private (VPC) endpoint in the same region as the
+ * bucket, and AWS rejects a signature whose scope region does not match the
+ * endpoint's. S3-compatible stores generally do not enforce the scope
+ * region, so any fallback works for them. AWS_REGION remains the explicit
+ * override when the STS endpoint's region differs from the bucket's.
  *
  * On EKS, the ServiceAccount can be annotated with
  * 'eks.amazonaws.com/sts-regional-endpoints' to control the usage of
@@ -660,7 +667,8 @@ function _getStsEndpoint() {
     if (endpoint) {
         return {
             endpoint: endpoint,
-            region: configuredRegion ? configuredRegion : STS_DEFAULT_SIGNING_REGION
+            region: configuredRegion ? configuredRegion :
+                (process.env['S3_REGION'] || STS_DEFAULT_SIGNING_REGION)
         };
     }
     const stsRegional = process.env['AWS_STS_REGIONAL_ENDPOINTS'] || 'global';

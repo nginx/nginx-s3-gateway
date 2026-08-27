@@ -88,6 +88,32 @@ assertValidationAccepts() {
   fi
 }
 
+# Accepts like assertValidationAccepts and additionally requires the ladder's
+# announcement line, so a branch-ordering regression (e.g. the ECS check
+# shadowing the AssumeRole announcement again) fails even though validation
+# still passes.
+# assertValidationAnnounces <description> <expected_output_fragment> [extra docker -e args...]
+assertValidationAnnounces() {
+  description=$1
+  expected_fragment=$2
+  shift 2
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Entrypoint validation must accept and announce ${description}"
+
+  if ! output=$(runInImage "${check_env}" "$@"); then
+    >&2 echo "FAIL: 00-check-for-required-env.sh rejected ${description}:"
+    >&2 echo "${output}"
+    exit ${test_fail_exit_code}
+  fi
+
+  if ! echo "${output}" | grep -qF "${expected_fragment}"; then
+    >&2 echo "FAIL: expected the output to contain [${expected_fragment}] for ${description} but got:"
+    >&2 echo "${output}"
+    exit ${test_fail_exit_code}
+  fi
+}
+
 # assertValidationRejects <description> <expected_error_fragment> [extra docker -e args...]
 assertValidationRejects() {
   description=$1
@@ -162,11 +188,34 @@ assertValidationRejects "a role ARN with signature v2" \
   -e AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
   -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
-assertValidationAccepts "a role ARN with static credentials and signature v4" \
+assertValidationAnnounces "a role ARN with static credentials and signature v4" \
+  "fetching S3 credentials via STS AssumeRole" \
   -e AWS_SIGS_VERSION=4 \
   -e AWS_ROLE_ARN="${test_role_arn}" \
   -e AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
   -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# AssumeRole leads the njs provider ladder (environment credentials win, as
+# in the AWS SDKs), so with a container credentials URI configured alongside
+# a fully configured AssumeRole mode the announcement must name AssumeRole,
+# not ECS - the settings banner already reports AssumeRole for this
+# combination and the two lines must not contradict each other.
+assertValidationAnnounces "a role ARN with static credentials inside an ECS task" \
+  "fetching S3 credentials via STS AssumeRole" \
+  -e AWS_SIGS_VERSION=4 \
+  -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \
+  -e AWS_ROLE_ARN="${test_role_arn}" \
+  -e AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
+  -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# Without static credentials AssumeRole mode is off (njs uses the container
+# credentials), so the ECS branch must still win the announcement and the
+# stray-ARN fail-fast below it must NOT fire.
+assertValidationAnnounces "a stray role ARN inside an ECS task without static credentials" \
+  "Running inside an ECS task, using container credentials" \
+  -e AWS_SIGS_VERSION=4 \
+  -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \
+  -e AWS_ROLE_ARN="${test_role_arn}"
 
 # A set-but-empty role ARN must count as absent: a bare compose pass-through
 # key of an unset host variable leaves the variable set but empty, and the

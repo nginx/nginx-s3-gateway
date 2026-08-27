@@ -988,6 +988,7 @@ async function withAssumeRoleEnv(testBody) {
         'STS_ENDPOINT': process.env['STS_ENDPOINT'],
         'AWS_STS_REGIONAL_ENDPOINTS': process.env['AWS_STS_REGIONAL_ENDPOINTS'],
         'AWS_REGION': process.env['AWS_REGION'],
+        'S3_REGION': process.env['S3_REGION'],
         'AWS_ACCESS_KEY_ID': process.env['AWS_ACCESS_KEY_ID'],
         /* Restore-only: the helper never clears the secret, but the tests
            that exercise the no-statics ladder delete it and rely on this
@@ -999,6 +1000,10 @@ async function withAssumeRoleEnv(testBody) {
     delete process.env['STS_ENDPOINT'];
     delete process.env['AWS_STS_REGIONAL_ENDPOINTS'];
     delete process.env['AWS_REGION'];
+    /* The runner presets S3_REGION, which participates in the STS
+       signing-region fallback; clear it so every test starts from the
+       us-east-1 last resort and opts into regions explicitly. */
+    delete process.env['S3_REGION'];
     /* clearProviderEnv removes the access key id; the AssumeRole tests need
        the full static pair back (the secret is preset by the runner). */
     process.env['AWS_ACCESS_KEY_ID'] = 'unit_test';
@@ -1455,6 +1460,67 @@ function testParseAssumeRoleResponseRejectsEmptyElements() {
     }
 }
 
+async function testGetStsEndpoint() {
+    printHeader('testGetStsEndpoint');
+    await withAssumeRoleEnv(async function() {
+        /* Custom endpoint: the signing region falls back
+           AWS_REGION -> S3_REGION -> us-east-1. A custom endpoint is usually
+           a private (VPC) endpoint in the bucket's region, so S3_REGION is
+           the natural second choice. */
+        process.env['STS_ENDPOINT'] = MOCK_STS_ENDPOINT;
+
+        process.env['AWS_REGION'] = 'ap-southeast-2';
+        process.env['S3_REGION'] = 'eu-central-1';
+        var sts = awscred._getStsEndpoint();
+        if (sts.endpoint !== MOCK_STS_ENDPOINT || sts.region !== 'ap-southeast-2') {
+            throw 'AWS_REGION must win the signing-region fallback: ' + JSON.stringify(sts);
+        }
+
+        delete process.env['AWS_REGION'];
+        sts = awscred._getStsEndpoint();
+        if (sts.endpoint !== MOCK_STS_ENDPOINT || sts.region !== 'eu-central-1') {
+            throw 'S3_REGION must be the second signing-region fallback: ' + JSON.stringify(sts);
+        }
+
+        delete process.env['S3_REGION'];
+        sts = awscred._getStsEndpoint();
+        if (sts.endpoint !== MOCK_STS_ENDPOINT || sts.region !== 'us-east-1') {
+            throw 'us-east-1 must be the signing-region last resort: ' + JSON.stringify(sts);
+        }
+
+        /* Regional model: endpoint and region both derive from AWS_REGION,
+           which stays REQUIRED - S3_REGION must not leak into endpoint
+           derivation, which is shared with the web identity flow. */
+        delete process.env['STS_ENDPOINT'];
+        process.env['AWS_STS_REGIONAL_ENDPOINTS'] = 'regional';
+        process.env['AWS_REGION'] = 'eu-west-1';
+        sts = awscred._getStsEndpoint();
+        if (sts.endpoint !== 'https://sts.eu-west-1.amazonaws.com' || sts.region !== 'eu-west-1') {
+            throw 'Unexpected regional endpoint derivation: ' + JSON.stringify(sts);
+        }
+
+        delete process.env['AWS_REGION'];
+        process.env['S3_REGION'] = 'eu-west-1';
+        var threw = false;
+        try {
+            awscred._getStsEndpoint();
+        } catch (e) {
+            threw = true;
+        }
+        if (!threw) {
+            throw 'The regional endpoint model must still require AWS_REGION';
+        }
+
+        /* Global model: fixed endpoint whose credential scope AWS requires
+           to be us-east-1, regardless of S3_REGION. */
+        delete process.env['AWS_STS_REGIONAL_ENDPOINTS'];
+        sts = awscred._getStsEndpoint();
+        if (sts.endpoint !== 'https://sts.amazonaws.com' || sts.region !== 'us-east-1') {
+            throw 'Unexpected global endpoint resolution: ' + JSON.stringify(sts);
+        }
+    });
+}
+
 function testParseStsEndpointUrl() {
     printHeader('testParseStsEndpointUrl');
     var url = awscred._parseStsEndpointUrl('https://sts.amazonaws.com');
@@ -1551,6 +1617,7 @@ async function test() {
     await testStaticCredentialsShortCircuitWithoutRoleArn();
     await testRoleArnWithoutStaticFallsThroughToImds();
     await testIsAssumeRoleMode();
+    await testGetStsEndpoint();
     testParseAssumeRoleResponseRejectsEmptyElements();
     testParseStsEndpointUrl();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();

@@ -132,28 +132,40 @@ checkCredentialFile() {
 
 # Require some form of authentication to be configured.
 
+# Fully configured STS AssumeRole mode (GH-122): a role ARN, no web identity
+# token file, and non-empty static credentials in either form. This
+# announcement-only branch mirrors _isAssumeRoleMode in awscredentials.js and
+# must stay ahead of the ECS check because njs gives AssumeRole precedence
+# over the instance providers (environment credentials win, as in the AWS
+# SDKs) - a container credentials URI configured alongside these variables is
+# not the mode the gateway will run in.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
+  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+  echo "AWS_ROLE_ARN set with static credentials - fetching S3 credentials via STS AssumeRole"
+
 # a) Using container credentials. This is indicated by AWS_CONTAINER_CREDENTIALS_RELATIVE_URI being set.
 #    See https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html
 #    Example: We are running inside an ECS task.
-if [[ -v AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ]]; then
+elif [[ -v AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ]]; then
   echo "Running inside an ECS task, using container credentials"
 
 elif [[ -v S3_SESSION_TOKEN ]]; then
   echo "Deprecated the S3_SESSION_TOKEN! Use the environment variable of AWS_SESSION_TOKEN instead"
   failed=1
 
-# Fetching credentials via STS AssumeRole signed with static credentials
-# (GH-122). Indicated by AWS_ROLE_ARN holding a value without a web identity
-# token file (on EKS both are injected together and web identity keeps
-# precedence). The static credentials sign the AssumeRole request itself, so
-# they are required - and this branch must come before the session-token and
-# IMDS branches so that neither temporary source credentials nor an
-# IMDS-capable host skips the requirement. [ -n ] rather than [[ -v ]] so a
-# set-but-empty variable (e.g. a bare compose pass-through key) counts as
-# unset, matching the njs modules.
+# A role ARN without the static credentials that must sign the AssumeRole
+# request (GH-122). The fully configured mode was announced by the first
+# branch above, so reaching this one means the config is ambiguous - the ARN
+# would otherwise be silently ignored at request time (njs falls through to
+# the instance credential providers without statics) - and it always fails.
+# It must come before the session-token and IMDS branches so that neither
+# temporary source credentials nor an IMDS-capable host skips the
+# requirement. [ -n ] rather than [[ -v ]] so a set-but-empty variable (e.g.
+# a bare compose pass-through key) counts as unset, matching the njs modules.
 # See https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
 elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
-  echo "AWS_ROLE_ARN set without a web identity token file - fetching S3 credentials via STS AssumeRole signed with the configured static credentials"
+  echo "AWS_ROLE_ARN selects STS AssumeRole mode, but the static credentials that must sign the AssumeRole request are missing - add them or remove AWS_ROLE_ARN"
   requireStaticCredential "AWS_ACCESS_KEY_ID"
   requireStaticCredential "AWS_SECRET_ACCESS_KEY"
 
