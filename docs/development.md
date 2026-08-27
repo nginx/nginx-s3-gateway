@@ -15,6 +15,13 @@ new version of signature or you have a new PR:
 
 ![AWS signature flow across the njs modules](./img/nginx-s3-gateway-signature-flow.png)
 
+The flow above signs proxied client requests. Requests the gateway originates
+itself - the STS `AssumeRole` credential fetch (GH-122) - are signed by
+`awssig4.signRequestV4`, which takes every request component as an explicit
+parameter and bypasses the signing-key cache (whose entries are bound to the
+date and access key id, but not to a region/service pair) so an `sts`-scoped
+key can never poison the S3 signatures.
+
 ## Extending the Gateway
 
 ### Extending gateway configuration via container images
@@ -125,9 +132,11 @@ Integration tests live in `test/integration/` and are driven by
 `test/run_integration_tests.sh`, which starts the compose environment
 (`test/docker-compose.yaml`, with the
 `test/docker-compose.dynamic-credentials.yaml` override supplying an ECS
-credential-endpoint mock for the dynamic-credentials phase and the
+credential-endpoint mock for the dynamic-credentials phase, the
 `test/docker-compose.secret-file-credentials.yaml` override supplying the
-static credentials as mounted secret files), seeds the RustFS S3 origin with
+static credentials as mounted secret files, and the
+`test/docker-compose.assume-role.yaml` override switching the gateway to STS
+AssumeRole credentials for the assume-role phase), seeds the RustFS S3 origin with
 the fixtures in `test/data/`, and invokes the test scripts across a matrix of
 gateway configurations, including HTTPS origins with TLS verification and a
 CORS-enabled phase. New

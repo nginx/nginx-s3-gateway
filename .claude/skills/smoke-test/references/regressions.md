@@ -1,9 +1,9 @@
 # Pinned regression assertion sets
 
-Assertion sets for fixed GitHub issues. Used two ways: the `regressions`
-and `issue <N>` dispatch modes run them directly, and the root-cause
-classification protocol checks new failures against them before calling
-anything a new defect. Probe conventions are the same as in
+Assertion sets for fixed GitHub issues (and landed feature issues). Used
+two ways: the `regressions` and `issue <N>` dispatch modes run them
+directly, and the root-cause classification protocol checks new failures
+against them before calling anything a new defect. Probe conventions are the same as in
 `references/phases.md` (`BASE`, recreate, overlay).
 
 Each set names its fix commit; `git log <commit> -1` shows the full
@@ -174,3 +174,29 @@ Fix commit: `251e1e1`. TLS setup per P9 in `references/phases.md`.
    (send the same GET with two `Host:` values; the second is a hit —
    the cache key deliberately excludes the viewer host).
 5. `/tmp/credentials.json` does not exist in the gateway container.
+
+## #122 — STS AssumeRole credential mode (feature)
+
+Feature commits: `8a4aa31` (AssumeRole with static keys), `a3c21f7` and
+`18e9c30` (hardening: rotation-safe signing-key cache, mode-predicate
+consistency, guards), `482e94c` (signing-region fallback, ladder
+announcement order). `AWS_ROLE_ARN` + static credentials (and no
+`AWS_WEB_IDENTITY_TOKEN_FILE`) makes the gateway sign a form-encoded
+AssumeRole POST to the STS endpoint and sign S3 traffic with the issued
+temporary credentials.
+
+Run the STS AssumeRole probes in P8 of `references/phases.md` (probes
+7–11: banner + announcement, signing-scope split, single cached fetch,
+signing-region fallback, sigv2 startup guard, DEBUG-off error
+visibility). Additional pinned assertions:
+
+1. Startup rejects a non-empty `AWS_ROLE_ARN` with neither static
+   credentials nor a web identity token file (ambiguous config;
+   deliberate divergence from njs, which would fall through to instance
+   providers). A stray ARN alongside an ECS credentials URI or an EKS
+   pod identity token file must still boot and announce that provider.
+2. Set-but-empty values count as unset everywhere: `AWS_ROLE_ARN=""`
+   boots in plain static mode with `STS AssumeRole: disabled`.
+3. The banner and the ladder announcement must agree with each other
+   and with the mode njs actually runs (the redacted `Credential=`
+   scopes in the DEBUG logs are the ground truth).

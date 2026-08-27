@@ -6,6 +6,7 @@
 [Running as a Systemd Service](#running-as-a-systemd-service)  
 [Running in Containers](#running-in-containers)  
 [Supplying Credentials from Files (Docker Secrets)](#supplying-credentials-from-files-docker-secrets)  
+[Fetching S3 Credentials via STS AssumeRole](#fetching-s3-credentials-via-sts-assumerole)  
 [Running Using AWS Instance Profile Credentials](#running-using-aws-instance-profile-credentials)  
 [Running on EKS with IAM roles for service accounts](#running-on-eks-with-iam-roles-for-service-accounts)  
 [Running on EKS with EKS Pod Identities](#running-on-eks-with-eks-pod-identities)  
@@ -19,7 +20,7 @@ running as a Container or as a Systemd service.
 | Name                                  | Required? | Allowed Values                                                                                                                                        | Default                                             | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ALLOW_DIRECTORY_LIST`                | Yes       | `true`, `false`                                                                                                                                       | `false`                                             | Flag enabling directory listing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `AWS_SIGS_VERSION`                    | Yes       | 2, 4                                                                                                                                                  |                                                     | AWS Signatures API version. Signature v2 cannot authenticate temporary credentials: the session token is not part of a v2 signature, so `AWS_SESSION_TOKEN` and dynamic credential sources (EC2/ECS/EKS roles) require `4`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `AWS_SIGS_VERSION`                    | Yes       | 2, 4                                                                                                                                                  |                                                     | AWS Signatures API version. Signature v2 cannot authenticate temporary credentials: the session token is not part of a v2 signature, so `AWS_SESSION_TOKEN`, dynamic credential sources (EC2/ECS/EKS roles), and STS AssumeRole (`AWS_ROLE_ARN`) require `4`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `AWS_ACCESS_KEY_ID`                   | Yes       |                                                                                                                                                       |                                                     | Access key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `AWS_SECRET_ACCESS_KEY`               | Yes       |                                                                                                                                                       |                                                     | Secret access key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `AWS_SESSION_TOKEN`                   | No        |                                                                                                                                                       |                                                     | Session token. Requires `AWS_SIGS_VERSION=4`: v2 signatures do not cover the session token, and S3 rejects such requests with `SignatureDoesNotMatch`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -78,13 +79,23 @@ file.
 
 There are few optional environment variables that can be used.
 
-- `AWS_ROLE_SESSION_NAME` - (optional) The value will be used for Role Session Name. The default value is nginx-s3-gateway.
+- `AWS_ROLE_ARN` - (optional) When set together with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and without
+  `AWS_WEB_IDENTITY_TOKEN_FILE`), the gateway does not sign S3 requests with the static credentials directly.
+  Instead it calls [STS `AssumeRole`](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) with
+  them and signs S3 requests with the returned temporary credentials, refreshing them automatically before they
+  expire. Requires `AWS_SIGS_VERSION=4`. See
+  [Fetching S3 Credentials via STS AssumeRole](#fetching-s3-credentials-via-sts-assumerole).
+- `AWS_ROLE_SESSION_NAME` - (optional) Role session name for the STS `AssumeRole` and `AssumeRoleWithWebIdentity`
+  calls. The default value is `nginx-s3-gateway`. AWS restricts the value to 2-64 characters of `[\w+=,.@-]`.
 - `STS_ENDPOINT` - (optional) Overrides the STS endpoint to be used in applicable setups. This is not required when
-  running on EKS. See the EKS portion of the guide below for more details.
+  running on EKS. See the EKS portion of the guide below for more details. Also honored by
+  [STS AssumeRole mode](#fetching-s3-credentials-via-sts-assumerole), where it points at an S3-compatible store's
+  own STS API.
 - `AWS_STS_REGIONAL_ENDPOINTS` - (optional) Allows for a regional STS endpoint to be
-  selected. When the regional model is selected then the STS endpoint generated will
-  be coded to the current AWS region. This environment variable will be ignored if
-  `STS_ENDPOINT` is set. Valid options are: `global` (default) or `regional`.
+  selected for the web identity and AssumeRole calls. When the regional model is selected
+  then the STS endpoint generated will be coded to the current AWS region. This
+  environment variable will be ignored if `STS_ENDPOINT` is set. Valid options are:
+  `global` (default) or `regional`.
 
 ### Choosing a `S3_STYLE` Setting
 
@@ -617,6 +628,43 @@ Notes:
 - This is not specific to containers: the same variables work for the
   [Systemd service](#running-as-a-systemd-service) install, which records the path in `/etc/nginx/environment`
   rather than the secret itself.
+
+## Fetching S3 Credentials via STS AssumeRole
+
+When a fixed IAM user (or an S3-compatible store account) should not access the bucket directly but is allowed to
+assume a role that can, set `AWS_ROLE_ARN` alongside the static credentials:
+
+```text
+AWS_ACCESS_KEY_ID=AKIA...            # or AWS_ACCESS_KEY_ID_FILE=...
+AWS_SECRET_ACCESS_KEY=...            # or AWS_SECRET_ACCESS_KEY_FILE=...
+AWS_ROLE_ARN=arn:aws:iam::123456789012:role/s3-read-only
+AWS_SIGS_VERSION=4
+```
+
+On the first proxied request the gateway sends a SigV4-signed
+[`AssumeRole`](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) call (a form-encoded `POST`,
+exactly as the AWS SDKs send it) to the STS endpoint, caches the returned temporary credentials in memory (never on
+disk), and signs S3 requests with them. The credentials are refreshed shortly before they expire. Notes:
+
+- The STS endpoint is chosen the same way as for EKS web identity: `STS_ENDPOINT` when set, otherwise
+  `https://sts.<AWS_REGION>.amazonaws.com` when `AWS_STS_REGIONAL_ENDPOINTS=regional`, otherwise the global
+  `https://sts.amazonaws.com` endpoint. For an S3-compatible store that implements the STS API (RustFS, for
+  example), point `STS_ENDPOINT` at the store itself, e.g. `STS_ENDPOINT=https://my-store:9000`.
+- The `AssumeRole` request is signed with `AWS_REGION` when set, otherwise with `S3_REGION`, otherwise with
+  `us-east-1`. AWS validates that the signature's region matches the endpoint it is sent to, so when `STS_ENDPOINT`
+  points at an AWS endpoint in a different region than the bucket, set `AWS_REGION` to the endpoint's region.
+  S3-compatible stores generally do not enforce the signature's region.
+- `AWS_ROLE_SESSION_NAME` customizes the session name (default `nginx-s3-gateway`).
+- Requires `AWS_SIGS_VERSION=4`: `AssumeRole` always returns a session token, which v2 signatures cannot cover;
+  the container refuses to start otherwise.
+- If `AWS_WEB_IDENTITY_TOKEN_FILE` is also set (as EKS does), the static credentials win outright and neither STS
+  call is made - remove the static credentials to use
+  [web identity](#running-on-eks-with-iam-roles-for-service-accounts) instead.
+- A non-empty `AWS_ROLE_ARN` with neither static credentials nor a web identity token file fails startup
+  validation: the role could not be assumed and would otherwise be silently ignored. Add the static pair or remove
+  the variable. (Set-but-empty values count as unset, so an empty pass-through key is harmless.)
+- When `STS_ENDPOINT` uses HTTPS with a private CA, set `JS_TRUSTED_CERT_PATH` - credential calls verify against
+  it, not `S3_TRUSTED_CERT_PATH`.
 
 ## Running Using AWS Instance Profile Credentials
 

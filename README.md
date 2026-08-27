@@ -62,9 +62,11 @@ and run the gateway.
 ```text
 common/                          contains files used by both NGINX OSS and Plus configurations
   etc/nginx/include/
-    awscredentials.js            common library to read and write credentials
+    awscredentials.js            common library to read, cache, and fetch credentials (instance
+                                 profiles, web identity, STS AssumeRole)
     awssig2.js                   common library to build AWS signature 2
-    awssig4.js                   common library to build AWS signature 4 and get a session token
+    awssig4.js                   common library to build AWS signature 4, for both proxied client
+                                 requests and requests the gateway originates itself
     s3gateway.js                 common library to integrate the s3 storage from NGINX OSS and Plus
     utils.js                     common library to be reused by all of NJS codebases
 deployments/                     contains files used for deployment technologies such as

@@ -33,9 +33,61 @@ failed=0
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION")
 
-if [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
+# Each static credential may be supplied either in its own environment
+# variable or, following the container secret-store convention, in a file
+# named by a '<VAR>_FILE' companion variable (GH-67). The njs modules read
+# whichever form is present, so accept either one here. Both forms are
+# tested by value, not presence: the njs modules treat a set-but-empty
+# variable (e.g. an env-file line with no value) as unconfigured and would
+# fall through to the instance credential providers at request time.
+requireStaticCredentials() {
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
+    file_name="${name}_FILE"
+    if [ -z "${!name:-}" ] && [ -z "${!file_name:-}" ]; then
+      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
+      failed=1
+    fi
+  done
+}
+
+# STS AssumeRole mode flags (GH-122), mirroring _isAssumeRoleMode in
+# awscredentials.js (and 99-output-settings.sh in the container image). The
+# environment cannot change while this script runs, so the mode is computed
+# once and every consumer below - the ladder, the sigv2 guard, the settings
+# banner and the /etc/nginx/environment writer - tests these flags instead
+# of re-deriving the predicate and risking drift.
+assume_role_selected=0 # a role ARN and no web identity token file
+assume_role_active=0   # selected, plus the statics that must sign AssumeRole
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  assume_role_selected=1
+  if { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+    && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+    assume_role_active=1
+  fi
+fi
+
+# Fully configured STS AssumeRole mode (GH-122). This branch must stay ahead
+# of the ECS check because njs gives AssumeRole precedence over the instance
+# providers (environment credentials win, as in the AWS SDKs). On this
+# install the ordering also decides behavior, not just the message:
+# uses_iam_creds=0 makes the statics and STS variables reach nginx through
+# /etc/nginx/environment, aligning the systemd install with the container
+# image for this variable combination.
+if [ "${assume_role_active}" = 1 ]; then
+  echo "AWS_ROLE_ARN set with static credentials - fetching S3 credentials via STS AssumeRole"
+  uses_iam_creds=0
+elif [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
   echo "Running inside an ECS task, using container credentials"
   uses_iam_creds=1
+# A role ARN without the static credentials that must sign the AssumeRole
+# request (GH-122): the fully configured mode was announced above, so this
+# config is ambiguous - the ARN would otherwise be silently ignored at
+# request time - and it always fails. The check must precede the IMDS probes
+# so an IMDS-capable host does not skip it.
+elif [ "${assume_role_selected}" = 1 ]; then
+  echo "AWS_ROLE_ARN selects STS AssumeRole mode, but the static credentials that must sign the AssumeRole request are missing - add them or remove AWS_ROLE_ARN"
+  requireStaticCredentials
+  uses_iam_creds=0
 elif TOKEN=$(curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") && \
   curl -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then 
   echo "Running inside an EC2 instance, using IMDSv2 for credentials"
@@ -44,18 +96,7 @@ elif curl --output /dev/null --silent --head --fail --connect-timeout 2 "http://
   echo "Running inside an EC2 instance, using IMDSv1 for credentials"
   uses_iam_creds=1
 else
-  # Each static credential may be supplied either in its own environment
-  # variable or, following the container secret-store convention, in a file
-  # named by a '<VAR>_FILE' companion variable (GH-67). The njs modules read
-  # whichever form is present, so accept either one here. Setting both is
-  # ambiguous and rejected.
-  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
-    file_name="${name}_FILE"
-    if [ -z ${!name+x} ] && [ -z ${!file_name+x} ]; then
-      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
-      failed=1
-    fi
-  done
+  requireStaticCredentials
   uses_iam_creds=0
 fi
 
@@ -205,6 +246,17 @@ if [ "${AWS_SIGS_VERSION}" = "2" ] && { [ -n "${AWS_SESSION_TOKEN:-}" ] || [ -n 
   failed=1
 fi
 
+# STS AssumeRole always returns temporary credentials whose session token a
+# v2 signature cannot cover - the same failure mode as the AWS_SESSION_TOKEN
+# check above (GH-578/GH-122) - so reject the combination up front. Only the
+# fully configured mode trips this: without the statics njs never runs
+# AssumeRole. This mirrors the check in
+# common/docker-entrypoint.d/00-check-for-required-env.sh.
+if [ "${AWS_SIGS_VERSION}" = "2" ] && [ "${assume_role_active}" = 1 ]; then
+  >&2 echo "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2: STS AssumeRole always yields a session token, which v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4."
+  failed=1
+fi
+
 # PREFIX_LEADING_DIRECTORY_PATH is rendered verbatim into the nginx
 # configuration: into the request-path map and into listing.xsl's
 # xslt_string_param, which wraps the value in single quotes. A single quote
@@ -304,6 +356,15 @@ elif [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
   echo "Access Key ID: (read from ${AWS_ACCESS_KEY_ID_FILE})"
 else
   echo "Access Key ID: "
+fi
+# The role ARN is only honored in AssumeRole mode (GH-122), so report the
+# effective state rather than the raw variable: without non-empty static
+# credentials njs ignores the role ARN and uses the instance credential
+# providers instead.
+if [ "${assume_role_active}" = 1 ]; then
+  echo "STS AssumeRole: enabled (${AWS_ROLE_ARN})"
+else
+  echo "STS AssumeRole: disabled"
 fi
 echo "Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}"
 echo "Host Header: ${S3_HOST_HEADER}"
@@ -546,6 +607,44 @@ EOF
 # AWS Session Token
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 EOF
+  fi
+  # AssumeRole mode (GH-122): the role ARN and its optional STS companions
+  # must reach the njs modules through the environment file, exactly like the
+  # static credentials that sign the AssumeRole call. The web-identity leg of
+  # the shared flag matters here: this environment file never carries
+  # AWS_WEB_IDENTITY_TOKEN_FILE, so writing the role ARN for a host that has
+  # a token file configured would flip njs into AssumeRole mode even though
+  # the validation above ran (and the sigv2 guard was skipped) for the
+  # static-credential mode.
+  if [ "${assume_role_selected}" = 1 ]; then
+    cat >> "/etc/nginx/environment" << EOF
+# IAM role assumed via STS AssumeRole to obtain the S3 credentials
+AWS_ROLE_ARN=${AWS_ROLE_ARN}
+EOF
+    if [ -n "${AWS_ROLE_SESSION_NAME:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Role session name for the STS AssumeRole call
+AWS_ROLE_SESSION_NAME=${AWS_ROLE_SESSION_NAME}
+EOF
+    fi
+    if [ -n "${STS_ENDPOINT:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Explicit STS endpoint override for the AssumeRole call
+STS_ENDPOINT=${STS_ENDPOINT}
+EOF
+    fi
+    if [ -n "${AWS_STS_REGIONAL_ENDPOINTS:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# STS endpoint model (global or regional) for the AssumeRole call
+AWS_STS_REGIONAL_ENDPOINTS=${AWS_STS_REGIONAL_ENDPOINTS}
+EOF
+    fi
+    if [ -n "${AWS_REGION:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Region used to derive the regional STS endpoint and its signature scope
+AWS_REGION=${AWS_REGION}
+EOF
+    fi
   fi
 fi
 

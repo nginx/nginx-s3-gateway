@@ -41,6 +41,21 @@ else
   origin_tls_verification="disabled (HTTP origin)"
 fi
 
+# The role ARN is only honored in AssumeRole mode (GH-122), so report the
+# effective state rather than the raw variable. The condition mirrors
+# _isAssumeRoleMode in awscredentials.js, including its third leg: without
+# non-empty static credentials (direct or _FILE form) njs ignores the role
+# ARN and uses the instance credential providers - e.g. with an ECS
+# container credentials URI configured alongside a stray role ARN, the
+# gateway runs on ECS credentials and this banner must not claim otherwise.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
+  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+  sts_assume_role="enabled (${AWS_ROLE_ARN})"
+else
+  sts_assume_role="disabled"
+fi
+
 # S3_UPSTREAM and S3_HOST_HEADER are computed per S3_STYLE by
 # 01-set-defaults.envsh (sourced by the entrypoint before this script runs),
 # so report those rather than assuming the virtual-host form - path style
@@ -49,6 +64,7 @@ cat <<EOM
 S3 Backend Environment:
   Service: ${S3_SERVICE:-s3}
   Access Key ID: ${access_key_id}
+  STS AssumeRole: ${sts_assume_role}
   Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}
   Host Header: ${S3_HOST_HEADER}
   Origin TLS Verification: ${origin_tls_verification}

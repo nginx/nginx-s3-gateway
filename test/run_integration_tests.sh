@@ -57,6 +57,7 @@ repo_dir="$( dirname "${test_dir}" )"
 test_compose_config="${test_dir}/docker-compose.yaml"
 dynamic_credentials_compose_config="${test_dir}/docker-compose.dynamic-credentials.yaml"
 secret_file_credentials_compose_config="${test_dir}/docker-compose.secret-file-credentials.yaml"
+assume_role_compose_config="${test_dir}/docker-compose.assume-role.yaml"
 test_compose_project="${COMPOSE_PROJECT:-ngt}"
 
 # The S3 origin is RustFS (see test/docker-compose.yaml); mc, used purely as
@@ -66,6 +67,10 @@ s3_origin_user="AKIAIOSFODNN7EXAMPLE"
 s3_origin_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 s3_origin_container="${test_compose_project}_rustfs_1"
 s3_origin_bucket="bucket-1"
+# Dedicated non-root origin user whose keys sign the STS AssumeRole call in
+# integration_test_assume_role. Must match docker-compose.assume-role.yaml.
+assume_role_user="assume-role-user"
+assume_role_passwd="assume-role-secret-key-0000"
 test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
 test_secrets_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-secrets"
 mc_extra_args=()
@@ -261,6 +266,19 @@ compose_secret_file_credentials() {
     -p "${test_compose_project}" "$@"
 }
 
+compose_assume_role() {
+  prepare_compose_env
+
+  # The overlay pins its own AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, but the
+  # null AWS_SESSION_TOKEN entry means "inherit from the shell" to compose,
+  # so an operator's real session token has to be scrubbed here or it would
+  # be signed into the AssumeRole call and rejected by the origin.
+  env -u AWS_SESSION_TOKEN \
+    "${docker_compose_cmd[@]}" \
+    -f "${test_compose_config}" -f "${assume_role_compose_config}" \
+    -p "${test_compose_project}" "$@"
+}
+
 # Configure the compose environment and mc/curl endpoints for an HTTP or
 # HTTPS S3 origin. Kept as one function so the two origin modes cannot
 # drift apart when a new TEST_* knob is added.
@@ -271,7 +289,6 @@ set_test_origin() {
   export TEST_S3_SERVER_PORT="9000"
   export TEST_S3_SERVER_PROTO="${origin_proto}"
   export TEST_S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-  export TEST_S3_ORIGIN_PROTO="${origin_proto}"
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
   export TEST_PROXY_CACHE_SLICE_SIZE="1m"
   s3_origin_server="${origin_proto}://localhost:9090"
@@ -345,8 +362,15 @@ integration_test_data() {
 
 seed_origin_data() {
 
-  # Hit the origin's health check end point to see if it has started up
-  for (( i=1; i<=3; i++ ))
+  # Hit the origin's health check end point to see if it has started up.
+  # This is the only readiness gate for phases that start the origin alone
+  # (integration_test_assume_role's `up -d rustfs` returns before the
+  # healthcheck passes, unlike the full `up -d`, where the gateway's
+  # depends_on blocks on it), so fail with a clear message rather than
+  # falling through to mc commands that would abort the suite with an
+  # opaque connectivity error.
+  origin_is_up=""
+  for (( i=1; i<=15; i++ ))
   do
     echo "Querying the S3 origin to see if it is ready"
     # `|| true` keeps errexit from aborting the retry loop when the origin is
@@ -359,6 +383,10 @@ seed_origin_data() {
       sleep 2
     fi
   done
+  if [ "${origin_is_up}" != "200" ]; then
+    e "the S3 origin at ${s3_origin_server} did not become ready (last health status: ${origin_is_up})"
+    exit "$test_fail_exit_code"
+  fi
 
   p "Adding test data to container"
   # ${arr[@]+...} keeps the empty-array expansion from tripping `set -o
@@ -731,6 +759,79 @@ integration_test_secret_file_credentials() {
   fi
 }
 
+integration_test_assume_role() {
+  p "Testing STS AssumeRole credential fetching (GH-122)"
+  compose_assume_role down --volumes --remove-orphans || true
+  set_http_test_origin
+
+  # The origin comes up alone first: the AssumeRole caller must exist before
+  # the gateway starts, because even wait_for_gateway's probe request
+  # triggers a credential fetch, and a failed pre-provisioning STS call
+  # would break the exactly-one-fetch cache assertion below.
+  COMPOSE_COMPATIBILITY=true compose_assume_role up -d rustfs
+  seed_origin_data
+
+  # Create the non-root user whose keys sign the AssumeRole call. RustFS
+  # exposes an admin API compatible with mc's admin subcommands, addressed
+  # through the alias seed_origin_data registered. The stack was brought
+  # down with --volumes first, so the user never pre-exists.
+  p "Creating the AssumeRole caller on the origin"
+  "${mc_cmd}" admin user add "$s3_origin_container" "$assume_role_user" "$assume_role_passwd"
+  "${mc_cmd}" admin policy attach "$s3_origin_container" readonly --user "$assume_role_user"
+
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_assume_role up -d
+  wait_for_gateway
+
+  # A 200 is only possible if the whole chain worked: the gateway signed
+  # AssumeRole with the caller's keys, the origin verified that signature
+  # and issued temporary credentials, and the object request signed with
+  # them - including the session token, which the origin validates as one
+  # of its own - was accepted.
+  assert_request_status 200 "assume role object request" "${test_server}/a.txt"
+
+  # The redacted DEBUG Authorization log lines still carry the credential
+  # scope, so they prove which keys signed what: the caller's keys must
+  # appear with the sts scope and never with the s3 scope, and the s3 scope
+  # must carry an STS-issued access key (anything but the caller's).
+  # Filtered into variables rather than piped into grep -q, for the
+  # pipefail/SIGPIPE reason documented at assert_gateway_logs_contain. The
+  # s3-scope check additionally filters on 'Credential=': the DEBUG signing
+  # strings carry the scope on a line without any access key, so an
+  # unfiltered inverted match would pass no matter which keys signed.
+  gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
+  static_signature_lines="$(grep -F "Credential=${assume_role_user}/" <<< "${gateway_logs}" || true)"
+  s3_signature_lines="$(grep -F "/s3/aws4_request" <<< "${gateway_logs}" | grep -F "Credential=" || true)"
+  if ! grep -qF "/sts/aws4_request" <<< "${static_signature_lines}"; then
+    e "FAIL [assume role STS signature]: no sts-scoped signature by ${assume_role_user} found in the gateway logs"
+    exit "$test_fail_exit_code"
+  fi
+  if [ -z "${s3_signature_lines}" ] || ! grep -qvF "Credential=${assume_role_user}/" <<< "${s3_signature_lines}"; then
+    e "FAIL [assume role S3 signature]: no s3-scoped signature by the assumed credentials found in the gateway logs"
+    exit "$test_fail_exit_code"
+  fi
+  if grep -qF "/s3/aws4_request" <<< "${static_signature_lines}"; then
+    e "FAIL [assume role credential leak]: the static credentials signed an S3 request"
+    exit "$test_fail_exit_code"
+  fi
+  sts_fetch_count_before="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
+  if [ "${sts_fetch_count_before}" -lt 1 ]; then
+    e "FAIL [assume role credential fetch]: no STS fetch found in the gateway logs"
+    exit "$test_fail_exit_code"
+  fi
+
+  # Cache reuse: a second object request must not add an STS call. Compared
+  # as a count delta rather than against an absolute 1 because the
+  # wait_for_gateway HEAD probe (2s cap) can legitimately abort its first
+  # credential fetch mid-flight on a slow runner and trigger one retry.
+  assert_request_status 200 "assume role cached second object request" "${test_server}/b/e.txt"
+  gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
+  sts_fetch_count_after="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
+  if [ "${sts_fetch_count_after}" != "${sts_fetch_count_before}" ]; then
+    e "FAIL [assume role credential caching]: the second object request triggered a new STS fetch (${sts_fetch_count_before} before, ${sts_fetch_count_after} after)"
+    exit "$test_fail_exit_code"
+  fi
+}
+
 finish() {
   result=$?
   # Disarm the traps first: a test failure otherwise runs finish twice (ERR,
@@ -789,6 +890,9 @@ bash "${test_dir}/integration/test_entrypoint_prefix_normalization.sh" "${docker
 
 p "Testing signature v2 session token guard entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_sigv2_session_token.sh" "${docker_cmd}"
+
+p "Testing STS AssumeRole guard entrypoint scripts"
+bash "${test_dir}/integration/test_entrypoint_assume_role_guards.sh" "${docker_cmd}"
 
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
@@ -918,5 +1022,7 @@ integration_test_proxy_ssl
 integration_test_dynamic_credentials
 
 integration_test_secret_file_credentials
+
+integration_test_assume_role
 
 p "All integration tests complete"
