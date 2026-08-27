@@ -86,8 +86,8 @@ services:
       timeout: 3s
       retries: 3
   # It may be useful to enable the client container so that you can debug
-  # what calls were made to the origin by the gateway. RustFS exposes a
-  # MinIO-compatible admin API, so mc admin tooling works against it.
+  # what calls were made to the origin by the gateway. RustFS exposes an
+  # admin API compatible with mc's admin subcommands.
 #  origin-client:
 #    depends_on:
 #      - "rustfs"

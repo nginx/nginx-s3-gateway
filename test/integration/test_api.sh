@@ -292,7 +292,7 @@ assertRedirectLocation() {
 
 # Asserts that a path carrying percent-encoded control bytes cannot inject a
 # response header. Origins differ on the upstream answer for such keys - AWS
-# and MinIO return 404, which makes @trailslash emit a redirect, while RustFS
+# answers 404, which makes @trailslash emit a redirect, while RustFS
 # rejects control bytes in object keys with 400 and no redirect is emitted at
 # all. Both shapes are safe, so the redirect itself is optional here; what
 # must never happen is the decoded CR/LF splitting a header, and when a
@@ -659,7 +659,7 @@ fi
 
 # Directory HEAD 404s
 # Unfortunately, the logic here can't be properly encoded into the test.
-# With RustFS (as with MinIO before it), we can't return anything *but* a 404
+# With RustFS, we can't return anything *but* a 404
 # for HEAD requests to a directory.
 # With AWS S3, HEAD requests to a directory will return 200 *only* when we are
 # running with v4 signatures.
@@ -778,7 +778,7 @@ assertHttpRequestEquals "GET" "/statichost/noindexdir/multipledir/" "data/bucket
   assertRedirectLocation "/%25foo" "a.example" "/%25foo/"
   assertRedirectSafeFromHeaderInjection "/foo%0D%0AX-Evil%3A%20yes" "a.example" "/foo%0D%0AX-Evil%3A%20yes/" "X-Evil"
   # GH-88: the duplicate slash is collapsed before signing and proxying
-  # under BOTH signature versions (pre-fix, the then-MinIO origin's SigV2
+  # under BOTH signature versions (pre-fix, the previous origin's SigV2
   # handling 404'd the raw double-slash key upstream, so this only held
   # for v4), so S3
   # returns a plain 404 for 'statichost' and @trailslash emits the

@@ -31,7 +31,7 @@ and test workflows. The test logic lives in `test/run_unit_tests.sh` and
 deprecated wrapper that only forwards to the equivalent make targets — never
 invoke or recommend it. Run `make help` for the full target list,
 `make check-tools` to verify prerequisites (docker, docker compose, curl,
-mc/MinIO client).
+and the mc S3 client).
 
 - `make build` — build the gateway image (`NGINX_TYPE=oss` default, or `plus`).
 - `make test` — build, then run the full unit + integration suite.

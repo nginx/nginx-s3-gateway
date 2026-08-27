@@ -167,7 +167,7 @@ else
   e "required dependency not found: mc not found in the path or not executable"
   exit ${no_dep_exit_code}
 fi
-e "Using MinIO Client: ${mc_cmd}"
+e "Using mc (S3 test client): ${mc_cmd}"
 
 # Blocks until the gateway answers an HTTP request, replacing the external
 # wait-for-it dependency.
@@ -372,8 +372,8 @@ seed_origin_data() {
   for file in "${test_dir}/data/$s3_origin_bucket"/*; do
     "${mc_cmd}" cp ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "${file}" "$s3_origin_container/$s3_origin_bucket"
   done
-  # RustFS declares VOLUME /data, so `docker diff` (which the old MinIO
-  # seeding printed here) would show nothing; list the seeded objects instead.
+  # RustFS declares VOLUME /data, so `docker diff` (which the seeding step
+  # once printed here) would show nothing; list the seeded objects instead.
   echo "Seeded bucket contents:"
   "${mc_cmd}" ls ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "$s3_origin_container/$s3_origin_bucket"
 }

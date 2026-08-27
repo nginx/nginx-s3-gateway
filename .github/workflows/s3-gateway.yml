@@ -104,7 +104,7 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install MinIO Client
+      - name: Install mc
         uses: ./.github/actions/install-mc
 
       - name: Build and test - stable njs version
@@ -118,7 +118,7 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install MinIO Client
+      - name: Install mc
         uses: ./.github/actions/install-mc
 
       # S3_STYLE is pinned the same way the local test-matrix target pins it,
@@ -134,7 +134,7 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install MinIO Client
+      - name: Install mc
         uses: ./.github/actions/install-mc
 
       # S3_STYLE is pinned the same way the local test-matrix target pins it,

@@ -737,8 +737,8 @@ function testS3DirQueryParams() {
         check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
         // Values past S3's 32-bit max-keys range draw 400 InvalidArgument
         // from AWS on every listing, so they degrade like any other invalid
-        // value. Only a unit test can pin this: MinIO parses max-keys as
-        // 64-bit and would accept the oversized value.
+        // value. Only a unit test can pin this: some S3-compatible origins
+        // parse max-keys as 64-bit and would accept the oversized value.
         process.env['DIRECTORY_LISTING_PAGE_SIZE'] = '2147483648';
         check('/b/c/', 'GET', undefined, 'delimiter=%2F&prefix=b%2Fc%2F');
         // The 32-bit boundary value itself is still accepted.

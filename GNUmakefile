@@ -92,7 +92,7 @@ check-tools: ## Verify required build and test tooling is present
 	{ $(DOCKER) compose version > /dev/null 2>&1 || command -v docker-compose > /dev/null 2>&1; } || \
 		{ echo "MISSING (required): docker compose plugin (or legacy docker-compose)"; ok=0; }; \
 	if ! command -v mc > /dev/null 2>&1 && [ ! -x "$(BASE_DIR).bin/mc" ]; then \
-		echo "MISSING (required): mc (MinIO client, used as the generic S3 test client) - or place the binary at ./.bin/mc"; ok=0; \
+		echo "MISSING (required): mc (the S3 test client) - or place the binary at ./.bin/mc"; ok=0; \
 	fi; \
 	if ! command -v md5sum > /dev/null 2>&1 && ! command -v md5 > /dev/null 2>&1; then \
 		echo "MISSING (required): md5sum (or md5 on macOS)"; ok=0; \

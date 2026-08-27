@@ -75,8 +75,7 @@ script is deprecated and only forwards to the equivalent make targets — do
 not invoke it directly.
 
 Automated tests require `docker`, `docker compose`, `curl`, `md5sum` (or `md5`
-on macOS), and `mc` (the
-[MinIO client](https://min.io/docs/minio/linux/reference/minio-mc.html), used
+on macOS), and [`mc`](https://min.io/docs/minio/linux/reference/minio-mc.html) (used
 as a generic S3 client against the RustFS test origin) to be
 installed; run `make check-tools` to verify all prerequisites are present.
 

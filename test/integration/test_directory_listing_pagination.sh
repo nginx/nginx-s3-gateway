@@ -25,10 +25,9 @@
 # whose marker is relative to the listed directory.
 #
 # Markers are treated as opaque: AWS and RustFS return the last key of the
-# page as NextMarker, but some S3-compatible backends (MinIO, for example)
-# decorate it with an internal continuation hint such as
-# 'e.txt[minio_cache:v2,return:]', so assertions check that a marker
-# STARTS WITH the expected relative key and otherwise navigate with the
+# page as NextMarker, but some S3-compatible backends decorate it with an
+# internal continuation hint appended to the key, so assertions check that
+# a marker STARTS WITH the expected relative key and otherwise navigate with the
 # marker extracted from the page, exactly like a browsing client. All
 # expected strings are asserted in their percent-encoded (ASCII) form so the
 # assertions are safe on shells with broken UTF-8 handling.
@@ -126,7 +125,7 @@ next_marker() {
 }
 
 # The backend decides the exact marker value (AWS/RustFS: the last key;
-# MinIO: the last key plus an internal hint), but the marker must always
+# other backends may append an internal hint), but the marker must always
 # begin with the page's last entry relative to the listed directory -
 # anything else means the gateway leaked an internal prefix or the
 # stylesheet mis-stripped it.
