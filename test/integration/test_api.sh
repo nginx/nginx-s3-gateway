@@ -311,8 +311,12 @@ assertRedirectSafeFromHeaderInjection() {
 
   headers="$(${curl_cmd} -H "Host: ${host}" -D - -o /dev/null "${uri}")"
   actual_location=""
+  status=""
   while IFS= read -r header; do
     case "${header}" in
+      HTTP/*)
+        status="$(echo "${header}" | awk '{print $2}')"
+        ;;
       [Ll]ocation:\ *)
         actual_location="${header#*: }"
         actual_location="${actual_location%$'\r'}"
@@ -323,6 +327,19 @@ assertRedirectSafeFromHeaderInjection() {
         ;;
     esac
   done <<< "${headers}"
+
+  # Both safe upstream shapes are 3xx (redirect emitted) or 4xx (origin
+  # rejected the control bytes). A 2xx means the decoded key unexpectedly
+  # resolved; a 5xx means the gateway itself broke on the input. Either
+  # would previously have slipped through because only the redirect
+  # location, when present, was being checked.
+  case "${status}" in
+    3*|4*) ;;
+    *)
+      e "Unexpected status for a control-byte path. Request [GET ${uri} Host: ${host}] Status [${status}]"
+      exit ${test_fail_exit_code}
+      ;;
+  esac
 
   if [ -n "${actual_location}" ] && [ "${expected_location}" != "${actual_location}" ]; then
     e "Redirect location didn't match expectation. Request [GET ${uri} Host: ${host}] Expected [${expected_location}] Actual [${actual_location}]"

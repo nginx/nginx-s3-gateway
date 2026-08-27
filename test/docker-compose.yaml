@@ -79,7 +79,9 @@ services:
       # TLS leg is the only one that may point this at /tls.
       RUSTFS_TLS_PATH: "${TEST_S3_TLS_PATH:-}"
     healthcheck:
-      test: ["CMD-SHELL", "curl -k -f ${TEST_S3_ORIGIN_PROTO:-http}://localhost:9000/health"]
+      # Probes over the same protocol the gateway uses: RustFS terminates TLS
+      # itself, so the one listener is either plain HTTP or HTTPS for both.
+      test: ["CMD-SHELL", "curl -k -f ${TEST_S3_SERVER_PROTO:-http}://localhost:9000/health"]
       interval: 5s
       timeout: 3s
       retries: 3
