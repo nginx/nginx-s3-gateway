@@ -125,15 +125,19 @@
                      list request, so the internal prefix never leaks into
                      the link. The href is a query-only relative reference,
                      resolved against the current directory URL, so no
-                     rootPath handling applies. The guard tests the STRIPPED
-                     marker: when a backend truncates without NextMarker, or
-                     with one that leaves no directory-relative remainder (a
-                     marker equal to the prefix, or an opaque token that
-                     does not contain it), no link renders - njs treats an
-                     empty ?marker= as absent, so an empty-valued link would
-                     reload the same page forever. The no-link fallback is
-                     the same output as before pagination existed. -->
-                <xsl:if test="*[local-name()='IsTruncated']/text() = 'true' and string-length($nextMarker) &gt; 0">
+                     rootPath handling applies. The guard anchors the strip:
+                     substring-after cuts at the FIRST prefix occurrence
+                     anywhere in the string, so only a NextMarker that
+                     literally STARTS WITH the prefix may render a link -
+                     when a backend truncates without NextMarker, with an
+                     opaque token that is not prefix-anchored (stripping such
+                     a token mid-string would fabricate a continuation
+                     point), or with a marker equal to the prefix, no link
+                     renders. njs treats an empty ?marker= as absent, so an
+                     empty-valued link would reload the same page forever.
+                     The no-link fallback is the same output as before
+                     pagination existed. -->
+                <xsl:if test="*[local-name()='IsTruncated']/text() = 'true' and starts-with(*[local-name()='NextMarker']/text(), $globalPrefix) and string-length($nextMarker) &gt; 0">
                     <hr/>
                     <p><a><xsl:attribute name="href">?marker=<xsl:call-template name="encode-marker"><xsl:with-param name="value" select="$nextMarker"/></xsl:call-template></xsl:attribute>Next page</a></p>
                 </xsl:if>
