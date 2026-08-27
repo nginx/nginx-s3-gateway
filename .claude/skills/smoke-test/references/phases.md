@@ -24,9 +24,10 @@ Env: Step 2 defaults (v4 signatures, listing off, index off).
 
 1. `GET BASE/health` → 200. **HOLE** — the suite never requests it.
 2. Gateway logs contain the startup banner block `S3 Backend
-   Environment:` with `AWS Signatures Version: v4` and an `Addressing
-   Style:` matching the export; the secret access key value from the
-   compose file must NOT appear anywhere in the logs.
+   Environment:` with `AWS Signatures Version: v4`, an `Addressing
+   Style:` matching the export, and `STS AssumeRole: disabled` (the
+   baseline runs on plain static credentials); the secret access key
+   value from the compose file must NOT appear anywhere in the logs.
 3. `GET BASE/a.txt` → 200; body byte-identical to
    `test/data/bucket-1/a.txt` (compare with `cmp`).
 4. `HEAD BASE/a.txt` → 200 with `Content-Length` equal to the fixture's
@@ -400,7 +401,45 @@ the test gateway:
    with a message naming the conflict; an unreadable or empty secret
    file → startup must fail cleanly. `expected-behavior` when clean.
 
-Covers: #573/#565 pins, credential-cache behavior.
+STS AssumeRole (GH-122; overlay `test/docker-compose.assume-role.yaml`).
+The gateway signs an AssumeRole call to the origin's STS endpoint with
+static caller credentials and signs S3 traffic with the returned
+temporary credentials. Order matters: **provision the caller on the
+origin BEFORE recreating the gateway** — even the readiness probe
+triggers a credential fetch, and a pre-provisioning STS failure skews
+the single-fetch assertion. The caller's user/secret values are pinned
+inside the overlay; create them with the origin CLI's admin subcommands
+(`admin user add`, `admin policy attach … readonly`) against the alias
+registered during seeding. Launch with `env -u AWS_SESSION_TOKEN` (the
+overlay's null key inherits from the shell):
+
+7. Startup banner contains `STS AssumeRole: enabled (<role arn>)` and
+   the ladder announcement `AWS_ROLE_ARN set with static credentials -
+   fetching S3 credentials via STS AssumeRole`.
+8. `GET BASE/a.txt` → 200, then `GET BASE/b/e.txt` → 200. In the logs
+   (DEBUG on): the redacted `Credential=` scopes prove the split — the
+   caller's access key appears only with `/sts/aws4_request`, every
+   `/s3/aws4_request` line carries a different (issued) access key, and
+   `Fetching credentials via STS AssumeRole` appears exactly once across
+   both requests (shared-memory cache). Neither the caller secret nor
+   the issued secret may appear anywhere in the logs.
+9. Signing-region fallback (`AWS_REGION` → `S3_REGION` → `us-east-1`):
+   stack a scratch overlay setting `AWS_REGION: ""` (empty = unset to
+   njs) and a distinctive `S3_REGION` → the object still serves (the
+   origin does not enforce the scope region) and the sts-scoped
+   `Credential=` line carries the `S3_REGION` value.
+10. Guard: recreate with `AWS_SIGS_VERSION=2` plus the overlay → the
+    container must exit non-zero without serving, logs containing
+    `AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2`.
+11. Error visibility with `DEBUG: "false"` and a wrong caller secret
+    (scratch overlay) → `GET BASE/a.txt` → 500, and the error log still
+    contains `Could not assume role using static credentials` with the
+    capped STS error body (`SignatureDoesNotMatch`); the wrong secret
+    value must not appear. **HOLE** — no fixed test asserts the
+    error-level visibility of STS failures.
+
+Covers: #573/#565 pins, credential-cache behavior, GH-122 AssumeRole
+(see the #122 set in `references/regressions.md`).
 
 ---
 
@@ -411,12 +450,17 @@ helpers): generate a throwaway CA and an origin server certificate into
 a scratch directory, export EVERY `TEST_…` variable the compose file
 consumes (grep it for `TEST_`: `TEST_TLS_CERT_DIR`,
 `TEST_S3_SERVER_PROTO`, `TEST_S3_TRUSTED_CERT_PATH`, `TEST_S3_SERVER`,
-`TEST_S3_SERVER_PORT`, plus the origin service's certs-dir and
-healthcheck-protocol variables), and restart the origin serving HTTPS.
-Missing the healthcheck-protocol variable is fatal to the whole phase:
-the origin's healthcheck keeps probing plain HTTP, the service never
-reports healthy, and the gateway — which depends on that condition —
-never starts.
+`TEST_S3_SERVER_PORT`, plus the origin's TLS-path variable — currently
+`TEST_S3_TLS_PATH`, which must stay EMPTY for plain HTTP: the origin
+exits fatally when its TLS path is set but missing or holds no key
+pair), and restart the origin serving HTTPS. The certificate/key file
+names and required ownership/permissions come from the suite's
+cert-generation helper — read it; the origin process does not run as
+root, so a root-owned 0600 key is unreadable. The origin healthcheck
+probes over `TEST_S3_SERVER_PROTO`; leaving it on `http` during the TLS
+phase is fatal to the whole phase: the healthcheck never passes, the
+service never reports healthy, and the gateway — which depends on that
+condition — never starts.
 
 1. Gateway trusting only the default CA bundle → `GET BASE/a.txt` →
    non-200, and gateway logs contain `upstream SSL certificate verify

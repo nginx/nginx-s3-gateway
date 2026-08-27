@@ -38,7 +38,8 @@ Determine what to run based on `$ARGUMENTS`:
 
 Area keyword → phase map: `listing`/`index` → P1; `paths` → P2;
 `signatures`/`styles` → P3; `methods`/`cors` → P4; `cache` → P5;
-`headers` → P6; `buckets`/`ipv6` → P7; `creds` → P8; `tls` → P9.
+`headers` → P6; `buckets`/`ipv6` → P7; `creds`/`assume-role`/`sts` → P8;
+`tls` → P9.
 Unrecognized argument → ask the user, don't guess.
 
 ---
@@ -179,7 +180,7 @@ dispatch table. Phase index:
 | P5 | Proxy cache: hits, bypass, ignored headers, stale serving, slices |
 | P6 | Header prefix stripping/allowlisting |
 | P7 | Empty-bucket behavior and IPv6 listen directives |
-| P8 | (extended) Credential sources: metadata-mock and secret-file overlays |
+| P8 | (extended) Credential sources: metadata-mock, secret-file, and STS AssumeRole overlays |
 | P9 | (extended) TLS verification of the origin |
 
 The listed probes are the floor, not the ceiling. If a response looks
