@@ -15,6 +15,12 @@ new version of signature or you have a new PR:
 
 ![AWS signature flow across the njs modules](./img/nginx-s3-gateway-signature-flow.png)
 
+The flow above signs proxied client requests. Requests the gateway originates
+itself - the STS `AssumeRole` credential fetch (GH-122) - are signed by
+`awssig4.signRequestV4`, which takes every request component as an explicit
+parameter and bypasses the date-keyed signing-key cache so an `sts`-scoped
+key can never poison the S3 signatures.
+
 ## Extending the Gateway
 
 ### Extending gateway configuration via container images

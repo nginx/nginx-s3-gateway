@@ -241,12 +241,153 @@ function testSignatureV4DebugLogsRedactSecrets() {
     }
 }
 
+function testSignRequestV4Deterministic() {
+    printHeader('testSignRequestV4Deterministic');
+    const r = {
+        log: function(msg) {
+            console.log(msg);
+        }
+    };
+    const timestamp = new Date('2020-08-11T19:42:14Z');
+    const creds = {
+        accessKeyId: 'AKIDEXAMPLE',
+        secretAccessKey: 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb',
+        sessionToken: null
+    };
+    const payload = 'Action=AssumeRole' +
+        '&RoleArn=arn%3Aaws%3Aiam%3A%3A000000000000%3Arole%2Funit-test' +
+        '&RoleSessionName=nginx-s3-gateway&Version=2011-06-15';
+    /* Derived independently of the module (python3):
+       ph = hashlib.sha256(payload.encode()).hexdigest()
+       creq = 'POST\n/\n\nhost:sts.amazonaws.com\n' +
+              'x-amz-content-sha256:' + ph + '\nx-amz-date:20200811T194214Z\n' +
+              '\nhost;x-amz-content-sha256;x-amz-date\n' + ph
+       sts = 'AWS4-HMAC-SHA256\n20200811T194214Z\n' +
+             '20200811/us-east-1/sts/aws4_request\n' + sha256(creq)
+       key = HMAC-chain('AWS4'+secret, '20200811', 'us-east-1', 'sts',
+             'aws4_request'); signature = HMAC(key, sts) */
+    const expectedPayloadHash =
+        'b818483d6616f22f446591f85c8e6d8bfb0de11563bbe8bb9abf134c944d00d0';
+    const expectedAuthHeader = 'AWS4-HMAC-SHA256 ' +
+        'Credential=AKIDEXAMPLE/20200811/us-east-1/sts/aws4_request,' +
+        'SignedHeaders=host;x-amz-content-sha256;x-amz-date,' +
+        'Signature=f09691137c2452c6b53f6810a1a07ed46f32a55ad3619e19da462a0dd338d8f3';
+
+    const signed = awssig4.signRequestV4(r, timestamp, 'us-east-1', 'sts',
+        'POST', '/', '', 'sts.amazonaws.com', payload, creds);
+
+    if (signed.amzDatetime !== '20200811T194214Z') {
+        throw 'signRequestV4 produced the wrong x-amz-date value.\n' +
+        'Actual:   [' + signed.amzDatetime + ']';
+    }
+    if (signed.payloadHash !== expectedPayloadHash) {
+        throw 'signRequestV4 produced the wrong payload hash.\n' +
+        'Actual:   [' + signed.payloadHash + ']\n' +
+        'Expected: [' + expectedPayloadHash + ']';
+    }
+    if (signed.authHeader !== expectedAuthHeader) {
+        throw 'signRequestV4 produced the wrong Authorization header.\n' +
+        'Actual:   [' + signed.authHeader + ']\n' +
+        'Expected: [' + expectedAuthHeader + ']';
+    }
+}
+
+function testSignRequestV4WithSessionToken() {
+    printHeader('testSignRequestV4WithSessionToken');
+    const logs = [];
+    const r = {
+        log: function(msg) {
+            logs.push(msg);
+        }
+    };
+    const sessionToken = 'A_SECURITY_TOKEN';
+    const creds = {
+        accessKeyId: 'AKIDEXAMPLE',
+        secretAccessKey: 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb',
+        sessionToken: sessionToken
+    };
+
+    const signed = awssig4.signRequestV4(r, new Date('2020-08-11T19:42:14Z'),
+        'us-east-1', 'sts', 'POST', '/', '', 'sts.amazonaws.com',
+        'Action=AssumeRole&Version=2011-06-15', creds);
+
+    if (signed.authHeader.indexOf(
+        'SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token,') < 0) {
+        throw 'Session-token source credentials must sign the ' +
+        'x-amz-security-token header.\nActual: [' + signed.authHeader + ']';
+    }
+    const allLogs = logs.join('\n');
+    if (allLogs.indexOf(sessionToken) !== -1) {
+        throw 'Debug logs exposed the raw session token.\nActual:   [' + allLogs + ']';
+    }
+    const signature = signed.authHeader.split('Signature=')[1];
+    if (allLogs.indexOf(signature) !== -1) {
+        throw 'Debug logs exposed the raw request signature.\nActual:   [' + allLogs + ']';
+    }
+}
+
+function testSignRequestV4DoesNotTouchSigningKeyCache() {
+    printHeader('testSignRequestV4DoesNotTouchSigningKeyCache');
+    /* The Plus signing-key cache is keyed by date alone, so an sts-scoped
+       key written there would poison every subsequent S3 signature. Seed a
+       cache entry and prove signRequestV4 neither reads nor replaces it. */
+    const seededCacheEntry = '20200811:"an-s3-scoped-signing-key"';
+    const r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        variables: {
+            cache_signing_key_enabled: 1,
+            signing_key_hash: seededCacheEntry
+        }
+    };
+
+    const signed = awssig4.signRequestV4(r, new Date('2020-08-11T19:42:14Z'),
+        'us-east-1', 'sts', 'POST', '/', '', 'sts.amazonaws.com',
+        'Action=AssumeRole&Version=2011-06-15',
+        {accessKeyId: 'AKIDEXAMPLE',
+            secretAccessKey: 'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb',
+            sessionToken: null});
+
+    if (r.variables.signing_key_hash !== seededCacheEntry) {
+        throw 'signRequestV4 overwrote the signing key cache: [' +
+            r.variables.signing_key_hash + ']';
+    }
+    /* Had the seeded cache entry been read, the signature would not match
+       one derived from the real secret. */
+    const expectedSuffix = ',Signature=' + (function() {
+        const eightDigitDate = '20200811';
+        const key = awssig4._buildSigningKeyHash(
+            'pvgoBEA1z7zZKqN9RoKVksKh31AtNou+pspn+iyb', eightDigitDate,
+            'us-east-1', 'sts');
+        const payloadHash = mod_hmac.createHash('sha256')
+            .update('Action=AssumeRole&Version=2011-06-15').digest('hex');
+        const canonicalRequest = 'POST\n/\n\n' +
+            'host:sts.amazonaws.com\n' +
+            'x-amz-content-sha256:' + payloadHash + '\n' +
+            'x-amz-date:20200811T194214Z\n\n' +
+            'host;x-amz-content-sha256;x-amz-date\n' + payloadHash;
+        const stringToSign = 'AWS4-HMAC-SHA256\n20200811T194214Z\n' +
+            eightDigitDate + '/us-east-1/sts/aws4_request\n' +
+            mod_hmac.createHash('sha256').update(canonicalRequest).digest('hex');
+        return mod_hmac.createHmac('sha256', key)
+            .update(stringToSign).digest('hex');
+    })();
+    if (!signed.authHeader.endsWith(expectedSuffix)) {
+        throw 'signRequestV4 did not derive the signing key from the ' +
+            'credentials (cached key used?).\nActual: [' + signed.authHeader + ']';
+    }
+}
+
 async function test() {
     testBuildSigningKeyHashWithReferenceInputs();
     testBuildSigningKeyHashWithTestSuiteInputs();
     testSignatureV4();
     testSignatureV4Cache();
     testSignatureV4DebugLogsRedactSecrets();
+    testSignRequestV4Deterministic();
+    testSignRequestV4WithSessionToken();
+    testSignRequestV4DoesNotTouchSigningKeyCache();
 }
 
 function printHeader(testName) {

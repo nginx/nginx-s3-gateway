@@ -136,6 +136,21 @@ elif [[ -v S3_SESSION_TOKEN ]]; then
   echo "Deprecated the S3_SESSION_TOKEN! Use the environment variable of AWS_SESSION_TOKEN instead"
   failed=1
 
+# Fetching credentials via STS AssumeRole signed with static credentials
+# (GH-122). Indicated by AWS_ROLE_ARN holding a value without a web identity
+# token file (on EKS both are injected together and web identity keeps
+# precedence). The static credentials sign the AssumeRole request itself, so
+# they are required - and this branch must come before the session-token and
+# IMDS branches so that neither temporary source credentials nor an
+# IMDS-capable host skips the requirement. [ -n ] rather than [[ -v ]] so a
+# set-but-empty variable (e.g. a bare compose pass-through key) counts as
+# unset, matching the njs modules.
+# See https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html
+elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  echo "AWS_ROLE_ARN set without a web identity token file - fetching S3 credentials via STS AssumeRole signed with the configured static credentials"
+  requireStaticCredential "AWS_ACCESS_KEY_ID"
+  requireStaticCredential "AWS_SECRET_ACCESS_KEY"
+
 elif [[ -v AWS_SESSION_TOKEN ]] || [[ -v AWS_SESSION_TOKEN_FILE ]]; then
   echo "S3 Session token specified - not using IMDS for credentials"
 
@@ -150,20 +165,16 @@ elif TOKEN=`curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http:/
 #    Example: We are running inside an EKS cluster with IAM roles for service accounts enabled.
 elif [[ -v AWS_WEB_IDENTITY_TOKEN_FILE ]]; then
   echo "Running inside EKS with IAM roles for service accounts"
-  if [[ ! -v AWS_ROLE_SESSION_NAME ]]; then
-    # The default value is set as a nginx-s3-gateway unless the value is defined.
-    AWS_ROLE_SESSION_NAME="nginx-s3-gateway"
-  fi
+  # The AWS_ROLE_SESSION_NAME default lives in awscredentials.js
+  # (DEFAULT_ROLE_SESSION_NAME): an assignment here can never reach the
+  # nginx master process because this script is executed by the base image
+  # entrypoint, not sourced.
 
 # d) Using EKS pod identity. This is indicated by AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE being set.
 #    See https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html.
 #    Example: We are running inside an EKS cluster with a pod identity configured.
 elif [[ -v AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE ]]; then
   echo "Running inside EKS with EKS pod identity"
-  if [[ ! -v AWS_ROLE_SESSION_NAME ]]; then
-    # The default value is set as a nginx-s3-gateway unless the value is defined.
-    AWS_ROLE_SESSION_NAME="nginx-s3-gateway"
-  fi
 
 elif [[ -v S3_ACCESS_KEY_ID ]]; then
   echo "Deprecated the S3_ACCESS_KEY_ID! Use the environment variable of AWS_ACCESS_KEY_ID instead"
@@ -233,6 +244,14 @@ fi
 # pass-through of an unset variable leaves the variable set but empty).
 if [ "${AWS_SIGS_VERSION}" = "2" ] && { [ -n "${AWS_SESSION_TOKEN:-}" ] || [ -n "${AWS_SESSION_TOKEN_FILE:-}" ]; }; then
   >&2 echo "AWS_SESSION_TOKEN(_FILE) cannot be used with AWS_SIGS_VERSION=2: v2 signatures do not cover the session token, so S3 rejects every request. Use AWS_SIGS_VERSION=4 or remove the session token."
+  failed=1
+fi
+
+# STS AssumeRole always returns temporary credentials whose session token a
+# v2 signature cannot cover - the same failure mode as the AWS_SESSION_TOKEN
+# check above (GH-578/GH-122) - so reject the combination up front.
+if [ "${AWS_SIGS_VERSION}" = "2" ] && [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  >&2 echo "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2: STS AssumeRole always yields a session token, which v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4."
   failed=1
 fi
 

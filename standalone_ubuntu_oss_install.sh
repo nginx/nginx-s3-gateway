@@ -36,6 +36,23 @@ required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 if [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
   echo "Running inside an ECS task, using container credentials"
   uses_iam_creds=1
+# Fetching credentials via STS AssumeRole signed with static credentials
+# (GH-122): AWS_ROLE_ARN holds a value and no web identity token file is
+# configured. The static credentials sign the AssumeRole request itself, so
+# they are required, and the check must precede the IMDS probes so an
+# IMDS-capable host does not skip it.
+elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  echo "AWS_ROLE_ARN set without a web identity token file - fetching S3 credentials via STS AssumeRole signed with the configured static credentials"
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
+    file_name="${name}_FILE"
+    if [ -z ${!name+x} ] && [ -z ${!file_name+x} ]; then
+      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
+      failed=1
+    fi
+  done
+  # Static credentials plus the STS variables must be written into the
+  # environment file below, exactly as in the plain static-credential mode.
+  uses_iam_creds=0
 elif TOKEN=$(curl -X PUT --silent --fail --connect-timeout 2 --max-time 2 "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600") && \
   curl -H "X-aws-ec2-metadata-token: $TOKEN" --output /dev/null --silent --head --fail --connect-timeout 2 --max-time 5 "http://169.254.169.254"; then 
   echo "Running inside an EC2 instance, using IMDSv2 for credentials"
@@ -205,6 +222,15 @@ if [ "${AWS_SIGS_VERSION}" = "2" ] && { [ -n "${AWS_SESSION_TOKEN:-}" ] || [ -n 
   failed=1
 fi
 
+# STS AssumeRole always returns temporary credentials whose session token a
+# v2 signature cannot cover - the same failure mode as the AWS_SESSION_TOKEN
+# check above (GH-578/GH-122) - so reject the combination up front. This
+# mirrors the check in common/docker-entrypoint.d/00-check-for-required-env.sh.
+if [ "${AWS_SIGS_VERSION}" = "2" ] && [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  >&2 echo "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2: STS AssumeRole always yields a session token, which v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4."
+  failed=1
+fi
+
 # PREFIX_LEADING_DIRECTORY_PATH is rendered verbatim into the nginx
 # configuration: into the request-path map and into listing.xsl's
 # xslt_string_param, which wraps the value in single quotes. A single quote
@@ -304,6 +330,14 @@ elif [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
   echo "Access Key ID: (read from ${AWS_ACCESS_KEY_ID_FILE})"
 else
   echo "Access Key ID: "
+fi
+# The role ARN is only honored in AssumeRole mode (static credentials, no web
+# identity token file - GH-122), so report the effective state rather than
+# the raw variable. Mirrors common/docker-entrypoint.d/99-output-settings.sh.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+  echo "STS AssumeRole: enabled (${AWS_ROLE_ARN})"
+else
+  echo "STS AssumeRole: disabled"
 fi
 echo "Origin: ${S3_SERVER_PROTO}://${S3_UPSTREAM}"
 echo "Host Header: ${S3_HOST_HEADER}"
@@ -546,6 +580,39 @@ EOF
 # AWS Session Token
 AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
 EOF
+  fi
+  # AssumeRole mode (GH-122): the role ARN and its optional STS companions
+  # must reach the njs modules through the environment file, exactly like the
+  # static credentials that sign the AssumeRole call.
+  if [ -n "${AWS_ROLE_ARN:-}" ]; then
+    cat >> "/etc/nginx/environment" << EOF
+# IAM role assumed via STS AssumeRole to obtain the S3 credentials
+AWS_ROLE_ARN=${AWS_ROLE_ARN}
+EOF
+    if [ -n "${AWS_ROLE_SESSION_NAME:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Role session name for the STS AssumeRole call
+AWS_ROLE_SESSION_NAME=${AWS_ROLE_SESSION_NAME}
+EOF
+    fi
+    if [ -n "${STS_ENDPOINT:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Explicit STS endpoint override for the AssumeRole call
+STS_ENDPOINT=${STS_ENDPOINT}
+EOF
+    fi
+    if [ -n "${AWS_STS_REGIONAL_ENDPOINTS:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# STS endpoint model (global or regional) for the AssumeRole call
+AWS_STS_REGIONAL_ENDPOINTS=${AWS_STS_REGIONAL_ENDPOINTS}
+EOF
+    fi
+    if [ -n "${AWS_REGION:-}" ]; then
+      cat >> "/etc/nginx/environment" << EOF
+# Region used to derive the regional STS endpoint and its signature scope
+AWS_REGION=${AWS_REGION}
+EOF
+    fi
   fi
 fi
 

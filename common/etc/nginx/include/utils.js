@@ -22,6 +22,23 @@
 const fs = require('fs');
 
 /**
+ * The current moment as a timestamp. This timestamp will be used across
+ * functions in order for there to be no variations in signatures.
+ *
+ * This constant exists solely for signature-timestamp stability and is stable
+ * per njs VM context, not per wall-clock moment. Never use it for freshness
+ * or expiry decisions: if module scope persists across requests (e.g. the
+ * QuickJS engine with context reuse), it freezes at context-creation time.
+ *
+ * It lives here rather than in awscredentials.js so that awssig4.js can read
+ * it without importing awscredentials.js - njs cannot resolve circular
+ * imports, and awscredentials.js needs to import awssig4.js to sign its STS
+ * requests.
+ * @type {Date}
+ */
+const NOW = new Date();
+
+/**
  * Flag indicating debug mode operation. If true, additional information
  * about signature generation will be logged.
  * @type {boolean}
@@ -42,8 +59,8 @@ const ENV_VAR_FILE_SUFFIX = '_FILE';
  * Values already read from the files named by '<setting>_FILE' environment
  * variables, keyed by setting name. Reading once means the several credential
  * lookups made while serving a single request share one file read. As with the
- * NOW constant in awscredentials.js, module scope lasts as long as the njs VM
- * context rather than the worker process, so this is not a cross-request cache.
+ * NOW constant above, module scope lasts as long as the njs VM context rather
+ * than the worker process, so this is not a cross-request cache.
  * @type {Object.<string, string>}
  */
 let envVarFileCache = {};
@@ -236,6 +253,20 @@ function getEightDigitDate(timestamp) {
         padWithLeadingZeros(day,2));
 }
 
+/**
+ * Get the timestamp used across functions in order for there to be no
+ * variations in signatures.
+ *
+ * The returned value is the module-level NOW constant, which is stable per
+ * njs VM context rather than the current wall-clock moment. Never use it for
+ * freshness or expiry decisions - see the note on NOW.
+ *
+ * @returns {Date} signature-stable timestamp for the current VM context
+ */
+function Now() {
+    return NOW;
+}
+
 
 /**
  * Checks to see if the given environment variable is present. If not, an error
@@ -252,6 +283,7 @@ function requireEnvVar(envVarName) {
 }
 
 export default {
+    Now,
     areAllEnvVarsSet,
     debug_log,
     debugEnabled: DEBUG,

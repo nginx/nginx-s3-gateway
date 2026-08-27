@@ -6,6 +6,7 @@
 [Running as a Systemd Service](#running-as-a-systemd-service)  
 [Running in Containers](#running-in-containers)  
 [Supplying Credentials from Files (Docker Secrets)](#supplying-credentials-from-files-docker-secrets)  
+[Fetching S3 Credentials via STS AssumeRole](#fetching-s3-credentials-via-sts-assumerole)  
 [Running Using AWS Instance Profile Credentials](#running-using-aws-instance-profile-credentials)  
 [Running on EKS with IAM roles for service accounts](#running-on-eks-with-iam-roles-for-service-accounts)  
 [Running on EKS with EKS Pod Identities](#running-on-eks-with-eks-pod-identities)  
@@ -78,7 +79,14 @@ file.
 
 There are few optional environment variables that can be used.
 
-- `AWS_ROLE_SESSION_NAME` - (optional) The value will be used for Role Session Name. The default value is nginx-s3-gateway.
+- `AWS_ROLE_ARN` - (optional) When set together with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and without
+  `AWS_WEB_IDENTITY_TOKEN_FILE`), the gateway does not sign S3 requests with the static credentials directly.
+  Instead it calls [STS `AssumeRole`](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) with
+  them and signs S3 requests with the returned temporary credentials, refreshing them automatically before they
+  expire. Requires `AWS_SIGS_VERSION=4`. See
+  [Fetching S3 Credentials via STS AssumeRole](#fetching-s3-credentials-via-sts-assumerole).
+- `AWS_ROLE_SESSION_NAME` - (optional) Role session name for the STS `AssumeRole` and `AssumeRoleWithWebIdentity`
+  calls. The default value is `nginx-s3-gateway`. AWS restricts the value to 2-64 characters of `[\w+=,.@-]`.
 - `STS_ENDPOINT` - (optional) Overrides the STS endpoint to be used in applicable setups. This is not required when
   running on EKS. See the EKS portion of the guide below for more details.
 - `AWS_STS_REGIONAL_ENDPOINTS` - (optional) Allows for a regional STS endpoint to be
@@ -617,6 +625,36 @@ Notes:
 - This is not specific to containers: the same variables work for the
   [Systemd service](#running-as-a-systemd-service) install, which records the path in `/etc/nginx/environment`
   rather than the secret itself.
+
+## Fetching S3 Credentials via STS AssumeRole
+
+When a fixed IAM user (or an S3-compatible store account) should not access the bucket directly but is allowed to
+assume a role that can, set `AWS_ROLE_ARN` alongside the static credentials:
+
+```text
+AWS_ACCESS_KEY_ID=AKIA...            # or AWS_ACCESS_KEY_ID_FILE=...
+AWS_SECRET_ACCESS_KEY=...            # or AWS_SECRET_ACCESS_KEY_FILE=...
+AWS_ROLE_ARN=arn:aws:iam::123456789012:role/s3-read-only
+AWS_SIGS_VERSION=4
+```
+
+On the first proxied request the gateway sends a SigV4-signed
+[`AssumeRole`](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) call (a form-encoded `POST`,
+exactly as the AWS SDKs send it) to the STS endpoint, caches the returned temporary credentials in memory (never on
+disk), and signs S3 requests with them. The credentials are refreshed shortly before they expire. Notes:
+
+- The STS endpoint is chosen the same way as for EKS web identity: `STS_ENDPOINT` when set, otherwise
+  `https://sts.<AWS_REGION>.amazonaws.com` when `AWS_STS_REGIONAL_ENDPOINTS=regional`, otherwise the global
+  `https://sts.amazonaws.com` endpoint. For an S3-compatible store that implements the STS API (for example MinIO
+  or RustFS), point `STS_ENDPOINT` at the store itself, e.g. `STS_ENDPOINT=https://my-store:9000`.
+- `AWS_ROLE_SESSION_NAME` customizes the session name (default `nginx-s3-gateway`).
+- Requires `AWS_SIGS_VERSION=4`: `AssumeRole` always returns a session token, which v2 signatures cannot cover;
+  the container refuses to start otherwise.
+- If `AWS_WEB_IDENTITY_TOKEN_FILE` is also set (as EKS does), the static credentials win outright and neither STS
+  call is made - remove the static credentials to use
+  [web identity](#running-on-eks-with-iam-roles-for-service-accounts) instead.
+- When `STS_ENDPOINT` uses HTTPS with a private CA, set `JS_TRUSTED_CERT_PATH` - credential calls verify against
+  it, not `S3_TRUSTED_CERT_PATH`.
 
 ## Running Using AWS Instance Profile Credentials
 

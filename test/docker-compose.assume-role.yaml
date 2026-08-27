@@ -1,0 +1,19 @@
+# Overlay that switches the gateway to AssumeRole mode (GH-122): the static
+# credentials belong to a dedicated non-root RustFS user created by
+# integration_test_assume_role in run_integration_tests.sh, and only sign the
+# STS AssumeRole call - S3 requests must be signed with the temporary
+# credentials the STS endpoint returns.
+#
+# The nulls only mean "inherit from the shell" to compose, not "unset", so the
+# runner also has to scrub AWS_SESSION_TOKEN from its own environment before
+# invoking compose - the same trap documented for the dynamic-credentials
+# overlay.
+services:
+  nginx-s3-gateway:
+    environment:
+      AWS_ACCESS_KEY_ID: "assume-role-user"
+      AWS_SECRET_ACCESS_KEY: "assume-role-secret-key-0000"
+      AWS_SESSION_TOKEN: null
+      AWS_ROLE_ARN: "arn:aws:iam::000000000000:role/nginx-s3-gateway-test"
+      STS_ENDPOINT: "http://${TEST_S3_SERVER:-rustfs}:${TEST_S3_SERVER_PORT:-9000}"
+      AWS_REGION: "us-east-1"
