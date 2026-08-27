@@ -648,8 +648,8 @@ disk), and signs S3 requests with them. The credentials are refreshed shortly be
 
 - The STS endpoint is chosen the same way as for EKS web identity: `STS_ENDPOINT` when set, otherwise
   `https://sts.<AWS_REGION>.amazonaws.com` when `AWS_STS_REGIONAL_ENDPOINTS=regional`, otherwise the global
-  `https://sts.amazonaws.com` endpoint. For an S3-compatible store that implements the STS API (for example MinIO
-  or RustFS), point `STS_ENDPOINT` at the store itself, e.g. `STS_ENDPOINT=https://my-store:9000`.
+  `https://sts.amazonaws.com` endpoint. For an S3-compatible store that implements the STS API (RustFS, for
+  example), point `STS_ENDPOINT` at the store itself, e.g. `STS_ENDPOINT=https://my-store:9000`.
 - The `AssumeRole` request is signed with `AWS_REGION` when set, otherwise with `S3_REGION`, otherwise with
   `us-east-1`. AWS validates that the signature's region matches the endpoint it is sent to, so when `STS_ENDPOINT`
   points at an AWS endpoint in a different region than the bucket, set `AWS_REGION` to the endpoint's region.

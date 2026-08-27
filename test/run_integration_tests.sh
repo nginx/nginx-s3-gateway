@@ -772,9 +772,9 @@ integration_test_assume_role() {
   seed_origin_data
 
   # Create the non-root user whose keys sign the AssumeRole call. RustFS
-  # exposes a MinIO-admin-compatible API, so the stock mc admin tooling
-  # works against the alias seed_origin_data registered. The stack was
-  # brought down with --volumes first, so the user never pre-exists.
+  # exposes an admin API compatible with mc's admin subcommands, addressed
+  # through the alias seed_origin_data registered. The stack was brought
+  # down with --volumes first, so the user never pre-exists.
   p "Creating the AssumeRole caller on the origin"
   "${mc_cmd}" admin user add "$s3_origin_container" "$assume_role_user" "$assume_role_passwd"
   "${mc_cmd}" admin policy attach "$s3_origin_container" readonly --user "$assume_role_user"
