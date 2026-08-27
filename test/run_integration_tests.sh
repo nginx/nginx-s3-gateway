@@ -387,6 +387,22 @@ integration_test_listen_directives() {
   fi
 }
 
+# Proves the gateway actually ran with the AWS signatures version ($1) the
+# leg was configured for: a leg that silently started with the wrong version
+# would pass its assertions without exercising the signing path it exists to
+# test. `|| true` because grep -c exits 1 on a count of zero, which must
+# reach the check below rather than abort the script through errexit before
+# it can print the diagnostic.
+assert_gateway_sig_version() {
+  sig_versions_found_count=$(compose logs nginx-s3-gateway | grep -c "AWS Signatures Version: v$1\|AWS v$1 Auth" || true)
+
+  if [ "${sig_versions_found_count}" -lt 3 ]; then
+    e "NGINX was not detected as using the correct signatures version - examine logs"
+    compose logs nginx-s3-gateway
+    exit "$test_fail_exit_code"
+  fi
+}
+
 integration_test() {
   printf "\033[34;1m▶\033[0m"
   printf "\e[1m Integration test suite for v%s signatures\e[22m\n" "$1"
@@ -416,16 +432,8 @@ integration_test() {
   bash "${test_dir}/integration/test_api.sh" "${test_server}" "${test_dir}" "$1" "$2" "$3" "$4" "$5" "$6";
 
   # We check to see if NGINX is in fact using the correct version of AWS
-  # signatures as it was configured to do. `|| true` because grep -c exits 1
-  # on a count of zero, which must reach the check below rather than abort
-  # the script through errexit before it can print the diagnostic.
-  sig_versions_found_count=$(compose logs nginx-s3-gateway | grep -c "AWS Signatures Version: v$1\|AWS v$1 Auth" || true)
-
-  if [ "${sig_versions_found_count}" -lt 3 ]; then
-    e "NGINX was not detected as using the correct signatures version - examine logs"
-    compose logs nginx-s3-gateway
-    exit "$test_fail_exit_code"
-  fi
+  # signatures as it was configured to do.
+  assert_gateway_sig_version "$1"
 }
 
 integration_test_directory_listing_pagination() {
@@ -451,16 +459,8 @@ integration_test_directory_listing_pagination() {
 
   # The same signature-version proof integration_test performs: the v2 leg
   # exists to exercise marker signing under SigV2, which is only proven if
-  # the gateway actually ran with v2 signatures. `|| true` because grep -c
-  # exits 1 on a count of zero, which must reach the check below rather
-  # than abort the script through errexit before it prints the diagnostic.
-  sig_versions_found_count=$(compose logs nginx-s3-gateway | grep -c "AWS Signatures Version: v${sigs_version}\|AWS v${sigs_version} Auth" || true)
-
-  if [ "${sig_versions_found_count}" -lt 3 ]; then
-    e "NGINX was not detected as using the correct signatures version - examine logs"
-    compose logs nginx-s3-gateway
-    exit "$test_fail_exit_code"
-  fi
+  # the gateway actually ran with v2 signatures.
+  assert_gateway_sig_version "${sigs_version}"
 }
 
 integration_test_cache_bypass() {
@@ -489,7 +489,7 @@ integration_test_cache_bypass() {
   # container, which discards the proxy cache so that each phase starts with
   # an empty cache.
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" compose up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" compose up -d
 
   wait_for_gateway
 
@@ -518,7 +518,7 @@ integration_test_cache_ignore_headers() {
   # environment makes compose recreate the gateway container, which discards
   # the proxy cache so that each phase starts with an empty cache.
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" PROXY_CACHE_BYPASS_NO_CACHE=false PROXY_CACHE_IGNORE_HEADERS="${ignore_headers}" compose up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" PROXY_CACHE_BYPASS_NO_CACHE=false PROXY_CACHE_IGNORE_HEADERS="${ignore_headers}" compose up -d
 
   wait_for_gateway
 
@@ -548,7 +548,7 @@ integration_test_cors() {
   # normalized "1" so the leg also exercises the parseBoolean path in
   # 01-set-defaults.envsh.
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" CORS_ENABLED=true CORS_ALLOWED_ORIGIN="${cors_test_origin}" compose up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" CORS_ENABLED=true CORS_ALLOWED_ORIGIN="${cors_test_origin}" compose up -d
 
   wait_for_gateway
 
@@ -606,7 +606,7 @@ start_tls_gateway() {
   tls_s3_server=${3:-minio}
   export TEST_S3_TRUSTED_CERT_PATH="${trusted_cert_path}"
   export TEST_S3_SERVER="${tls_s3_server}"
-  COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose up -d
+  COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose up -d
   wait_for_gateway
 }
 
@@ -654,7 +654,7 @@ integration_test_dynamic_credentials() {
   compose_dynamic_credentials down --volumes --remove-orphans || true
   set_http_test_origin
 
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose_dynamic_credentials up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
   wait_for_gateway
   seed_minio_data
 
@@ -697,7 +697,7 @@ integration_test_secret_file_credentials() {
   printf '%s\n' "${minio_passwd}" > "${test_secrets_dir}/aws_secret_access_key"
   chmod 0444 "${test_secrets_dir}"/aws_*
 
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" compose_secret_file_credentials up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_secret_file_credentials up -d
   wait_for_gateway
   seed_minio_data
 

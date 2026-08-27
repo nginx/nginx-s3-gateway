@@ -142,6 +142,23 @@ assert_next_marker_starts_with() {
   esac
 }
 
+# Asserts that a slashless directory request ($1) draws the append-slash
+# redirect with the marker preserved: Location must equal $2. "|| true": a
+# transport-level curl failure must reach the Location check's diagnostic
+# instead of aborting via errexit with curl's raw exit code.
+assert_redirect_location() {
+  path_and_query=$1
+  expected_location=$2
+  message=$3
+  ${curl_cmd} -s -D "${tmp_dir}/headers.txt" -o /dev/null "${test_server}${path_and_query}" || true
+  location="$(tr -d '\r' < "${tmp_dir}/headers.txt" | awk 'tolower($1) == "location:" { print $2 }')"
+  if [ "${location}" != "${expected_location}" ]; then
+    e "FAIL: ${message}: Location is [${location}], expected [${expected_location}]"
+    tr -d '\r' < "${tmp_dir}/headers.txt" >&2
+    exit ${test_fail_exit_code}
+  fi
+}
+
 if [ -n "${prefix_leading_directory_path}" ]; then
   # PREFIX_LEADING_DIRECTORY_PATH leg (the runner passes "/b"): the client
   # root lists the internal prefix, and neither the rendered links nor the
@@ -166,16 +183,9 @@ if [ -n "${prefix_leading_directory_path}" ]; then
   # The append-slash redirect must preserve the marker under the prefix
   # rewrite too: the internal /b prefix is prepended to /c before the S3
   # 404 routes to @trailslash, and the Location must stay client-facing
-  # (built from $uri, never from the rewritten $uri_path). "|| true": a
-  # transport failure must reach the Location check's diagnostic instead
-  # of aborting via errexit with curl's raw exit code.
-  ${curl_cmd} -s -D "${tmp_dir}/headers.txt" -o /dev/null "${test_server}/c?marker=e.txt" || true
-  location="$(tr -d '\r' < "${tmp_dir}/headers.txt" | awk 'tolower($1) == "location:" { print $2 }')"
-  if [ "${location}" != "/c/?marker=e.txt" ]; then
-    e "FAIL: prefixed append-slash redirect dropped or rewrote the marker: Location is [${location}], expected [/c/?marker=e.txt]"
-    tr -d '\r' < "${tmp_dir}/headers.txt" >&2
-    exit ${test_fail_exit_code}
-  fi
+  # (built from $uri, never from the rewritten $uri_path).
+  assert_redirect_location "/c?marker=e.txt" "/c/?marker=e.txt" \
+    "prefixed append-slash redirect dropped or rewrote the marker"
 
   exit 0
 fi
@@ -289,15 +299,8 @@ fetch_expecting "/b/?marker=%F4%8F%BF%BF" "200"
 assert_page_contains 'No Files Available for Listing' "past-the-end marker renders the empty listing"
 
 # The append-slash redirect must preserve the marker so a paginated URL
-# without the trailing slash still resolves to the right page. "|| true":
-# a transport failure must reach the Location check's diagnostic instead
-# of aborting via errexit with curl's raw exit code.
-${curl_cmd} -s -D "${tmp_dir}/headers.txt" -o /dev/null "${test_server}/b?marker=e.txt" || true
-location="$(tr -d '\r' < "${tmp_dir}/headers.txt" | awk 'tolower($1) == "location:" { print $2 }')"
-if [ "${location}" != "/b/?marker=e.txt" ]; then
-  e "FAIL: append-slash redirect dropped the marker: Location is [${location}], expected [/b/?marker=e.txt]"
-  tr -d '\r' < "${tmp_dir}/headers.txt" >&2
-  exit ${test_fail_exit_code}
-fi
+# without the trailing slash still resolves to the right page.
+assert_redirect_location "/b?marker=e.txt" "/b/?marker=e.txt" \
+  "append-slash redirect dropped the marker"
 
 e "  directory listing pagination probes passed"
