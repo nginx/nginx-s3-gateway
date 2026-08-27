@@ -162,6 +162,62 @@ function testSignatureV4Cache() {
     _runSignatureV4(r);
 }
 
+function testSignatureV4CacheInvalidatedOnCredentialRotation() {
+    printHeader('testSignatureV4CacheInvalidatedOnCredentialRotation');
+    /* Regression (GH-122): the signing-key cache was keyed by date alone, so
+       when temporary credentials rotate within a day (an AssumeRole refresh,
+       an IMDS/ECS rotation) the key derived from the previous secret kept
+       signing requests until the UTC date rolled over, failing every one of
+       them with SignatureDoesNotMatch. */
+    const timestamp = new Date('2020-08-11T19:42:14Z');
+    const eightDigitDate = utils.getEightDigitDate(timestamp);
+    const amzDatetime = utils.getAmzDatetime(timestamp, eightDigitDate);
+    const region = 'us-west-2';
+    const service = 's3';
+    const canonicalRequest = 'GET\n/\n\nhost:example.com\n\nhost\npayload-hash';
+    const r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+        variables: {
+            cache_signing_key_enabled: 1
+        }
+    };
+    const credsA = {accessKeyId: 'AKIDROTATIONFIRST',
+        secretAccessKey: 'first-rotation-secret', sessionToken: null};
+    const credsB = {accessKeyId: 'AKIDROTATIONSECOND',
+        secretAccessKey: 'second-rotation-secret', sessionToken: null};
+
+    const signatureA = awssig4._buildSignatureV4(r,
+        amzDatetime, eightDigitDate, credsA, region, service, canonicalRequest);
+    const expectedToken = eightDigitDate + '.' + credsA.accessKeyId + ':';
+    if (r.variables.signing_key_hash.indexOf(expectedToken) !== 0) {
+        throw 'Cache entry is not bound to the access key id.\n' +
+        'Actual:   [' + r.variables.signing_key_hash + ']\n' +
+        'Expected: [' + expectedToken + '...]';
+    }
+
+    const signatureB = awssig4._buildSignatureV4(r,
+        amzDatetime, eightDigitDate, credsB, region, service, canonicalRequest);
+    /* Derived without the cache in play: a stale cached key would produce a
+       different signature for the rotated secret. */
+    const kSigningB = awssig4._buildSigningKeyHash(
+        credsB.secretAccessKey, eightDigitDate, region, service);
+    const expectedStringToSignB = 'AWS4-HMAC-SHA256\n' + amzDatetime + '\n' +
+        eightDigitDate + '/' + region + '/' + service + '/aws4_request\n' +
+        mod_hmac.createHash('sha256').update(canonicalRequest).digest('hex');
+    const expectedSignatureB = mod_hmac.createHmac('sha256', kSigningB)
+        .update(expectedStringToSignB).digest('hex');
+    if (signatureB !== expectedSignatureB) {
+        throw 'Rotated credentials were signed with a stale cached key.\n' +
+        'Actual:   [' + signatureB + ']\n' +
+        'Expected: [' + expectedSignatureB + ']';
+    }
+    if (signatureA === signatureB) {
+        throw 'Rotation must produce a different signature for a different secret';
+    }
+}
+
 function testSignatureV4DebugLogsRedactSecrets() {
     printHeader('testSignatureV4DebugLogsRedactSecrets');
     const logs = [];
@@ -384,6 +440,7 @@ async function test() {
     testBuildSigningKeyHashWithTestSuiteInputs();
     testSignatureV4();
     testSignatureV4Cache();
+    testSignatureV4CacheInvalidatedOnCredentialRotation();
     testSignatureV4DebugLogsRedactSecrets();
     testSignRequestV4Deterministic();
     testSignRequestV4WithSessionToken();

@@ -74,12 +74,18 @@ isReadableByNginxWorker() {
   su -s /bin/sh "${nginx_worker_user}" -c 'test -r "$1"' sh "${probe_path}"
 }
 
-# Fails when neither form of a static credential is configured.
+# Fails when neither form of a static credential is configured. Both forms
+# are tested by value, not presence: the njs modules treat a set-but-empty
+# variable (e.g. a bare compose pass-through key of an unset host variable)
+# as unconfigured and would fall through to the instance credential
+# providers at request time, so accepting one here would start a gateway
+# whose every request fails - in a credential mode other than the one this
+# script just announced.
 requireStaticCredential() {
   name=$1
   file_name="${name}_FILE"
 
-  if [[ ! -v $name ]] && [[ ! -v $file_name ]]; then
+  if [ -z "${!name:-}" ] && [ -z "${!file_name:-}" ]; then
     >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
     failed=1
   fi

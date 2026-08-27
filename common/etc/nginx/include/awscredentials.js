@@ -183,25 +183,36 @@ function _readStaticCredentials() {
 /**
  * Reports whether the gateway is configured to obtain S3 credentials by
  * calling STS AssumeRole signed with the statically configured credentials
- * (GH-122). Active when AWS_ROLE_ARN holds a value (a set-but-empty
- * variable, e.g. from a bare compose pass-through key, counts as unset), no
- * web identity token file is configured (web identity keeps precedence - on
- * EKS both variables are injected together), and static credentials exist to
- * sign the STS request with. Without static credentials the role ARN is
+ * (GH-122). Active when AWS_ROLE_ARN holds a value, no web identity token
+ * file is configured (web identity keeps precedence - on EKS both variables
+ * are injected together, always with values), and static credentials exist
+ * to sign the STS request with. Without static credentials the role ARN is
  * ignored and the instance credential providers apply as before.
  *
+ * Both environment variables are tested by value, not presence: a
+ * set-but-empty variable (e.g. a bare compose pass-through key of an unset
+ * host variable) counts as unset, matching the entrypoint guards in
+ * 00-check-for-required-env.sh - presence semantics here would silently
+ * flip the gateway into a different credential mode than the one those
+ * guards validated and the settings banner reported.
+ *
+ * @param staticCredentials {Credentials|undefined} result of a
+ *        _readStaticCredentials() call the caller already made; omit to have
+ *        the credentials read here
  * @returns {boolean} true when AssumeRole mode is active
  * @private
  */
-function _isAssumeRoleMode() {
+function _isAssumeRoleMode(staticCredentials) {
     if (!process.env['AWS_ROLE_ARN']) {
         return false;
     }
-    /* Same presence semantics as the provider ladder in fetchCredentials. */
-    if (utils.areAllEnvVarsSet('AWS_WEB_IDENTITY_TOKEN_FILE')) {
+    if (process.env['AWS_WEB_IDENTITY_TOKEN_FILE']) {
         return false;
     }
-    return _readStaticCredentials() !== undefined;
+    if (staticCredentials === undefined) {
+        staticCredentials = _readStaticCredentials();
+    }
+    return staticCredentials !== undefined;
 }
 
 /**
@@ -213,12 +224,12 @@ function _isAssumeRoleMode() {
 function readCredentials(r) {
     /* In AssumeRole mode the static credentials only sign the STS call; S3
        requests must be signed with the assumed temporary credentials from
-       the cache instead (GH-122). */
-    if (!_isAssumeRoleMode()) {
-        const staticCredentials = _readStaticCredentials();
-        if (staticCredentials !== undefined) {
-            return staticCredentials;
-        }
+       the cache instead (GH-122). The credentials are read once and handed
+       to the mode predicate so this per-request path does not repeat the
+       environment (and, with _FILE variables, file) lookups. */
+    const staticCredentials = _readStaticCredentials();
+    if (staticCredentials !== undefined && !_isAssumeRoleMode(staticCredentials)) {
+        return staticCredentials;
     }
     if ("variables" in r && r.variables.cache_instance_credentials_enabled == 1) {
         return _readCredentialsFromKeyValStore(r);
@@ -284,7 +295,8 @@ function writeCredentials(r, credentials) {
        do not need instance credentials. In AssumeRole mode the assumed
        temporary credentials must be cached even though static credentials
        are configured (GH-122). */
-    if (_readStaticCredentials() !== undefined && !_isAssumeRoleMode()) {
+    const staticCredentials = _readStaticCredentials();
+    if (staticCredentials !== undefined && !_isAssumeRoleMode(staticCredentials)) {
         return;
     }
 
@@ -363,8 +375,11 @@ async function fetchCredentials(r) {
     /* If we are not using an AWS instance profile to set our credentials we
        exit quickly and don't write a credentials file. In AssumeRole mode
        the static credentials are only the input to the STS call, so the
-       fetch-and-cache flow below still applies (GH-122). */
-    if (_readStaticCredentials() !== undefined && !_isAssumeRoleMode()) {
+       fetch-and-cache flow below still applies (GH-122). Both values are
+       computed once here and reused by the provider ladder below. */
+    const staticCredentials = _readStaticCredentials();
+    const assumeRoleMode = _isAssumeRoleMode(staticCredentials);
+    if (staticCredentials !== undefined && !assumeRoleMode) {
         r.return(200);
         return;
     }
@@ -404,11 +419,14 @@ async function fetchCredentials(r) {
        static credentials are configured (matching the AWS SDKs, where
        environment credentials win), and _isAssumeRoleMode already yields to
        web identity when both are configured. */
-    if (_isAssumeRoleMode()) {
+    if (assumeRoleMode) {
         try {
-            credentials = await _fetchAssumeRoleCredentials(r);
+            credentials = await _fetchAssumeRoleCredentials(r, staticCredentials);
         } catch (e) {
-            utils.debug_log(r, `Could not assume role using static credentials: ${e}`);
+            /* A failing STS call turns every request into a 500, so surface
+               it at error level rather than only under DEBUG - the same
+               contract as the cache read/write failures above and below. */
+            r.error(`Could not assume role using static credentials: ${e}`);
             r.return(500);
             return;
         }
@@ -674,8 +692,18 @@ function _getStsEndpoint() {
 function _parseStsEndpointUrl(endpoint) {
     const schemeSeparator = '://';
     const schemeEnd = endpoint.indexOf(schemeSeparator);
-    if (schemeEnd < 0) {
+    const scheme = schemeEnd < 0 ? '' : endpoint.slice(0, schemeEnd).toLowerCase();
+    if (scheme !== 'http' && scheme !== 'https') {
         throw `STS endpoint is not an absolute http(s) URL (${endpoint})`;
+    }
+    /* A query string or fragment cannot be represented in the canonical
+       request this parser feeds (the query would be signed as part of the
+       path, or worse, of the Host header when the URL has no path), so the
+       signature would never verify. Reject the endpoint with a clear
+       message instead of failing every AssumeRole call with an opaque
+       SignatureDoesNotMatch. */
+    if (endpoint.indexOf('?') >= 0 || endpoint.indexOf('#') >= 0) {
+        throw `STS endpoint must not contain a query string or fragment (${endpoint})`;
     }
     const hostAndPath = endpoint.slice(schemeEnd + schemeSeparator.length);
     const pathStart = hostAndPath.indexOf('/');
@@ -712,8 +740,20 @@ function _parseAssumeRoleResponse(responseBody) {
     const response = doc.AssumeRoleResponse;
     const result = response ? response.AssumeRoleResult : undefined;
     const credentials = result ? result.Credentials : undefined;
-    if (!credentials || !credentials.AccessKeyId || !credentials.SecretAccessKey ||
-        !credentials.SessionToken || !credentials.Expiration) {
+    /* Validate the element text, not the elements: an empty element
+       (<SessionToken/>) is a truthy XMLNode whose $text is '', and an empty
+       credential field would be cached and then fail every S3 request as an
+       opaque 403 (or, for Expiration, parse as NaN and defeat the refresh
+       check entirely). */
+    const accessKeyId = credentials && credentials.AccessKeyId ?
+        credentials.AccessKeyId.$text : undefined;
+    const secretAccessKey = credentials && credentials.SecretAccessKey ?
+        credentials.SecretAccessKey.$text : undefined;
+    const sessionToken = credentials && credentials.SessionToken ?
+        credentials.SessionToken.$text : undefined;
+    const expiration = credentials && credentials.Expiration ?
+        credentials.Expiration.$text : undefined;
+    if (!accessKeyId || !secretAccessKey || !sessionToken || !expiration) {
         /* The body is deliberately not included in the message: a
            wrong-but-2xx response could still contain credential material. */
         throw 'STS AssumeRole response is missing the ' +
@@ -721,10 +761,10 @@ function _parseAssumeRoleResponse(responseBody) {
     }
 
     return {
-        accessKeyId: credentials.AccessKeyId.$text,
-        secretAccessKey: credentials.SecretAccessKey.$text,
-        sessionToken: credentials.SessionToken.$text,
-        expiration: credentials.Expiration.$text,
+        accessKeyId: accessKeyId,
+        secretAccessKey: secretAccessKey,
+        sessionToken: sessionToken,
+        expiration: expiration,
     };
 }
 
@@ -737,13 +777,14 @@ function _parseAssumeRoleResponse(responseBody) {
  *
  * @see {@link https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html | AssumeRole}
  * @param r {NginxHTTPRequest} HTTP request object (used only for debug logging)
+ * @param sourceCredentials {Credentials} statically configured credentials
+ *        that sign the AssumeRole call (already read by fetchCredentials)
  * @returns {Promise<Credentials>}
  * @private
  */
-async function _fetchAssumeRoleCredentials(r) {
+async function _fetchAssumeRoleCredentials(r, sourceCredentials) {
     const arn = process.env['AWS_ROLE_ARN'];
     const sessionName = process.env['AWS_ROLE_SESSION_NAME'] || DEFAULT_ROLE_SESSION_NAME;
-    const sourceCredentials = _readStaticCredentials();
     const sts = _getStsEndpoint();
     const url = _parseStsEndpointUrl(sts.endpoint);
 
@@ -781,11 +822,27 @@ async function _fetchAssumeRoleCredentials(r) {
         method: 'POST',
     });
     if (!response.ok) {
-        const errorBody = (await response.text()).slice(0, STS_ERROR_BODY_MAX_LENGTH);
-        throw `STS AssumeRole response was not ok (status: ${response.status}, body: ${errorBody}).`;
+        throw await _stsErrorFromResponse('STS AssumeRole', response);
     }
 
     return _parseAssumeRoleResponse(await response.text());
+}
+
+/**
+ * Build the error message thrown for a non-2xx STS response, capping the
+ * amount of the error body kept so that an unexpectedly large error document
+ * cannot balloon the thrown message; real STS error bodies are far smaller
+ * than STS_ERROR_BODY_MAX_LENGTH. Shared by both STS fetchers so the cap and
+ * the message shape cannot drift apart.
+ *
+ * @param label {string} human-readable name of the call that failed
+ * @param response {Response} non-2xx response object returned by ngx.fetch
+ * @returns {Promise<string>} error message ready to be thrown
+ * @private
+ */
+async function _stsErrorFromResponse(label, response) {
+    const errorBody = (await response.text()).slice(0, STS_ERROR_BODY_MAX_LENGTH);
+    return `${label} response was not ok (status: ${response.status}, body: ${errorBody}).`;
 }
 
 /**
@@ -818,11 +875,7 @@ async function _fetchWebIdentityCredentials(r) {
         method: 'GET',
     });
     if (!response.ok) {
-        /* Cap the amount of the error body kept so that an unexpectedly large
-           error document cannot balloon the thrown message; real STS error
-           bodies are far smaller than this. */
-        const errorBody = (await response.text()).slice(0, STS_ERROR_BODY_MAX_LENGTH);
-        throw `STS endpoint response was not ok (status: ${response.status}, body: ${errorBody}).`;
+        throw await _stsErrorFromResponse('STS endpoint', response);
     }
 
     const resp = await response.json();

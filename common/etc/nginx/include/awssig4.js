@@ -19,6 +19,13 @@
  * @alias AwsSig4
  */
 
+/**
+ * @typedef {Object} SignedRequestHeaders
+ * @property {string} authHeader - HTTP Authorization header value
+ * @property {string} amzDatetime - value for the x-amz-date request header
+ * @property {string} payloadHash - value for the x-amz-content-sha256 request header
+ */
+
 import utils from "./utils.js";
 
 const mod_hmac = require('crypto');
@@ -64,9 +71,8 @@ function signatureV4(r, timestamp, region, service, uri, queryParams, host, cred
         r.method, uri, queryParams, host, amzDatetime, credentials.sessionToken);
     const signature = _buildSignatureV4(r, amzDatetime, eightDigitDate,
         credentials, region, service, canonicalRequest);
-    const authHeader = 'AWS4-HMAC-SHA256 Credential='
-        .concat(credentials.accessKeyId, '/', eightDigitDate, '/', region, '/', service, '/aws4_request,',
-            'SignedHeaders=', _signedHeaders(r, credentials.sessionToken), ',Signature=', signature);
+    const authHeader = _buildAuthHeader(
+        r, credentials, eightDigitDate, region, service, signature);
 
     /* The signature authenticates this exact request until the SigV4 clock
        skew window closes, so it must never appear in logs - redact it the
@@ -80,22 +86,15 @@ function signatureV4(r, timestamp, region, service, uri, queryParams, host, cred
 }
 
 /**
- * @typedef {Object} SignedRequestHeaders
- * @property {string} authHeader - HTTP Authorization header value
- * @property {string} amzDatetime - value for the x-amz-date request header
- * @property {string} payloadHash - value for the x-amz-content-sha256 request header
- */
-
-/**
  * Create the Authorization header and companion signed header values for a
  * request the gateway originates itself (such as the STS AssumeRole call),
  * as opposed to a proxied client request: every request component is an
  * explicit parameter rather than being read from r.
  *
  * The signing-key cache used by signatureV4 is deliberately bypassed here:
- * it is keyed by date alone (see _buildSignatureV4), so caching a key
- * derived for one region/service pair would poison the signatures of every
- * other pair sharing the cache entry.
+ * its entries are not scoped by region or service (see _buildSignatureV4),
+ * so caching a key derived for one region/service pair would poison the
+ * signatures of every other pair sharing the cache entry.
  *
  * @see {@link https://docs.aws.amazon.com/IAM/latest/UserGuide/create-signed-request.html | Create a signed AWS API request}
  * @param r {NginxHTTPRequest} HTTP request object (used only for debug logging)
@@ -138,9 +137,8 @@ function signRequestV4(r, timestamp, region, service, method, uri, queryParams,
         credentials.secretAccessKey, eightDigitDate, region, service);
     const signature = mod_hmac.createHmac('sha256', kSigningHash)
         .update(stringToSign).digest('hex');
-    const authHeader = 'AWS4-HMAC-SHA256 Credential='
-        .concat(credentials.accessKeyId, '/', eightDigitDate, '/', region, '/', service, '/aws4_request,',
-            'SignedHeaders=', _signedHeaders(r, credentials.sessionToken), ',Signature=', signature);
+    const authHeader = _buildAuthHeader(
+        r, credentials, eightDigitDate, region, service, signature);
 
     /* Same redaction contract as signatureV4: the raw signature must never
        reach the logs. */
@@ -242,11 +240,19 @@ function _buildSignatureV4(
      * key expires every day, so our cache key can persist for 24 hours safely.
      */
     if ("variables" in r && r.variables.cache_signing_key_enabled == 1) {
-        // cached value is in the format: [eightDigitDate]:[signingKeyHash]
+        // cached value is in the format: [eightDigitDate].[accessKeyId]:[signingKeyHash]
+        /* The validity token binds the entry to the access key id as well as
+           the date: temporary credentials (AssumeRole, IMDS, ECS, web
+           identity) rotate within a day, and a key derived from the previous
+           secret would otherwise keep signing requests until the UTC date
+           rolls over, failing every one of them with SignatureDoesNotMatch
+           (GH-122). The access key id is the observable proxy for the secret
+           it was issued with; neither it nor the date can contain the ':'
+           separator _splitCachedValues splits on. */
+        const cacheValidityToken = eightDigitDate + '.' + creds.accessKeyId;
         const cached = "signing_key_hash" in r.variables ? r.variables.signing_key_hash : "";
         const fields = _splitCachedValues(cached);
-        const cachedEightDigitDate = fields[0];
-        const cacheIsValid = fields.length === 2 && eightDigitDate === cachedEightDigitDate;
+        const cacheIsValid = fields.length === 2 && fields[0] === cacheValidityToken;
 
         // If true, use cached value
         if (cacheIsValid) {
@@ -260,8 +266,8 @@ function _buildSignatureV4(
         // Otherwise, generate a new signing key hash and store it in the cache
         } else {
             kSigningHash = _buildSigningKeyHash(creds.secretAccessKey, eightDigitDate, region, service);
-            utils.debug_log(r, 'Writing signing key cache entry for date: [' + eightDigitDate + ']');
-            r.variables.signing_key_hash = eightDigitDate + ':' + JSON.stringify(kSigningHash);
+            utils.debug_log(r, 'Writing signing key cache entry for: [' + cacheValidityToken + ']');
+            r.variables.signing_key_hash = cacheValidityToken + ':' + JSON.stringify(kSigningHash);
         }
     // Otherwise, don't use caching at all (like when we are using NGINX OSS)
     } else {
@@ -339,6 +345,27 @@ function _buildStringToSign(amzDatetime, eightDigitDate, region, service, canoni
 }
 
 /**
+ * Assembles the HTTP Authorization header value from a computed signature
+ * and its credential scope. Shared by signatureV4 and signRequestV4 so the
+ * header format cannot drift between the proxied-request and
+ * gateway-originated signing paths.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object
+ * @param credentials {Credentials} Credential object with AWS credentials in it (AccessKeyId, SecretAccessKey, SessionToken)
+ * @param eightDigitDate {string} date in the form of 'YYYYMMDD'
+ * @param region {string} API region associated with request
+ * @param service {string} service code (for example, s3, sts)
+ * @param signature {string} hex encoded SigV4 signature
+ * @returns {string} HTTP Authorization header value
+ * @private
+ */
+function _buildAuthHeader(r, credentials, eightDigitDate, region, service, signature) {
+    return 'AWS4-HMAC-SHA256 Credential='
+        .concat(credentials.accessKeyId, '/', eightDigitDate, '/', region, '/', service, '/aws4_request,',
+            'SignedHeaders=', _signedHeaders(r, credentials.sessionToken), ',Signature=', signature);
+}
+
+/**
  * Creates a string containing the headers that need to be signed as part of v4
  * signature authentication.
  *
@@ -382,11 +409,11 @@ function _buildSigningKeyHash(kSecret, eightDigitDate, region, service) {
 /**
  * Splits the cached values into an array with two elements or returns an
  * empty array if the input string is invalid. The first element contains
- * the eight digit date string and the second element contains a JSON string
- * of the kSigningHash.
+ * the validity token (eight digit date plus access key id) and the second
+ * element contains a JSON string of the kSigningHash.
  *
  * @param cached {string} input string to parse
- * @returns {Array<string>} array containing eight digit date and kSigningHash or empty
+ * @returns {Array<string>} array containing the validity token and kSigningHash or empty
  * @private
  */
 function _splitCachedValues(cached) {

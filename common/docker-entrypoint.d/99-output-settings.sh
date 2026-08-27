@@ -41,10 +41,16 @@ else
   origin_tls_verification="disabled (HTTP origin)"
 fi
 
-# The role ARN is only honored in AssumeRole mode (static credentials, no web
-# identity token file - GH-122), so report the effective state rather than
-# the raw variable.
-if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+# The role ARN is only honored in AssumeRole mode (GH-122), so report the
+# effective state rather than the raw variable. The condition mirrors
+# _isAssumeRoleMode in awscredentials.js, including its third leg: without
+# non-empty static credentials (direct or _FILE form) njs ignores the role
+# ARN and uses the instance credential providers - e.g. with an ECS
+# container credentials URI configured alongside a stray role ARN, the
+# gateway runs on ECS credentials and this banner must not claim otherwise.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
+  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
   sts_assume_role="enabled (${AWS_ROLE_ARN})"
 else
   sts_assume_role="disabled"

@@ -980,7 +980,7 @@ async function testWebIdentityCredentialRetrievalNon200Response() {
  * so each test starts from a deterministic AssumeRole configuration and
  * leaks nothing into the tests that follow.
  */
-function withAssumeRoleEnv(testBody) {
+async function withAssumeRoleEnv(testBody) {
     var original = {
         'AWS_ROLE_ARN': process.env['AWS_ROLE_ARN'],
         'AWS_ROLE_SESSION_NAME': process.env['AWS_ROLE_SESSION_NAME'],
@@ -989,6 +989,10 @@ function withAssumeRoleEnv(testBody) {
         'AWS_STS_REGIONAL_ENDPOINTS': process.env['AWS_STS_REGIONAL_ENDPOINTS'],
         'AWS_REGION': process.env['AWS_REGION'],
         'AWS_ACCESS_KEY_ID': process.env['AWS_ACCESS_KEY_ID'],
+        /* Restore-only: the helper never clears the secret, but the tests
+           that exercise the no-statics ladder delete it and rely on this
+           restore to put the runner-preset value back. */
+        'AWS_SECRET_ACCESS_KEY': process.env['AWS_SECRET_ACCESS_KEY'],
     };
     clearProviderEnv();
     delete process.env['AWS_ROLE_SESSION_NAME'];
@@ -999,14 +1003,27 @@ function withAssumeRoleEnv(testBody) {
        the full static pair back (the secret is preset by the runner). */
     process.env['AWS_ACCESS_KEY_ID'] = 'unit_test';
 
-    var restore = function() {
+    try {
+        await testBody();
+    } finally {
         Object.keys(original).forEach(function(name) {
             restoreEnv(name, original[name]);
         });
-    };
-    return testBody().then(restore, function(e) {
-        restore();
-        throw e;
+    }
+}
+
+/**
+ * Builds the Response-alike a successful mocked AssumeRole call resolves
+ * with. Shared by every ngx.fetch mock that answers with
+ * MOCK_ASSUME_ROLE_XML_RESPONSE.
+ */
+function makeStsOkXmlResponse() {
+    return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: function () {
+            return Promise.resolve(MOCK_ASSUME_ROLE_XML_RESPONSE);
+        },
     });
 }
 
@@ -1071,13 +1088,7 @@ async function testAssumeRoleCredentialRetrieval() {
             if (hasTokenHeader !== ('AWS_SESSION_TOKEN' in process.env)) {
                 throw 'X-Amz-Security-Token header presence must follow the source session token';
             }
-            return Promise.resolve({
-                ok: true,
-                status: 200,
-                text: function () {
-                    return Promise.resolve(MOCK_ASSUME_ROLE_XML_RESPONSE);
-                },
-            });
+            return makeStsOkXmlResponse();
         };
 
         await awscred.fetchCredentials(makeExpect200Request());
@@ -1181,13 +1192,7 @@ async function testAssumeRoleStsRegionalEndpoint() {
                 throw 'Authorization scope is not eu-west-1/sts: ' +
                     options.headers['Authorization'];
             }
-            return Promise.resolve({
-                ok: true,
-                status: 200,
-                text: function () {
-                    return Promise.resolve(MOCK_ASSUME_ROLE_XML_RESPONSE);
-                },
-            });
+            return makeStsOkXmlResponse();
         };
         await awscred.fetchCredentials(makeExpect200Request());
         if (!requestSeen) {
@@ -1195,14 +1200,24 @@ async function testAssumeRoleStsRegionalEndpoint() {
         }
 
         /* The regional model without a region is a configuration error and
-           must fail before any request is made. */
+           must fail before any request is made. The mock answers with valid
+           credentials rather than throwing: a throw would be swallowed by
+           fetchCredentials into the same 500 this test expects, making the
+           no-request claim unfalsifiable, whereas a regression that does
+           issue a request (e.g. a defaulted region) now caches credentials
+           and returns 200, failing both assertions. */
         resetSharedCredentialCache();
         delete process.env['AWS_REGION'];
         var state = {returnedCode: null};
+        var requestMade = false;
         globalThis.ngx.fetch = function () {
-            throw 'No request may be made when AWS_REGION is missing';
+            requestMade = true;
+            return makeStsOkXmlResponse();
         };
         await awscred.fetchCredentials(makeRecordingRequest(state));
+        if (requestMade) {
+            throw 'No request may be made when AWS_REGION is missing';
+        }
         if (state.returnedCode !== 500) {
             throw 'Expected 500 without AWS_REGION, got: ' + state.returnedCode;
         }
@@ -1222,13 +1237,7 @@ async function testAssumeRoleSessionNameFromEnv() {
             if (options.body.indexOf('&RoleSessionName=custom%40name&') < 0) {
                 throw 'Session name was not percent-encoded into the body: ' + options.body;
             }
-            return Promise.resolve({
-                ok: true,
-                status: 200,
-                text: function () {
-                    return Promise.resolve(MOCK_ASSUME_ROLE_XML_RESPONSE);
-                },
-            });
+            return makeStsOkXmlResponse();
         };
         await awscred.fetchCredentials(makeExpect200Request());
         if (!requestSeen) {
@@ -1278,58 +1287,53 @@ async function testWebIdentityDefaultRoleSessionName() {
             process.env['STS_ENDPOINT'] = MOCK_STS_ENDPOINT;
             process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] = tokenFile;
             /* Without static credentials the ladder takes the web identity
-               branch. */
+               branch; withAssumeRoleEnv restores the deleted secret. */
             delete process.env['AWS_ACCESS_KEY_ID'];
-            var originalSecret = process.env['AWS_SECRET_ACCESS_KEY'];
             delete process.env['AWS_SECRET_ACCESS_KEY'];
 
-            try {
-                var requestSeen = false;
-                globalThis.ngx.fetch = function (url, options) {
-                    requestSeen = true;
-                    if (options.method !== 'GET') {
-                        throw 'Web identity must be an unsigned GET, got: ' + options.method;
-                    }
-                    if (url.indexOf('Action=AssumeRoleWithWebIdentity') < 0) {
-                        throw 'Unexpected STS action in URL: ' + url;
-                    }
-                    /* Regression test for the session name default: the shell
-                       entrypoint default never reached njs, so the call used
-                       to send RoleSessionName=undefined. */
-                    if (url.indexOf('RoleSessionName=nginx-s3-gateway') < 0) {
-                        throw 'Default RoleSessionName missing from URL: ' + url;
-                    }
-                    return Promise.resolve({
-                        ok: true,
-                        status: 200,
-                        json: function () {
-                            return Promise.resolve({
-                                AssumeRoleWithWebIdentityResponse: {
-                                    AssumeRoleWithWebIdentityResult: {
-                                        Credentials: {
-                                            AccessKeyId: 'WEB_IDENTITY_ACCESS_KEY_ID',
-                                            SecretAccessKey: 'WEB_IDENTITY_SECRET',
-                                            SessionToken: 'WEB_IDENTITY_TOKEN',
-                                            Expiration: '2100-01-01T00:00:00Z',
-                                        },
+            var requestSeen = false;
+            globalThis.ngx.fetch = function (url, options) {
+                requestSeen = true;
+                if (options.method !== 'GET') {
+                    throw 'Web identity must be an unsigned GET, got: ' + options.method;
+                }
+                if (url.indexOf('Action=AssumeRoleWithWebIdentity') < 0) {
+                    throw 'Unexpected STS action in URL: ' + url;
+                }
+                /* Regression test for the session name default: the shell
+                   entrypoint default never reached njs, so the call used
+                   to send RoleSessionName=undefined. */
+                if (url.indexOf('RoleSessionName=nginx-s3-gateway') < 0) {
+                    throw 'Default RoleSessionName missing from URL: ' + url;
+                }
+                return Promise.resolve({
+                    ok: true,
+                    status: 200,
+                    json: function () {
+                        return Promise.resolve({
+                            AssumeRoleWithWebIdentityResponse: {
+                                AssumeRoleWithWebIdentityResult: {
+                                    Credentials: {
+                                        AccessKeyId: 'WEB_IDENTITY_ACCESS_KEY_ID',
+                                        SecretAccessKey: 'WEB_IDENTITY_SECRET',
+                                        SessionToken: 'WEB_IDENTITY_TOKEN',
+                                        Expiration: '2100-01-01T00:00:00Z',
                                     },
                                 },
-                            });
-                        },
-                    });
-                };
-                await awscred.fetchCredentials(makeExpect200Request());
-                if (!requestSeen) {
-                    throw 'The mocked STS endpoint was never called.';
-                }
-                var cached = JSON.parse(
-                    globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY));
-                if (cached.accessKeyId !== 'WEB_IDENTITY_ACCESS_KEY_ID') {
-                    throw 'Web identity credentials were not the ones cached: ' +
-                        JSON.stringify(cached);
-                }
-            } finally {
-                restoreEnv('AWS_SECRET_ACCESS_KEY', originalSecret);
+                            },
+                        });
+                    },
+                });
+            };
+            await awscred.fetchCredentials(makeExpect200Request());
+            if (!requestSeen) {
+                throw 'The mocked STS endpoint was never called.';
+            }
+            var cached = JSON.parse(
+                globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY));
+            if (cached.accessKeyId !== 'WEB_IDENTITY_ACCESS_KEY_ID') {
+                throw 'Web identity credentials were not the ones cached: ' +
+                    JSON.stringify(cached);
             }
         });
     } finally {
@@ -1358,49 +1362,40 @@ async function testRoleArnWithoutStaticFallsThroughToImds() {
     printHeader('testRoleArnWithoutStaticFallsThroughToImds');
     await withAssumeRoleEnv(async function() {
         process.env['AWS_ROLE_ARN'] = MOCK_ROLE_ARN;
+        /* withAssumeRoleEnv restores the deleted static pair. */
         delete process.env['AWS_ACCESS_KEY_ID'];
-        var originalSecret = process.env['AWS_SECRET_ACCESS_KEY'];
         delete process.env['AWS_SECRET_ACCESS_KEY'];
 
-        try {
-            if (awscred._isAssumeRoleMode()) {
-                throw 'AssumeRole mode must require static credentials';
+        if (awscred._isAssumeRoleMode()) {
+            throw 'AssumeRole mode must require static credentials';
+        }
+        /* Without static credentials the ladder falls through to the
+           instance providers; proving the first IMDS request is enough
+           without replicating the whole EC2 mock. */
+        var firstUrl = null;
+        var state = {returnedCode: null};
+        globalThis.ngx.fetch = function (url) {
+            if (firstUrl === null) {
+                firstUrl = url;
             }
-            /* Without static credentials the ladder falls through to the
-               instance providers; proving the first IMDS request is enough
-               without replicating the whole EC2 mock. */
-            var firstUrl = null;
-            var state = {returnedCode: null};
-            globalThis.ngx.fetch = function (url) {
-                if (firstUrl === null) {
-                    firstUrl = url;
-                }
-                return Promise.resolve({
-                    ok: false,
-                    status: 503,
-                    text: function () {
-                        return Promise.resolve('unit test IMDS error');
-                    },
-                });
-            };
-            await awscred.fetchCredentials(makeRecordingRequest(state));
-            if (firstUrl !== IMDS_TOKEN_URL) {
-                throw 'Expected fall-through to IMDS, first URL was: ' + firstUrl;
-            }
-        } finally {
-            restoreEnv('AWS_SECRET_ACCESS_KEY', originalSecret);
+            return Promise.resolve({
+                ok: false,
+                status: 503,
+                text: function () {
+                    return Promise.resolve('unit test IMDS error');
+                },
+            });
+        };
+        await awscred.fetchCredentials(makeRecordingRequest(state));
+        if (firstUrl !== IMDS_TOKEN_URL) {
+            throw 'Expected fall-through to IMDS, first URL was: ' + firstUrl;
         }
     });
 }
 
-function testIsAssumeRoleMode() {
+async function testIsAssumeRoleMode() {
     printHeader('testIsAssumeRoleMode');
-    var originalRoleArn = process.env['AWS_ROLE_ARN'];
-    var originalTokenFile = process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
-    var originalAccessKeyId = process.env['AWS_ACCESS_KEY_ID'];
-    try {
-        delete process.env['AWS_WEB_IDENTITY_TOKEN_FILE'];
-        process.env['AWS_ACCESS_KEY_ID'] = 'unit_test';
+    await withAssumeRoleEnv(async function() {
         process.env['AWS_ROLE_ARN'] = MOCK_ROLE_ARN;
         if (!awscred._isAssumeRoleMode()) {
             throw 'Expected AssumeRole mode with a role ARN and static credentials';
@@ -1416,10 +1411,77 @@ function testIsAssumeRoleMode() {
         if (awscred._isAssumeRoleMode()) {
             throw 'Web identity must take precedence over AssumeRole mode';
         }
-    } finally {
-        restoreEnv('AWS_ROLE_ARN', originalRoleArn);
-        restoreEnv('AWS_WEB_IDENTITY_TOKEN_FILE', originalTokenFile);
-        restoreEnv('AWS_ACCESS_KEY_ID', originalAccessKeyId);
+        /* A set-but-empty token file (bare compose pass-through key) also
+           counts as unset, matching the entrypoint guards: with presence
+           semantics here, the banner and njs disagreed about the active
+           mode and S3 requests were silently signed with the statics. */
+        process.env['AWS_WEB_IDENTITY_TOKEN_FILE'] = '';
+        if (!awscred._isAssumeRoleMode()) {
+            throw 'An empty AWS_WEB_IDENTITY_TOKEN_FILE must not disable AssumeRole mode';
+        }
+    });
+}
+
+function testParseAssumeRoleResponseRejectsEmptyElements() {
+    printHeader('testParseAssumeRoleResponseRejectsEmptyElements');
+    /* Regression: an empty element (<SessionToken></SessionToken>) is a
+       truthy XMLNode whose $text is '', so validating the nodes rather than
+       their text let empty credential fields through to the cache. */
+    var emptyTokenXml =
+        '<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">' +
+        '<AssumeRoleResult><Credentials>' +
+        '<AccessKeyId>STS_ACCESS_KEY_ID</AccessKeyId>' +
+        '<Expiration>2100-01-01T00:00:00Z</Expiration>' +
+        '<SecretAccessKey>STS_SECRET_ACCESS_KEY</SecretAccessKey>' +
+        '<SessionToken></SessionToken>' +
+        '</Credentials></AssumeRoleResult></AssumeRoleResponse>';
+    var threw = false;
+    try {
+        awscred._parseAssumeRoleResponse(emptyTokenXml);
+    } catch (e) {
+        threw = true;
+    }
+    if (!threw) {
+        throw 'An empty SessionToken element must not parse into credentials';
+    }
+
+    var parsed = awscred._parseAssumeRoleResponse(MOCK_ASSUME_ROLE_XML_RESPONSE);
+    if (parsed.accessKeyId !== 'STS_ACCESS_KEY_ID' ||
+        parsed.secretAccessKey !== 'STS_SECRET_ACCESS_KEY' ||
+        parsed.sessionToken !== 'STS_SESSION_TOKEN' ||
+        parsed.expiration !== '2100-01-01T00:00:00Z') {
+        throw 'Unexpected credentials parsed from a well-formed response: ' +
+            JSON.stringify(parsed);
+    }
+}
+
+function testParseStsEndpointUrl() {
+    printHeader('testParseStsEndpointUrl');
+    var url = awscred._parseStsEndpointUrl('https://sts.amazonaws.com');
+    if (url.host !== 'sts.amazonaws.com' || url.path !== '/') {
+        throw 'Unexpected split of the global endpoint: ' + JSON.stringify(url);
+    }
+    url = awscred._parseStsEndpointUrl('http://rustfs:9000/sts/path');
+    if (url.host !== 'rustfs:9000' || url.path !== '/sts/path') {
+        throw 'Unexpected split of a host:port endpoint: ' + JSON.stringify(url);
+    }
+
+    /* Endpoints this parser cannot represent in the canonical request must
+       be rejected with a clear configuration error instead of producing
+       signatures the server can never verify. */
+    var rejected = ['sts.amazonaws.com', 'ftp://sts.amazonaws.com',
+        'https://my-store:9000/?sts', 'https://my-store:9000?region=x',
+        'https://sts.amazonaws.com/sts#frag', 'https:///no-host'];
+    for (var i = 0; i < rejected.length; i++) {
+        var threw = false;
+        try {
+            awscred._parseStsEndpointUrl(rejected[i]);
+        } catch (e) {
+            threw = true;
+        }
+        if (!threw) {
+            throw 'STS endpoint must be rejected: ' + rejected[i];
+        }
     }
 }
 
@@ -1488,7 +1550,9 @@ async function test() {
     await testWebIdentityDefaultRoleSessionName();
     await testStaticCredentialsShortCircuitWithoutRoleArn();
     await testRoleArnWithoutStaticFallsThroughToImds();
-    testIsAssumeRoleMode();
+    await testIsAssumeRoleMode();
+    testParseAssumeRoleResponseRejectsEmptyElements();
+    testParseStsEndpointUrl();
     testReadCredentialsWithAccessSecretKeyAndSessionTokenSet();
     testReadCredentialsFromFiles();
     testReadCredentialsWithoutSessionTokenFile();

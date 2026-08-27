@@ -144,6 +144,17 @@ assertValidationRejects "a role ARN without static credentials" \
   -e AWS_SIGS_VERSION=4 \
   -e AWS_ROLE_ARN="${test_role_arn}"
 
+# A set-but-empty static credential must also count as missing: the njs
+# modules read it as unconfigured and would fall through to the instance
+# credential providers at request time, so accepting it would start a
+# gateway in a different credential mode than the one just announced.
+assertValidationRejects "a role ARN with an empty static access key" \
+  "Required AWS_ACCESS_KEY_ID (or AWS_ACCESS_KEY_ID_FILE) environment variable missing" \
+  -e AWS_SIGS_VERSION=4 \
+  -e AWS_ROLE_ARN="${test_role_arn}" \
+  -e AWS_ACCESS_KEY_ID= \
+  -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
 assertValidationRejects "a role ARN with signature v2" \
   "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2" \
   -e AWS_SIGS_VERSION=2 \
@@ -178,5 +189,16 @@ assertBannerContains "AssumeRole disabled without a role ARN" \
   -e AWS_SIGS_VERSION=4 \
   -e AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
   -e AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# The banner mirrors _isAssumeRoleMode in awscredentials.js: without static
+# credentials the role ARN is ignored (njs uses the instance credential
+# providers - e.g. an ECS credentials URI), so the banner must not claim the
+# mode is active. The banner script does not validate, so this combination
+# renders even though 00-check-for-required-env.sh would refuse to start
+# without any credential provider configured.
+assertBannerContains "AssumeRole disabled when static credentials are missing" \
+  "STS AssumeRole: disabled" \
+  -e AWS_SIGS_VERSION=4 \
+  -e AWS_ROLE_ARN="${test_role_arn}"
 
 echo "PASS: STS AssumeRole startup guards"

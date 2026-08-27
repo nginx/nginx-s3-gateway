@@ -289,7 +289,6 @@ set_test_origin() {
   export TEST_S3_SERVER_PORT="9000"
   export TEST_S3_SERVER_PROTO="${origin_proto}"
   export TEST_S3_TRUSTED_CERT_PATH="/etc/ssl/certs/ca-certificates.crt"
-  export TEST_S3_ORIGIN_PROTO="${origin_proto}"
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
   export TEST_PROXY_CACHE_SLICE_SIZE="1m"
   s3_origin_server="${origin_proto}://localhost:9090"
@@ -363,8 +362,15 @@ integration_test_data() {
 
 seed_origin_data() {
 
-  # Hit the origin's health check end point to see if it has started up
-  for (( i=1; i<=3; i++ ))
+  # Hit the origin's health check end point to see if it has started up.
+  # This is the only readiness gate for phases that start the origin alone
+  # (integration_test_assume_role's `up -d rustfs` returns before the
+  # healthcheck passes, unlike the full `up -d`, where the gateway's
+  # depends_on blocks on it), so fail with a clear message rather than
+  # falling through to mc commands that would abort the suite with an
+  # opaque connectivity error.
+  origin_is_up=""
+  for (( i=1; i<=15; i++ ))
   do
     echo "Querying the S3 origin to see if it is ready"
     # `|| true` keeps errexit from aborting the retry loop when the origin is
@@ -377,6 +383,10 @@ seed_origin_data() {
       sleep 2
     fi
   done
+  if [ "${origin_is_up}" != "200" ]; then
+    e "the S3 origin at ${s3_origin_server} did not become ready (last health status: ${origin_is_up})"
+    exit "$test_fail_exit_code"
+  fi
 
   p "Adding test data to container"
   # ${arr[@]+...} keeps the empty-array expansion from tripping `set -o
@@ -783,26 +793,41 @@ integration_test_assume_role() {
   # scope, so they prove which keys signed what: the caller's keys must
   # appear with the sts scope and never with the s3 scope, and the s3 scope
   # must carry an STS-issued access key (anything but the caller's).
+  # Filtered into variables rather than piped into grep -q, for the
+  # pipefail/SIGPIPE reason documented at assert_gateway_logs_contain. The
+  # s3-scope check additionally filters on 'Credential=': the DEBUG signing
+  # strings carry the scope on a line without any access key, so an
+  # unfiltered inverted match would pass no matter which keys signed.
   gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
-  if ! grep -F "Credential=${assume_role_user}/" <<< "${gateway_logs}" | grep -q "/sts/aws4_request"; then
+  static_signature_lines="$(grep -F "Credential=${assume_role_user}/" <<< "${gateway_logs}" || true)"
+  s3_signature_lines="$(grep -F "/s3/aws4_request" <<< "${gateway_logs}" | grep -F "Credential=" || true)"
+  if ! grep -qF "/sts/aws4_request" <<< "${static_signature_lines}"; then
     e "FAIL [assume role STS signature]: no sts-scoped signature by ${assume_role_user} found in the gateway logs"
     exit "$test_fail_exit_code"
   fi
-  if ! grep -F "/s3/aws4_request" <<< "${gateway_logs}" | grep -qv "Credential=${assume_role_user}/"; then
+  if [ -z "${s3_signature_lines}" ] || ! grep -qvF "Credential=${assume_role_user}/" <<< "${s3_signature_lines}"; then
     e "FAIL [assume role S3 signature]: no s3-scoped signature by the assumed credentials found in the gateway logs"
     exit "$test_fail_exit_code"
   fi
-  if grep -F "Credential=${assume_role_user}/" <<< "${gateway_logs}" | grep -q "/s3/aws4_request"; then
+  if grep -qF "/s3/aws4_request" <<< "${static_signature_lines}"; then
     e "FAIL [assume role credential leak]: the static credentials signed an S3 request"
     exit "$test_fail_exit_code"
   fi
+  sts_fetch_count_before="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
+  if [ "${sts_fetch_count_before}" -lt 1 ]; then
+    e "FAIL [assume role credential fetch]: no STS fetch found in the gateway logs"
+    exit "$test_fail_exit_code"
+  fi
 
-  # Cache reuse: a second object request must not trigger a second STS call.
+  # Cache reuse: a second object request must not add an STS call. Compared
+  # as a count delta rather than against an absolute 1 because the
+  # wait_for_gateway HEAD probe (2s cap) can legitimately abort its first
+  # credential fetch mid-flight on a slow runner and trigger one retry.
   assert_request_status 200 "assume role cached second object request" "${test_server}/b/e.txt"
   gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
-  sts_fetch_count="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
-  if [ "${sts_fetch_count}" != "1" ]; then
-    e "FAIL [assume role credential caching]: expected exactly 1 STS fetch, found ${sts_fetch_count}"
+  sts_fetch_count_after="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
+  if [ "${sts_fetch_count_after}" != "${sts_fetch_count_before}" ]; then
+    e "FAIL [assume role credential caching]: the second object request triggered a new STS fetch (${sts_fetch_count_before} before, ${sts_fetch_count_after} after)"
     exit "$test_fail_exit_code"
   fi
 }

@@ -33,6 +33,23 @@ failed=0
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
 "S3_REGION" "S3_STYLE" "ALLOW_DIRECTORY_LIST" "AWS_SIGS_VERSION")
 
+# Each static credential may be supplied either in its own environment
+# variable or, following the container secret-store convention, in a file
+# named by a '<VAR>_FILE' companion variable (GH-67). The njs modules read
+# whichever form is present, so accept either one here. Both forms are
+# tested by value, not presence: the njs modules treat a set-but-empty
+# variable (e.g. an env-file line with no value) as unconfigured and would
+# fall through to the instance credential providers at request time.
+requireStaticCredentials() {
+  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
+    file_name="${name}_FILE"
+    if [ -z "${!name:-}" ] && [ -z "${!file_name:-}" ]; then
+      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
+      failed=1
+    fi
+  done
+}
+
 if [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
   echo "Running inside an ECS task, using container credentials"
   uses_iam_creds=1
@@ -43,13 +60,7 @@ if [ ! -z ${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI+x} ]; then
 # IMDS-capable host does not skip it.
 elif [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
   echo "AWS_ROLE_ARN set without a web identity token file - fetching S3 credentials via STS AssumeRole signed with the configured static credentials"
-  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
-    file_name="${name}_FILE"
-    if [ -z ${!name+x} ] && [ -z ${!file_name+x} ]; then
-      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
-      failed=1
-    fi
-  done
+  requireStaticCredentials
   # Static credentials plus the STS variables must be written into the
   # environment file below, exactly as in the plain static-credential mode.
   uses_iam_creds=0
@@ -61,18 +72,7 @@ elif curl --output /dev/null --silent --head --fail --connect-timeout 2 "http://
   echo "Running inside an EC2 instance, using IMDSv1 for credentials"
   uses_iam_creds=1
 else
-  # Each static credential may be supplied either in its own environment
-  # variable or, following the container secret-store convention, in a file
-  # named by a '<VAR>_FILE' companion variable (GH-67). The njs modules read
-  # whichever form is present, so accept either one here. Setting both is
-  # ambiguous and rejected.
-  for name in "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"; do
-    file_name="${name}_FILE"
-    if [ -z ${!name+x} ] && [ -z ${!file_name+x} ]; then
-      >&2 echo "Required ${name} (or ${file_name}) environment variable missing"
-      failed=1
-    fi
-  done
+  requireStaticCredentials
   uses_iam_creds=0
 fi
 
@@ -331,10 +331,14 @@ elif [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; then
 else
   echo "Access Key ID: "
 fi
-# The role ARN is only honored in AssumeRole mode (static credentials, no web
-# identity token file - GH-122), so report the effective state rather than
-# the raw variable. Mirrors common/docker-entrypoint.d/99-output-settings.sh.
-if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
+# The role ARN is only honored in AssumeRole mode (GH-122), so report the
+# effective state rather than the raw variable. The condition mirrors
+# _isAssumeRoleMode in awscredentials.js (and 99-output-settings.sh),
+# including its third leg: without non-empty static credentials njs ignores
+# the role ARN and uses the instance credential providers instead.
+if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] \
+  && { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
   echo "STS AssumeRole: enabled (${AWS_ROLE_ARN})"
 else
   echo "STS AssumeRole: disabled"
@@ -583,8 +587,13 @@ EOF
   fi
   # AssumeRole mode (GH-122): the role ARN and its optional STS companions
   # must reach the njs modules through the environment file, exactly like the
-  # static credentials that sign the AssumeRole call.
-  if [ -n "${AWS_ROLE_ARN:-}" ]; then
+  # static credentials that sign the AssumeRole call. The web-identity leg
+  # must match the ladder above: this environment file never carries
+  # AWS_WEB_IDENTITY_TOKEN_FILE, so writing the role ARN for a host that has
+  # a token file configured would flip njs into AssumeRole mode even though
+  # the validation above ran (and the sigv2 guard was skipped) for the
+  # static-credential mode.
+  if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
     cat >> "/etc/nginx/environment" << EOF
 # IAM role assumed via STS AssumeRole to obtain the S3 credentials
 AWS_ROLE_ARN=${AWS_ROLE_ARN}
