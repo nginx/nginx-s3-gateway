@@ -142,6 +142,13 @@ gateway configurations, including HTTPS origins with TLS verification and a
 CORS-enabled phase. New
 shell scripts under `test/` and `test/integration/` are picked up by
 `make lint` automatically and must pass `shellcheck --severity=warning`.
+Six of the eight `test_entrypoint_*.sh` scripts source
+`test/integration/entrypoint_test_lib.sh` for the shared `docker run` wrapper and
+the validation and banner assertions; the baseline container environment lives
+there, so a newly required gateway variable is added in one place. The other two
+invoke `docker run` directly: `test_entrypoint_ipv6.sh` needs none of the
+baseline gateway variables, and `test_entrypoint_output_settings.sh` varies
+`S3_STYLE`, which the baseline pins.
 
 The make targets guard against image/target mismatches: the variant targets
 (`retest-latest-njs`, `retest-unprivileged`) verify the floating

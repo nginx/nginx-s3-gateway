@@ -249,6 +249,44 @@ assertHttpRequestEquals() {
   fi
 }
 
+# Fetches ${uri} with GET, discarding the body, and parses the response header
+# block into ${headers} (the raw block, for assertions this helper does not
+# cover), ${status} (the status line's code), ${actual_location} (the Location
+# value with its trailing CR and any leading whitespace stripped) and
+# ${location_count} (how many Location headers the block carried). The scan
+# never breaks early, so the status line is always captured.
+#
+# ${actual_location} is the first Location. A first-wins pick on its own would
+# compare the legitimate redirect and let a second, injected one through, so
+# ${location_count} is published for callers testing for response splitting to
+# reject a block carrying more than one.
+# parseResponseHeaders [extra curl args...]
+parseResponseHeaders() {
+  headers="$(${curl_cmd} "$@" -D - -o /dev/null "${uri}")"
+  status=""
+  actual_location=""
+  location_count=0
+  while IFS= read -r header; do
+    case "${header}" in
+      HTTP/*)
+        status="$(echo "${header}" | awk '{print $2}')"
+        ;;
+      # The whitespace after the colon is optional in a field line, and an
+      # injected Location would not bother to emit it, so the pattern must not
+      # require it - matching only 'Location: ' would leave the duplicate-
+      # Location guard blind to exactly the header it was added to catch.
+      [Ll]ocation:*)
+        location_count=$((location_count + 1))
+        if [ "${location_count}" -eq 1 ]; then
+          actual_location="${header#*:}"
+          actual_location="${actual_location%$'\r'}"
+          actual_location="${actual_location#"${actual_location%%[![:space:]]*}"}"
+        fi
+        ;;
+    esac
+  done <<< "${headers}"
+}
+
 # Assert that a slash-appending redirect is relative and preserves the
 # viewer-visible path without reflecting request authority headers.
 # assertRedirectLocation <path> <host_header> <expected_location> [forwarded_proto]
@@ -268,17 +306,7 @@ assertRedirectLocation() {
   printf "  \033[36;1m▲\033[0m "
   echo "Testing redirect: GET ${path} (Host: ${host}, X-Forwarded-Proto: ${forwarded_proto:-<none>})"
 
-  headers="$(${curl_cmd} "${curl_args[@]}" -D - -o /dev/null "${uri}")"
-  actual_location=""
-  while IFS= read -r header; do
-    case "${header}" in
-      [Ll]ocation:\ *)
-        actual_location="${header#*: }"
-        actual_location="${actual_location%$'\r'}"
-        break
-        ;;
-    esac
-  done <<< "${headers}"
+  parseResponseHeaders "${curl_args[@]}"
 
   if [ "${expected_location}" != "${actual_location}" ]; then
     e "Redirect location didn't match expectation. Request [GET ${uri} Host: ${host} X-Forwarded-Proto: ${forwarded_proto:-<none>}] Expected [${expected_location}] Actual [${actual_location}]"
@@ -309,20 +337,7 @@ assertRedirectSafeFromHeaderInjection() {
   printf "  \033[36;1m▲\033[0m "
   echo "Testing header-injection safety: GET ${path} (Host: ${host})"
 
-  headers="$(${curl_cmd} -H "Host: ${host}" -D - -o /dev/null "${uri}")"
-  actual_location=""
-  status=""
-  while IFS= read -r header; do
-    case "${header}" in
-      HTTP/*)
-        status="$(echo "${header}" | awk '{print $2}')"
-        ;;
-      [Ll]ocation:\ *)
-        actual_location="${header#*: }"
-        actual_location="${actual_location%$'\r'}"
-        ;;
-    esac
-  done <<< "${headers}"
+  parseResponseHeaders -H "Host: ${host}"
 
   # Header names are case-insensitive and some stacks normalize them on
   # output (HTTP/2 lowercases every name), so the injected header must be
@@ -330,6 +345,15 @@ assertRedirectSafeFromHeaderInjection() {
   # regression slip through as 'x-evil'.
   if printf '%s\n' "${headers}" | grep -qi "^${injected_header_name}:"; then
     e "Header injection detected: response contains a '${injected_header_name}' header. Request [GET ${uri} Host: ${host}]"
+    exit ${test_fail_exit_code}
+  fi
+
+  # A second Location is response splitting under another name: the injected
+  # value need not name a new header to be dangerous, and comparing only the
+  # first Location below would match the legitimate redirect and let the
+  # injected one through.
+  if [ "${location_count}" -gt 1 ]; then
+    e "Header injection detected: response carries ${location_count} Location headers. Request [GET ${uri} Host: ${host}]"
     exit ${test_fail_exit_code}
   fi
 
