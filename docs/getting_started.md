@@ -644,7 +644,8 @@ AWS_SIGS_VERSION=4
 On the first proxied request the gateway sends a SigV4-signed
 [`AssumeRole`](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) call (a form-encoded `POST`,
 exactly as the AWS SDKs send it) to the STS endpoint, caches the returned temporary credentials in memory (never on
-disk), and signs S3 requests with them. The credentials are refreshed shortly before they expire. Notes:
+disk), and signs S3 requests with them. The credentials are refreshed shortly before they expire by a single elected
+request, while concurrent requests continue to be served with the still-valid cached credentials. Notes:
 
 - The STS endpoint is chosen the same way as for EKS web identity: `STS_ENDPOINT` when set, otherwise
   `https://sts.<AWS_REGION>.amazonaws.com` when `AWS_STS_REGIONAL_ENDPOINTS=regional`, otherwise the global
@@ -682,7 +683,20 @@ keys regularly expire, so services using them must refresh frequently.
 
 The gateway caches these temporary credentials in memory only: OSS uses an njs
 shared dictionary and NGINX Plus uses keyval. Current versions do not write
-temporary AWS credentials to disk. On startup the container removes any legacy
+temporary AWS credentials to disk.
+
+Credential refreshes are single-flighted: when the cached credentials enter the
+4.5-minute pre-expiry refresh margin, one request wins an atomic sentinel in a
+dedicated shared-memory zone (`credential_refresh_lock`, declared in its own
+`conf.d` file shared by both flavors) and fetches new credentials, while every
+other request keeps using the cached, still-valid set. If the elected refresh
+fails, the cached credentials continue to be served and the refresh re-arms
+every 30 seconds until they actually expire. Requests block on the fetch only
+when no still-valid cached credentials exist: a cold start, or credentials
+already past their actual expiry (for example, after a provider outage that
+outlasts the refresh margin).
+
+On startup the container removes any legacy
 credential cache left behind by an older OSS image, checking every path the old
 code could have written: `AWS_CREDENTIALS_TEMP_FILE`, `${TMPDIR}/credentials.json`,
 and `/tmp/credentials.json`. If you dropped a custom `TMPDIR` or
@@ -714,7 +728,9 @@ with a 403/404/405 status, the gateway automatically retries without a session
 token (IMDSv1), matching AWS SDK behavior. This lets the gateway work on
 instances where the hop limit was not raised, but only when the instance still
 allows IMDSv1 (`HttpTokens=optional`); each credential refresh then waits for
-the token request to time out first. Instances enforcing IMDSv2
+the token request to time out first — but only in the single request performing
+that refresh; concurrent requests keep being served with the cached credentials
+until they actually expire. Instances enforcing IMDSv2
 (`HttpTokens=required`) still require the hop limit change above.
 
 To disable the IMDSv1 fallback entirely so that credential retrieval fails

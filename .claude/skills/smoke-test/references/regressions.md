@@ -9,6 +9,39 @@ against them before calling anything a new defect. Probe conventions are the sam
 Each set names its fix commit; `git log <commit> -1` shows the full
 context if a probe's intent is unclear.
 
+## #591 — single-flight credential refresh at expiry
+
+Fix commit: the commit that added this entry. Every concurrent request
+whose cached credentials had crossed the 4.5-minute expiry margin
+independently walked the provider ladder (N requests → N provider
+calls). Now one request per 30s window wins an atomic `add()` on the
+`credential_refresh_lock` shared-dict zone and refreshes; the rest are
+served with the still-valid cached credentials. A cold start (empty
+cache) still blocking-fetches in every request, and an elected
+refresher whose fetch fails serves the cached set with a 200 instead
+of a 500. Use distinct object paths per burst so the proxy cache
+cannot mask the auth_request path.
+
+1. Both flavors: the container's
+   `/etc/nginx/conf.d/credential_refresh_lock.conf` declares
+   `js_shared_dict_zone zone=credential_refresh_lock:32k timeout=30s;`
+   and startup logs contain no `[emerg]` and no
+   `credential_refresh_lock is unavailable`.
+2. Dynamic-credentials overlay (ECS mock), cold start: a concurrent
+   GET burst → all 200 and the DEBUG logs contain at least one
+   `requesting new ones` line (cold start still fetches).
+3. In-margin single flight: overlay the ECS credentials mock with a
+   *literal* `Expiration` ~6 minutes ahead written at stack-creation
+   time, warm the cache with one request, wait until inside
+   `Expiration − 4.5min`, then burst concurrent GETs → all 200 and at
+   most one new `requesting new ones` line per 30-second window (was:
+   one per request).
+4. Failure absorption: same overlay, stop the credentials mock once
+   in-margin, burst → still all 200 (the elected refresher serves the
+   cached set; the failure is logged at error level). Restart the
+   mock → a successful refresh lands within ~30s (lock timeout
+   re-arms the election).
+
 ## #88 — duplicate literal slashes collapse before signing and proxying
 
 Fix commit: the commit that added this entry. The raw `$request_uri`

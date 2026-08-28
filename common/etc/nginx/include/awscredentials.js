@@ -128,6 +128,40 @@ const INSTANCE_CREDENTIAL_CACHE_KEY = 'instance_credentials';
  */
 const INSTANCE_CREDENTIAL_CACHE_ZONE = 'instance_credential_cache';
 
+/**
+ * Name of the njs shared dictionary zone used as the single-flight sentinel
+ * for credential refreshes (GH-591). Unlike INSTANCE_CREDENTIAL_CACHE_ZONE
+ * this zone is declared WITH a timeout, so a crashed, hung, or failed
+ * refresher's sentinel entry self-releases. Must byte-match the zone
+ * declared for both flavors in
+ * common/etc/nginx/conf.d/credential_refresh_lock.conf.
+ *
+ * Providers issue credentials valid for at least another 5 minutes while
+ * maxValidityOffsetMs is 4.5 minutes, so a residual sentinel (held at most
+ * for the zone timeout of 30s after a successful refresh) can never gate a
+ * legitimately needed refresh. Revisit the zone timeout if
+ * maxValidityOffsetMs is ever raised toward 5 minutes.
+ * @type {string}
+ */
+const CREDENTIAL_REFRESH_LOCK_ZONE = 'credential_refresh_lock';
+
+/**
+ * The single key inserted into CREDENTIAL_REFRESH_LOCK_ZONE. Whichever
+ * request atomically adds it is elected to walk the credential provider
+ * ladder for the current refresh window.
+ * @type {string}
+ */
+const CREDENTIAL_REFRESH_LOCK_KEY = 'credential_refresh_in_flight';
+
+/**
+ * Value stored under CREDENTIAL_REFRESH_LOCK_KEY. Only the key's presence
+ * matters to the atomic add() election, but the zone's default type is
+ * string, so some string must be written; tests reference this constant
+ * rather than repeating the literal.
+ * @type {string}
+ */
+const CREDENTIAL_REFRESH_LOCK_VALUE = '1';
+
 
 /**
  * Get the current session token from either the instance profile credential
@@ -336,6 +370,27 @@ function _writeCredentialsToSharedDict(credentials) {
 }
 
 /**
+ * Look up an njs shared dictionary zone, returning undefined when the njs
+ * environment or the zone is absent (e.g. the njs CLI, or a custom NGINX
+ * configuration missing the declaration). Callers choose their own failure
+ * mode: _instanceCredentialSharedDict throws (the credential cache is
+ * required), _tryAcquireCredentialRefreshLock fails open (the sentinel is
+ * an optimization).
+ *
+ * @param zoneName {string} name of the js_shared_dict_zone to look up
+ * @returns {NgxSharedDict|undefined} the shared dictionary, or undefined when unavailable
+ * @private
+ */
+function _sharedDictOrUndefined(zoneName) {
+    if (typeof ngx === 'undefined' || !("shared" in ngx) ||
+        !(zoneName in ngx.shared)) {
+        return undefined;
+    }
+
+    return ngx.shared[zoneName];
+}
+
+/**
  * Get the OSS shared dictionary used to cache temporary credentials.
  *
  * The OSS image configures this zone with js_shared_dict_zone. Keeping the
@@ -346,12 +401,80 @@ function _writeCredentialsToSharedDict(credentials) {
  * @private
  */
 function _instanceCredentialSharedDict() {
-    if (typeof ngx === 'undefined' || !("shared" in ngx) ||
-        !(INSTANCE_CREDENTIAL_CACHE_ZONE in ngx.shared)) {
+    const dict = _sharedDictOrUndefined(INSTANCE_CREDENTIAL_CACHE_ZONE);
+    if (dict === undefined) {
         throw `NGINX shared dictionary ${INSTANCE_CREDENTIAL_CACHE_ZONE} is unavailable`;
     }
 
-    return ngx.shared[INSTANCE_CREDENTIAL_CACHE_ZONE];
+    return dict;
+}
+
+/**
+ * Try to acquire the single-flight sentinel that elects one request to
+ * refresh credentials inside the refresh margin while every other request
+ * keeps serving the still-valid cached credentials (GH-591).
+ *
+ * The sentinel is an atomic shared-dictionary add(): it succeeds for exactly
+ * one request per zone-timeout window across all workers. The entry is
+ * deliberately never deleted - after a successful refresh the fresh
+ * expiration keeps requests on the fast path anyway, and after a failed
+ * refresh the zone timeout re-arms the next attempt at most once per window
+ * while the cached credentials remain valid.
+ *
+ * Unlike _instanceCredentialSharedDict this fails OPEN (returns true) when
+ * the zone is missing or add() throws: the sentinel is an optimization, and
+ * failing closed would mean no request ever refreshes, turning a merely
+ * missing zone into an outage at credential expiry. Failing open degrades to
+ * the pre-GH-591 behavior of every request refreshing.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object (used for debug logging)
+ * @returns {boolean} true when this request must perform the refresh
+ * @private
+ */
+function _tryAcquireCredentialRefreshLock(r) {
+    const lockDict = _sharedDictOrUndefined(CREDENTIAL_REFRESH_LOCK_ZONE);
+    if (lockDict === undefined) {
+        utils.debug_log(r, `NGINX shared dictionary ${CREDENTIAL_REFRESH_LOCK_ZONE} is unavailable, refreshing without single-flight coordination`);
+        return true;
+    }
+    try {
+        /* No per-item timeout is passed: the zone-level timeout governs, and
+           a per-item timeout would throw a TypeError on any zone declared
+           without one (a hazard for custom configurations). The value must
+           be a string - the zone's default type is string, and a number
+           would throw a TypeError too. */
+        return lockDict.add(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    } catch (e) {
+        /* SharedMemoryError (zone full) or any other failure: refresh
+           anyway - the worst case is the pre-GH-591 herd. */
+        utils.debug_log(r, `Could not acquire the credential refresh lock, refreshing anyway: ${e}`);
+        return true;
+    }
+}
+
+/**
+ * Answer a failed credential fetch: when the cached credentials are still
+ * valid at failure time (this request was elected refresher inside the
+ * refresh margin) the request is served from the cache with a 200 - the
+ * failure has already been logged by the caller and the sentinel zone
+ * timeout re-arms the next refresh attempt - otherwise the failure surfaces
+ * as a 500 exactly as on a cold start (GH-591). The deadline is re-checked
+ * against a live clock here because a slow provider fetch (e.g. the IMDSv1
+ * token-timeout fallback) can outlast the remaining validity when the
+ * refresh started late in the margin, and serving credentials that expired
+ * during the fetch would turn the 500 into an S3 signature failure.
+ *
+ * @param r {NginxHTTPRequest} HTTP request object
+ * @param cachedValidUntilMs {number} epoch ms until which the cached credentials stay valid; 0 when none
+ * @private
+ */
+function _returnCredentialFetchFailure(r, cachedValidUntilMs) {
+    if (new Date().getTime() < cachedValidUntilMs) {
+        utils.debug_log(r, 'Credential refresh failed; serving still-valid cached credentials');
+        r.return(200);
+        return;
+    }
+    r.return(500);
 }
 
 /**
@@ -397,23 +520,53 @@ async function fetchCredentials(r) {
         return;
     }
 
+    /* Millisecond deadline until which the cached credentials stay valid
+       while the provider ladder below runs (0 when nothing valid is
+       cached), so a failed refresh can be answered from the cache instead
+       of surfacing a 500 for an outage the refresh margin exists to absorb
+       (GH-591). A deadline rather than a boolean: the provider fetch can
+       outlast the remaining validity, so usability must be re-checked at
+       failure time. */
+    let cachedValidUntilMs = 0;
+
     if (current) {
         // If AWS returns a Unix timestamp it will be in seconds, but in Date constructor we should provide timestamp in milliseconds
         // In some situations (including EC2 and Fargate) current.expiration will be an RFC 3339 string - see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html#instance-metadata-security-credentials
-        const expireAt = typeof current.expiration == 'number' ? current.expiration * 1000 : current.expiration
-        const exp = new Date(expireAt).getTime() - maxValidityOffsetMs;
+        const expireAtValue = typeof current.expiration == 'number' ?
+            current.expiration * 1000 : current.expiration;
+        const expireAtMs = new Date(expireAtValue).getTime();
+        const refreshAtMs = expireAtMs - maxValidityOffsetMs;
         /* Use a live clock rather than NOW: NOW is stable per njs VM context
            for signature consistency, so it goes stale for expiry checks
            whenever module scope outlives a single request. */
-        if (new Date().getTime() < exp) {
+        const nowMs = new Date().getTime();
+        if (nowMs < refreshAtMs) {
             r.return(200);
             return;
+        }
+        /* Inside the refresh margin the cached credentials are still valid,
+           so exactly one request needs to walk the provider ladder: the
+           atomic sentinel elects it and every other request answers from
+           the cache (GH-591). Unparseable expirations (both comparisons
+           against NaN are false) and truly expired credentials skip the
+           election and refresh unconditionally, exactly like a cold start -
+           nothing valid is left to serve. */
+        if (nowMs < expireAtMs) {
+            if (!_tryAcquireCredentialRefreshLock(r)) {
+                r.return(200);
+                return;
+            }
+            cachedValidUntilMs = expireAtMs;
         }
     }
 
     let credentials;
 
-    utils.debug_log(r, 'Cached credentials are expired or not present, requesting new ones');
+    /* Both branches keep the 'requesting new ones' marker that the smoke
+       tests grep for (see .claude/skills/smoke-test/references/regressions.md). */
+    utils.debug_log(r, cachedValidUntilMs !== 0 ?
+        'Cached credentials are within the refresh margin, requesting new ones' :
+        'Cached credentials are expired or not present, requesting new ones');
 
     /* AssumeRole leads the ladder: it is the only provider reachable while
        static credentials are configured (matching the AWS SDKs, where
@@ -423,11 +576,12 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchAssumeRoleCredentials(r, staticCredentials);
         } catch (e) {
-            /* A failing STS call turns every request into a 500, so surface
-               it at error level rather than only under DEBUG - the same
-               contract as the cache read/write failures above and below. */
+            /* A failing STS call turns every request into a 500 once no
+               valid cached credentials remain (GH-591), so surface it at
+               error level rather than only under DEBUG - the same contract
+               as the cache read/write failures above and below. */
             r.error(`Could not assume role using static credentials: ${e}`);
-            r.return(500);
+            _returnCredentialFetchFailure(r, cachedValidUntilMs);
             return;
         }
     }
@@ -437,8 +591,12 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEcsRoleCredentials(uri);
         } catch (e) {
-            utils.debug_log(r, `Could not load ECS task role credentials: ${e}`);
-            r.return(500);
+            /* Same error-level contract as the AssumeRole and cache
+               read/write failures: this either 500s the request or absorbs
+               a refresh failure the operator must be able to see without
+               DEBUG (GH-591). */
+            r.error(`Could not load ECS task role credentials: ${e}`);
+            _returnCredentialFetchFailure(r, cachedValidUntilMs);
             return;
         }
     }
@@ -446,8 +604,8 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchWebIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, `Could not assume role using web identity: ${e}`);
-            r.return(500);
+            r.error(`Could not assume role using web identity: ${e}`);
+            _returnCredentialFetchFailure(r, cachedValidUntilMs);
             return;
         }
     } 
@@ -455,26 +613,27 @@ async function fetchCredentials(r) {
         try {
             credentials = await _fetchEKSPodIdentityCredentials(r)
         } catch (e) {
-            utils.debug_log(r, `Could not assume role using EKS pod identity: ${e}`);
-            r.return(500);
+            r.error(`Could not assume role using EKS pod identity: ${e}`);
+            _returnCredentialFetchFailure(r, cachedValidUntilMs);
             return;
         }
     } else {
         try {
             credentials = await _fetchEC2RoleCredentials(r);
         } catch (e) {
-            utils.debug_log(r, `Could not load EC2 task role credentials: ${e}`);
-            r.return(500);
+            r.error(`Could not load EC2 task role credentials: ${e}`);
+            _returnCredentialFetchFailure(r, cachedValidUntilMs);
             return;
         }
     }
     try {
         writeCredentials(r, credentials);
     } catch (e) {
-        /* Cache write failures also 500 every request, so they too must be
-           visible at the default error log level, not only under DEBUG. */
+        /* Cache write failures also 500 every request once no valid cached
+           credentials remain (GH-591), so they too must be visible at the
+           default error log level, not only under DEBUG. */
         r.error(`Could not write credentials: ${e}`);
-        r.return(500);
+        _returnCredentialFetchFailure(r, cachedValidUntilMs);
         return;
     }
     r.return(200);
@@ -919,6 +1078,8 @@ function Now() {
 }
 
 export default {
+    CREDENTIAL_REFRESH_LOCK_KEY,
+    CREDENTIAL_REFRESH_LOCK_VALUE,
     INSTANCE_CREDENTIAL_CACHE_KEY,
     Now,
     fetchCredentials,
@@ -931,5 +1092,7 @@ export default {
     _getStsEndpoint,
     _parseAssumeRoleResponse,
     _parseStsEndpointUrl,
-    _readStaticCredentials
+    _readStaticCredentials,
+    _returnCredentialFetchFailure,
+    _tryAcquireCredentialRefreshLock
 }
