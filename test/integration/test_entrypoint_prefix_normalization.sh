@@ -32,15 +32,10 @@ set -o pipefail  # don't hide errors within pipes
 
 docker_cmd=$1
 
-test_fail_exit_code=2
-no_dep_exit_code=3
-
 set -o nounset   # abort on unbound variable
 
-if [ -z "${docker_cmd}" ]; then
-  >&2 echo "missing first parameter: path to the docker executable"
-  exit ${no_dep_exit_code}
-fi
+# The shared runInImage and assertion helpers; also validates ${docker_cmd}.
+. "$(dirname "${BASH_SOURCE[0]}")/entrypoint_test_lib.sh" "${docker_cmd}"
 
 # Renders the templates with the given prefix/strip values and prints the
 # $uri_full_path -> $uri_path map block from the rendered default.conf with
@@ -51,30 +46,22 @@ render_map_snippet='. /docker-entrypoint.d/01-set-defaults.envsh \
  && /docker-entrypoint.d/20-envsubst-on-templates.sh > /dev/null \
  && sed -n "/map .uri_full_path .uri_path/,/}/p" /etc/nginx/conf.d/default.conf | tr -d "[:space:]"'
 
+# Nothing here varies the credentials or the signature version, so they ride in
+# the baseline rather than being repeated by every rendering.
+baseline_extra_env=(
+  -e "AWS_ACCESS_KEY_ID=unit_test"
+  -e "AWS_SECRET_ACCESS_KEY=unit_test"
+  -e "AWS_SIGS_VERSION=4"
+)
+
 # renderMap <prefix_value> <strip_value>
-# MSYS_NO_PATHCONV=1 added to resolve automatic path conversion
-# https://github.com/docker/for-win/issues/6754#issuecomment-629702199
 renderMap() {
   prefix=$1
   strip=$2
 
-  MSYS_NO_PATHCONV=1 "${docker_cmd}" run --rm \
-    -e S3_BUCKET_NAME=test-bucket \
-    -e S3_SERVER=s3.example.com \
-    -e S3_SERVER_PORT=9000 \
-    -e S3_SERVER_PROTO=http \
-    -e S3_REGION=us-east-1 \
-    -e S3_STYLE=virtual-v2 \
-    -e AWS_ACCESS_KEY_ID=unit_test \
-    -e AWS_SECRET_ACCESS_KEY=unit_test \
-    -e AWS_SIGS_VERSION=4 \
-    -e ALLOW_DIRECTORY_LIST=false \
-    -e PROVIDE_INDEX_PAGE=false \
-    -e APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=false \
-    -e CORS_ENABLED=false \
+  runInImage "${render_map_snippet}" \
     -e STRIP_LEADING_DIRECTORY_PATH="${strip}" \
-    -e PREFIX_LEADING_DIRECTORY_PATH="${prefix}" \
-    --entrypoint /bin/sh nginx-s3-gateway -c "${render_map_snippet}" 2>&1
+    -e PREFIX_LEADING_DIRECTORY_PATH="${prefix}"
 }
 
 # assertRendersSameMap <canonical_rendering> <prefix_value> <strip_value>
@@ -83,15 +70,13 @@ assertRendersSameMap() {
   prefix=$2
   strip=$3
 
-  printf "  \033[36;1m▲\033[0m "
-  echo "Map for PREFIX='${prefix}' STRIP='${strip}' must render identically to its canonical shape"
+  announceCase "Map for PREFIX='${prefix}' STRIP='${strip}' must render identically to its canonical shape"
 
   actual=$(renderMap "${prefix}" "${strip}")
   if [ "${actual}" != "${canonical}" ]; then
-    >&2 echo "FAIL: PREFIX='${prefix}' STRIP='${strip}' rendered a different map."
-    >&2 echo "Expected: [${canonical}]"
-    >&2 echo "Actual:   [${actual}]"
-    exit ${test_fail_exit_code}
+    failCase "FAIL: PREFIX='${prefix}' STRIP='${strip}' rendered a different map." \
+      "Expected: [${canonical}]" \
+      "Actual:   [${actual}]"
   fi
 }
 
@@ -103,16 +88,13 @@ canonical_strip=$(renderMap "/b" "/tostrip")
 # Guard against vacuous comparisons: the canonical renders must actually
 # carry the configured values (and so differ from one another).
 if ! echo "${canonical_prefix}" | grep -qF '/b$1'; then
-  >&2 echo "FAIL: canonical PREFIX=/b map does not contain '/b\$1': [${canonical_prefix}]"
-  exit ${test_fail_exit_code}
+  failCase "FAIL: canonical PREFIX=/b map does not contain '/b\$1': [${canonical_prefix}]"
 fi
 if ! echo "${canonical_strip}" | grep -qF '~^/tostrip(.*)'; then
-  >&2 echo "FAIL: canonical STRIP=/tostrip map does not contain the strip arm: [${canonical_strip}]"
-  exit ${test_fail_exit_code}
+  failCase "FAIL: canonical STRIP=/tostrip map does not contain the strip arm: [${canonical_strip}]"
 fi
 if [ "${canonical_prefix}" == "${canonical_disabled}" ]; then
-  >&2 echo "FAIL: PREFIX=/b and PREFIX='' rendered identically: [${canonical_prefix}]"
-  exit ${test_fail_exit_code}
+  failCase "FAIL: PREFIX=/b and PREFIX='' rendered identically: [${canonical_prefix}]"
 fi
 
 # Trailing slashes are trimmed and a missing leading slash is added.
