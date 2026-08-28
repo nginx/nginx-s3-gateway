@@ -9,6 +9,38 @@ against them before calling anything a new defect. Probe conventions are the sam
 Each set names its fix commit; `git log <commit> -1` shows the full
 context if a probe's intent is unclear.
 
+## #592 — SigV2 refuses instance credential providers at startup
+
+Fix commit: the commit that added this entry. With `AWS_SIGS_VERSION=2`
+and any instance credential provider (ECS container credentials, EC2
+IMDS, EKS web identity / pod identity), startup validated cleanly and
+announced the provider, then every request died at the runtime
+session-token backstop (GH-578) with nothing at startup naming the
+cause. Both ladders (container entrypoint and standalone installer) now
+fail fast. The only working v2 configuration is long-lived static
+credentials, so the guard is stated in the positive: it fires whenever
+v2 is combined with an unconfigured static pair (value-tested, either
+the direct or the `_FILE` form), independent of which provider the
+announcement ladder matched.
+
+1. Dynamic-credentials overlay (statics nulled, ECS credentials URI
+   set) with `AWS_SIGS_VERSION=2`, launched with the statics scrubbed
+   from the invoking shell (`env -u AWS_ACCESS_KEY_ID -u
+   AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN` — the overlay's null
+   keys inherit from the shell, and inherited real credentials would
+   configure the statics and keep the guard silent) → the container
+   exits without serving; logs contain
+   `AWS_SIGS_VERSION=2 requires static credentials`.
+2. Same combination but with the AssumeRole ARN also set (stray ARN,
+   no statics) → still rejected by the #592 message, and
+   `AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2` must NOT
+   appear (AssumeRole is not the mode njs would run).
+3. `AWS_SIGS_VERSION=2`, static keys, and a stray
+   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` → boots and serves:
+   statics win the njs provider ladder, so v2 works. The boot line
+   still announces ECS for this combination — a known, pre-existing
+   cosmetic mismatch, not a regression.
+
 ## #591 — single-flight credential refresh at expiry
 
 Fix commit: the commit that added this entry. Every concurrent request
@@ -227,7 +259,9 @@ visibility). Additional pinned assertions:
    credentials nor a web identity token file (ambiguous config;
    deliberate divergence from njs, which would fall through to instance
    providers). A stray ARN alongside an ECS credentials URI or an EKS
-   pod identity token file must still boot and announce that provider.
+   pod identity token file must still boot and announce that provider
+   under `AWS_SIGS_VERSION=4`; under v2 the #592 instance-provider
+   guard refuses startup instead (see the #592 set).
 2. Set-but-empty values count as unset everywhere: `AWS_ROLE_ARN=""`
    boots in plain static mode with `STS AssumeRole: disabled`.
 3. The banner and the ladder announcement must agree with each other
