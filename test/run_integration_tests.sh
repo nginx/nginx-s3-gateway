@@ -894,6 +894,9 @@ bash "${test_dir}/integration/test_entrypoint_sigv2_session_token.sh" "${docker_
 p "Testing STS AssumeRole guard entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_assume_role_guards.sh" "${docker_cmd}"
 
+p "Testing signature v2 instance credential provider guard entrypoint script"
+bash "${test_dir}/integration/test_entrypoint_sigv2_instance_providers.sh" "${docker_cmd}"
+
 ### INTEGRATION TESTS
 # The arguments correspond to gateway configuration values, e.g.
 # integration_test 2 0 0 0 "" ""

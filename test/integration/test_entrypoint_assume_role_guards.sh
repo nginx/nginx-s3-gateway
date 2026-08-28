@@ -141,6 +141,43 @@ assertValidationRejects() {
   fi
 }
 
+# Rejects like assertValidationRejects and additionally requires a fragment
+# to be absent, so a rejection can be pinned to the guard that must fire
+# rather than a guard that must stay silent for the same configuration.
+# assertValidationRejectsWithout <description> <expected_error_fragment> <forbidden_fragment> [extra docker -e args...]
+assertValidationRejectsWithout() {
+  description=$1
+  expected_error=$2
+  forbidden_fragment=$3
+  shift 3
+
+  printf "  \033[36;1m▲\033[0m "
+  echo "Entrypoint validation must reject ${description}"
+
+  set +o errexit
+  output=$(runInImage "${check_env}" "$@")
+  status=$?
+  set -o errexit
+
+  if [ ${status} -eq 0 ]; then
+    >&2 echo "FAIL: 00-check-for-required-env.sh exited 0 for ${description}:"
+    >&2 echo "${output}"
+    exit ${test_fail_exit_code}
+  fi
+
+  if ! echo "${output}" | grep -qF "${expected_error}"; then
+    >&2 echo "FAIL: expected an error containing [${expected_error}] for ${description} but got:"
+    >&2 echo "${output}"
+    exit ${test_fail_exit_code}
+  fi
+
+  if echo "${output}" | grep -qF "${forbidden_fragment}"; then
+    >&2 echo "FAIL: expected the output NOT to contain [${forbidden_fragment}] for ${description} but got:"
+    >&2 echo "${output}"
+    exit ${test_fail_exit_code}
+  fi
+}
+
 # assertBannerContains <description> <expected_fragment> [extra docker -e args...]
 # The banner script needs the defaults 01-set-defaults.envsh computes, so it
 # is sourced first, exactly as the real entrypoint does.
@@ -226,10 +263,27 @@ assertValidationAnnounces "a stray role ARN with EKS pod identity without static
   -e AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token \
   -e AWS_ROLE_ARN="${test_role_arn}"
 
-# The sigv2 guard must only fire when AssumeRole is actually active: a stray
-# ARN without statics inside an ECS task leaves njs on the container
-# credentials, so signature v2 validation must not blame a mode that is off.
-assertValidationAnnounces "a stray role ARN with signature v2 inside an ECS task" \
+# The AssumeRole sigv2 guard must only fire when AssumeRole is actually
+# active: a stray ARN without statics inside an ECS task leaves njs on the
+# container credentials, so signature v2 validation must not blame a mode
+# that is off. The configuration still fails - container credentials are
+# temporary, which v2 signatures can never cover - but through the instance
+# credential provider guard (GH-592), whose message names the actual problem.
+assertValidationRejectsWithout "a stray role ARN with signature v2 inside an ECS task" \
+  "AWS_SIGS_VERSION=2 requires static credentials" \
+  "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2" \
+  -e AWS_SIGS_VERSION=2 \
+  -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \
+  -e AWS_ROLE_ARN="${test_role_arn}"
+
+# The rejection must still announce the provider njs would actually use:
+# validation collects every failure before exiting, so the ECS ladder branch
+# has already named the effective mode by the time the #592 guard fires. A
+# refactor that early-exits the guard ahead of the ladder, or a ladder
+# reorder that lets the ambiguous stray-ARN branch shadow the ECS branch,
+# would silently drop that diagnostic under v2 (the v4 twin above only pins
+# the accepting path).
+assertValidationRejects "a stray role ARN with signature v2 inside an ECS task (rejection still announces the ECS provider)" \
   "Running inside an ECS task, using container credentials" \
   -e AWS_SIGS_VERSION=2 \
   -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/credentials \

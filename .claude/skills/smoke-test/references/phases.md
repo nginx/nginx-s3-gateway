@@ -428,9 +428,18 @@ overlay's null key inherits from the shell):
    njs) and a distinctive `S3_REGION` → the object still serves (the
    origin does not enforce the scope region) and the sts-scoped
    `Credential=` line carries the `S3_REGION` value.
-10. Guard: recreate with `AWS_SIGS_VERSION=2` plus the overlay → the
+10. Guards: recreate with `AWS_SIGS_VERSION=2` plus the overlay → the
     container must exit non-zero without serving, logs containing
-    `AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2`.
+    `AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2`. Then the
+    same signature version with the dynamic-credentials overlay
+    instead (statics nulled, ECS credentials URI set), launched with
+    the same `env -u` scrub as probe 1 — the overlay's null keys
+    inherit from the shell, so real credentials exported there would
+    configure the statics and keep the guard silent → exit non-zero
+    with `AWS_SIGS_VERSION=2 requires static credentials` (GH-592),
+    and the `AWS_ROLE_ARN cannot be used` message must NOT appear when
+    a stray ARN is present without statics (AssumeRole is not the mode
+    njs would run).
 11. Error visibility with `DEBUG: "false"` and a wrong caller secret
     (scratch overlay) → `GET BASE/a.txt` → 500, and the error log still
     contains `Could not assume role using static credentials` with the

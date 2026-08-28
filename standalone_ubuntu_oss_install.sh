@@ -50,18 +50,26 @@ requireStaticCredentials() {
   done
 }
 
+# Static credential configuration flag, mirroring _readStaticCredentials in
+# awscredentials.js: both halves of the pair must hold a value, in either the
+# direct or the _FILE form. The environment cannot change while this script
+# runs, so the mode flags here are computed once and every consumer below -
+# the ladder, the sigv2 guards, the settings banner and the
+# /etc/nginx/environment writer - tests these flags instead of re-deriving
+# the predicates and risking drift.
+static_credentials_configured=0
+if { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
+  && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+  static_credentials_configured=1
+fi
+
 # STS AssumeRole mode flags (GH-122), mirroring _isAssumeRoleMode in
-# awscredentials.js (and 99-output-settings.sh in the container image). The
-# environment cannot change while this script runs, so the mode is computed
-# once and every consumer below - the ladder, the sigv2 guard, the settings
-# banner and the /etc/nginx/environment writer - tests these flags instead
-# of re-deriving the predicate and risking drift.
+# awscredentials.js (and 99-output-settings.sh in the container image).
 assume_role_selected=0 # a role ARN and no web identity token file
 assume_role_active=0   # selected, plus the statics that must sign AssumeRole
 if [ -n "${AWS_ROLE_ARN:-}" ] && [ -z "${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ]; then
   assume_role_selected=1
-  if { [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_ACCESS_KEY_ID_FILE:-}" ]; } \
-    && { [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY_FILE:-}" ]; }; then
+  if [ "${static_credentials_configured}" = 1 ]; then
     assume_role_active=1
   fi
 fi
@@ -254,6 +262,19 @@ fi
 # common/docker-entrypoint.d/00-check-for-required-env.sh.
 if [ "${AWS_SIGS_VERSION}" = "2" ] && [ "${assume_role_active}" = 1 ]; then
   >&2 echo "AWS_ROLE_ARN cannot be used with AWS_SIGS_VERSION=2: STS AssumeRole always yields a session token, which v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4."
+  failed=1
+fi
+
+# Without static credentials njs falls through to the instance credential
+# providers (ECS container credentials, EKS web identity / pod identity, and
+# finally EC2 IMDS), which all issue temporary credentials - and a session
+# token can never be covered by a v2 signature, the same failure mode as the
+# two guards above (GH-592). The gateway would start cleanly, announce the
+# provider, and then fail every request, so the only working v2 configuration
+# is stated in the positive: long-lived static credentials. This mirrors the
+# check in common/docker-entrypoint.d/00-check-for-required-env.sh.
+if [ "${AWS_SIGS_VERSION}" = "2" ] && [ "${static_credentials_configured}" = 0 ]; then
+  >&2 echo "AWS_SIGS_VERSION=2 requires static credentials: instance credential providers (EC2 IMDS, ECS, EKS) issue temporary credentials, whose session token v2 signatures do not cover, so S3 rejects every request. Use AWS_SIGS_VERSION=4, or configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
   failed=1
 fi
 
