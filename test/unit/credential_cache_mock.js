@@ -15,12 +15,13 @@
  */
 
 /**
- * Shared unit-test mock of the `instance_credential_cache` njs shared
- * dictionary that oss/etc/nginx/conf.d/instance_credential_cache.conf
- * configures in production. The njs CLI provides no `ngx.shared`, so the
- * suites that exercise credential caching install this mock on
- * `globalThis.ngx` first. Kept in one module so the suites cannot drift in
- * how they emulate the NgxSharedDict get/set contract.
+ * Shared unit-test mock of the `instance_credential_cache` and
+ * `credential_refresh_lock` njs shared dictionaries that
+ * oss/etc/nginx/conf.d/instance_credential_cache.conf configures in
+ * production. The njs CLI provides no `ngx.shared`, so the suites that
+ * exercise credential caching install this mock on `globalThis.ngx` first.
+ * Kept in one module so the suites cannot drift in how they emulate the
+ * NgxSharedDict get/set/add contract.
  *
  * @module credential_cache_mock
  * @alias CredentialCacheMock
@@ -37,11 +38,28 @@ import awscred from "include/awscredentials.js";
 const INSTANCE_CREDENTIAL_CACHE_KEY = awscred.INSTANCE_CREDENTIAL_CACHE_KEY;
 
 /**
+ * Key used by awscredentials.js for the single-flight refresh sentinel
+ * (GH-591), re-exported from the production module for the same
+ * anti-drift reason as INSTANCE_CREDENTIAL_CACHE_KEY above.
+ * @type {string}
+ */
+const CREDENTIAL_REFRESH_LOCK_KEY = awscred.CREDENTIAL_REFRESH_LOCK_KEY;
+
+/**
+ * Value the production module stores under the sentinel key, re-exported
+ * for the same anti-drift reason.
+ * @type {string}
+ */
+const CREDENTIAL_REFRESH_LOCK_VALUE = awscred.CREDENTIAL_REFRESH_LOCK_VALUE;
+
+/**
  * Builds a minimal NgxSharedDict-alike backed by a plain object: get()
- * returns undefined on a miss and set() is chainable, matching the real
- * shared-dictionary API that awscredentials.js relies on.
+ * returns undefined on a miss, set() is chainable, and add() refuses an
+ * existing key, matching the real shared-dictionary API that
+ * awscredentials.js relies on. No TTL emulation: production never passes a
+ * per-item timeout, so tests manipulate entry lifetime via set()/clear().
  *
- * @returns {object} shared-dictionary mock with get/set/clear
+ * @returns {object} shared-dictionary mock with get/set/add/clear
  */
 function makeSharedCredentialCache() {
     let values = {};
@@ -54,6 +72,13 @@ function makeSharedCredentialCache() {
             values[key] = value;
             return this;
         },
+        add: function(key, value) {
+            if (key in values) {
+                return false;
+            }
+            values[key] = value;
+            return true;
+        },
         clear: function() {
             values = {};
         }
@@ -61,16 +86,20 @@ function makeSharedCredentialCache() {
 }
 
 /**
- * Installs a fresh, empty credential cache mock on globalThis.ngx.shared so
- * that each test case starts without cached credentials from earlier cases.
+ * Installs fresh, empty credential cache and refresh-lock mocks on
+ * globalThis.ngx.shared so that each test case starts without cached
+ * credentials or a held sentinel from earlier cases.
  */
 function resetSharedCredentialCache() {
     globalThis.ngx.shared = {
-        instance_credential_cache: makeSharedCredentialCache()
+        instance_credential_cache: makeSharedCredentialCache(),
+        credential_refresh_lock: makeSharedCredentialCache()
     };
 }
 
 export default {
+    CREDENTIAL_REFRESH_LOCK_KEY,
+    CREDENTIAL_REFRESH_LOCK_VALUE,
     INSTANCE_CREDENTIAL_CACHE_KEY,
     makeSharedCredentialCache,
     resetSharedCredentialCache

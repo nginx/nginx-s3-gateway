@@ -899,6 +899,7 @@ download "common/etc/nginx/templates/gateway/s3_location_common.conf.template" "
 download "oss/etc/nginx/templates/upstreams.conf.template" "/etc/nginx/templates/upstreams.conf.template"
 download "oss/etc/nginx/templates/gateway/server_variables.conf.template" "/etc/nginx/templates/gateway/server_variables.conf.template"
 download "oss/etc/nginx/conf.d/instance_credential_cache.conf" "/etc/nginx/conf.d/instance_credential_cache.conf"
+download "common/etc/nginx/conf.d/credential_refresh_lock.conf" "/etc/nginx/conf.d/credential_refresh_lock.conf"
 
 # Older standalone installs cached temporary AWS credentials on disk,
 # resolving the path exactly as the deleted _credentialsTempFile() did: an

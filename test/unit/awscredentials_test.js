@@ -82,6 +82,16 @@ const ECS_CREDS_URL = `http://169.254.170.2${ECS_CREDS_RELATIVE_URI}`;
  */
 const INSTANCE_CREDENTIAL_CACHE_KEY = credentialCacheMock.INSTANCE_CREDENTIAL_CACHE_KEY;
 
+/**
+ * Key used by awscredentials.js for the single-flight refresh sentinel (GH-591).
+ */
+const CREDENTIAL_REFRESH_LOCK_KEY = credentialCacheMock.CREDENTIAL_REFRESH_LOCK_KEY;
+
+/**
+ * Value awscredentials.js stores under the sentinel key (GH-591).
+ */
+const CREDENTIAL_REFRESH_LOCK_VALUE = credentialCacheMock.CREDENTIAL_REFRESH_LOCK_VALUE;
+
 const resetSharedCredentialCache = credentialCacheMock.resetSharedCredentialCache;
 
 /**
@@ -161,6 +171,73 @@ function makeRecordingRequest(state) {
             state.returnedCode = code;
         },
     };
+}
+
+/**
+ * Builds the distinctive cached-credential object carrying the given
+ * expiration, so assertions can prove whether the cached or a freshly
+ * fetched set won. Single source of truth for the A_CACHED_* sentinel
+ * values across the shared-dict and keyval seeding paths.
+ */
+function makeCachedCredentials(expiration) {
+    return {
+        accessKeyId: 'A_CACHED_ACCESS_KEY_ID',
+        secretAccessKey: 'A_CACHED_SECRET_ACCESS_KEY',
+        sessionToken: 'A_CACHED_SECURITY_TOKEN',
+        expiration: expiration,
+    };
+}
+
+/**
+ * Seeds the OSS shared-dict credential cache with the distinctive
+ * credentials from makeCachedCredentials.
+ */
+function seedCachedCredentials(expiration) {
+    globalThis.ngx.shared.instance_credential_cache.set(INSTANCE_CREDENTIAL_CACHE_KEY,
+        JSON.stringify(makeCachedCredentials(expiration)));
+}
+
+/**
+ * Installs an ngx.fetch stub that resolves every request with the given
+ * response object and records the last fetched URL as state.fetchedUrl
+ * (null when no fetch happened). Recording instead of throwing keeps stub
+ * failures from being swallowed by fetchCredentials' try/catch.
+ */
+function installFetchStub(state, response) {
+    state.fetchedUrl = null;
+    globalThis.ngx.fetch = function (url) {
+        state.fetchedUrl = url;
+
+        return Promise.resolve(response);
+    };
+}
+
+/**
+ * Installs a recording ngx.fetch stub that resolves with the standard mock
+ * ECS credentials payload.
+ */
+function installRecordingFetch(state) {
+    installFetchStub(state, {
+        ok: true,
+        json: function () {
+            return Promise.resolve(MOCK_AWS_CREDS_RESPONSE);
+        }
+    });
+}
+
+/**
+ * Installs a recording ngx.fetch stub that fails every request with a 503.
+ */
+function installFailingFetch(state) {
+    installFetchStub(state, {
+        ok: false,
+        status: 503,
+        json: function () {
+            return Promise.resolve({
+                message: 'Service Unavailable',
+            });
+        }
+    });
 }
 
 
@@ -508,6 +585,296 @@ async function testFetchCredentialsUsesFreshCache() {
         }
     } finally {
         delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsInMarginElectsSingleRefresher() {
+    printHeader('testFetchCredentialsInMarginElectsSingleRefresher');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* 60s ahead: inside the 4.5-minute refresh margin but still valid. */
+    seedCachedCredentials(new Date(Date.now() + 60000).toISOString());
+    const state = {};
+    installRecordingFetch(state);
+    const r = makeExpect200Request();
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (state.fetchedUrl !== ECS_CREDS_URL) {
+            throw 'In-margin request with a free lock must refresh. ' +
+                `Recorded refresh URL: ${state.fetchedUrl}`;
+        }
+        const lock = globalThis.ngx.shared.credential_refresh_lock.get(CREDENTIAL_REFRESH_LOCK_KEY);
+        if (lock !== CREDENTIAL_REFRESH_LOCK_VALUE) {
+            throw 'The elected refresher must hold the refresh lock. ' +
+                `Lock value: ${lock}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsInMarginServesCachedWhenLockHeld() {
+    printHeader('testFetchCredentialsInMarginServesCachedWhenLockHeld');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    seedCachedCredentials(new Date(Date.now() + 60000).toISOString());
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const fetchState = {};
+    installRecordingFetch(fetchState);
+    const state = {};
+    const r = makeRecordingRequest(state);
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (fetchState.fetchedUrl !== null) {
+            throw 'A request that lost the lock election must not refresh. ' +
+                `Attempted fetch URL: ${fetchState.fetchedUrl}`;
+        }
+        if (state.returnedCode !== 200) {
+            throw 'Expected 200 status code, got: ' + state.returnedCode;
+        }
+        const cached = JSON.parse(globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY));
+        if (cached.accessKeyId !== 'A_CACHED_ACCESS_KEY_ID') {
+            throw 'The cached credentials must not be overwritten. ' +
+                `Cached access key: ${cached.accessKeyId}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsExpiredCacheBypassesLock() {
+    printHeader('testFetchCredentialsExpiredCacheBypassesLock');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* Truly expired: nothing valid is left to serve, so a held sentinel
+       (e.g. from a hung refresher) must not gate the refresh. */
+    seedCachedCredentials(new Date(Date.now() - 60000).toISOString());
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const state = {};
+    installRecordingFetch(state);
+    const r = makeExpect200Request();
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (state.fetchedUrl !== ECS_CREDS_URL) {
+            throw 'Truly expired credentials must refresh even with the lock held. ' +
+                `Recorded refresh URL: ${state.fetchedUrl}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsColdStartIgnoresLock() {
+    printHeader('testFetchCredentialsColdStartIgnoresLock');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* No cached credentials at all: cold start keeps blocking-fetch-for-all. */
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const state = {};
+    installRecordingFetch(state);
+    const r = makeExpect200Request();
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (state.fetchedUrl !== ECS_CREDS_URL) {
+            throw 'A cold start must fetch even with the lock held. ' +
+                `Recorded refresh URL: ${state.fetchedUrl}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsNumericEpochExpirationInMargin() {
+    printHeader('testFetchCredentialsNumericEpochExpirationInMargin');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* Numeric expirations are epoch SECONDS; pins the x1000 conversion
+       feeding the margin logic - a regression comparing seconds as
+       milliseconds would look ancient and herd. */
+    seedCachedCredentials(Math.floor((Date.now() + 60000) / 1000));
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const fetchState = {};
+    installRecordingFetch(fetchState);
+    const state = {};
+    const r = makeRecordingRequest(state);
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (fetchState.fetchedUrl !== null) {
+            throw 'An in-margin numeric expiration must serve from cache when the lock is held. ' +
+                `Attempted fetch URL: ${fetchState.fetchedUrl}`;
+        }
+        if (state.returnedCode !== 200) {
+            throw 'Expected 200 status code, got: ' + state.returnedCode;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsNaNExpirationRefetches() {
+    printHeader('testFetchCredentialsNaNExpirationRefetches');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* An unparseable expiration means the cached credentials cannot be
+       trusted to be valid, so the election must be skipped. */
+    seedCachedCredentials('not-a-date');
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const state = {};
+    installRecordingFetch(state);
+    const r = makeExpect200Request();
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (state.fetchedUrl !== ECS_CREDS_URL) {
+            throw 'An unparseable expiration must refresh even with the lock held. ' +
+                `Recorded refresh URL: ${state.fetchedUrl}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsInMarginHolderFailureServesCached() {
+    printHeader('testFetchCredentialsInMarginHolderFailureServesCached');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    seedCachedCredentials(new Date(Date.now() + 60000).toISOString());
+    const fetchState = {};
+    installFailingFetch(fetchState);
+    const state = {};
+    const r = makeRecordingRequest(state);
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (fetchState.fetchedUrl !== ECS_CREDS_URL) {
+            throw 'The elected refresher must have attempted the refresh. ' +
+                `Recorded refresh URL: ${fetchState.fetchedUrl}`;
+        }
+        if (state.returnedCode !== 200) {
+            throw 'A failed refresh with still-valid cached credentials must ' +
+                'serve from cache, got: ' + state.returnedCode;
+        }
+        const cached = JSON.parse(globalThis.ngx.shared.instance_credential_cache.get(INSTANCE_CREDENTIAL_CACHE_KEY));
+        if (cached.accessKeyId !== 'A_CACHED_ACCESS_KEY_ID') {
+            throw 'A failed refresh must not overwrite the cached credentials. ' +
+                `Cached access key: ${cached.accessKeyId}`;
+        }
+        const lock = globalThis.ngx.shared.credential_refresh_lock.get(CREDENTIAL_REFRESH_LOCK_KEY);
+        if (lock !== CREDENTIAL_REFRESH_LOCK_VALUE) {
+            throw 'The lock must stay held after a failed refresh so its ' +
+                `timeout paces the retries. Lock value: ${lock}`;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsColdStartFailureStill500s() {
+    printHeader('testFetchCredentialsColdStartFailureStill500s');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    const fetchState = {};
+    installFailingFetch(fetchState);
+    const state = {};
+    const r = makeRecordingRequest(state);
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (state.returnedCode !== 500) {
+            throw 'A cold-start fetch failure must surface as a 500, got: ' +
+                state.returnedCode;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+async function testFetchCredentialsInMarginKeyValStoreUsesLock() {
+    printHeader('testFetchCredentialsInMarginKeyValStoreUsesLock');
+    clearProviderEnv();
+    process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = ECS_CREDS_RELATIVE_URI;
+    /* Plus path: credentials come from the keyval store via r.variables, but
+       the sentinel still lives in the njs shared dict - the election must be
+       backend-independent. */
+    globalThis.ngx.shared.credential_refresh_lock.set(CREDENTIAL_REFRESH_LOCK_KEY, CREDENTIAL_REFRESH_LOCK_VALUE);
+    const fetchState = {};
+    installRecordingFetch(fetchState);
+    const state = {};
+    const r = makeRecordingRequest(state);
+    r.variables = {
+        cache_instance_credentials_enabled: 1,
+        instance_credential_json: JSON.stringify(
+            makeCachedCredentials(new Date(Date.now() + 60000).toISOString()))
+    };
+
+    try {
+        await awscred.fetchCredentials(r);
+
+        if (fetchState.fetchedUrl !== null) {
+            throw 'An in-margin keyval request that lost the election must not refresh. ' +
+                `Attempted fetch URL: ${fetchState.fetchedUrl}`;
+        }
+        if (state.returnedCode !== 200) {
+            throw 'Expected 200 status code, got: ' + state.returnedCode;
+        }
+    } finally {
+        delete process.env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'];
+    }
+}
+
+function testTryAcquireCredentialRefreshLock() {
+    printHeader('testTryAcquireCredentialRefreshLock');
+    const r = {
+        log: function(msg) {
+            console.log(msg);
+        },
+    };
+
+    try {
+        resetSharedCredentialCache();
+        if (awscred._tryAcquireCredentialRefreshLock(r) !== true) {
+            throw 'The first acquisition on a free lock must succeed';
+        }
+        if (awscred._tryAcquireCredentialRefreshLock(r) !== false) {
+            throw 'A second acquisition on a held lock must fail';
+        }
+
+        /* Fail-open when the lock zone is missing (e.g. a custom NGINX
+           configuration that predates GH-591): refresh must proceed. */
+        globalThis.ngx.shared = {
+            instance_credential_cache: credentialCacheMock.makeSharedCredentialCache()
+        };
+        if (awscred._tryAcquireCredentialRefreshLock(r) !== true) {
+            throw 'A missing lock zone must fail open and allow the refresh';
+        }
+
+        /* Fail-open when add() throws (e.g. SharedMemoryError on a full
+           zone): refresh must proceed. */
+        globalThis.ngx.shared = {
+            credential_refresh_lock: {
+                add: function() {
+                    throw 'SharedMemoryError: no free space';
+                }
+            }
+        };
+        if (awscred._tryAcquireCredentialRefreshLock(r) !== true) {
+            throw 'A throwing add() must fail open and allow the refresh';
+        }
+    } finally {
+        resetSharedCredentialCache();
     }
 }
 
@@ -1603,6 +1970,16 @@ async function test() {
     await testEcsCredentialRetrieval();
     await testFetchCredentialsRefreshesExpiredCache();
     await testFetchCredentialsUsesFreshCache();
+    await testFetchCredentialsInMarginElectsSingleRefresher();
+    await testFetchCredentialsInMarginServesCachedWhenLockHeld();
+    await testFetchCredentialsExpiredCacheBypassesLock();
+    await testFetchCredentialsColdStartIgnoresLock();
+    await testFetchCredentialsNumericEpochExpirationInMargin();
+    await testFetchCredentialsNaNExpirationRefetches();
+    await testFetchCredentialsInMarginHolderFailureServesCached();
+    await testFetchCredentialsColdStartFailureStill500s();
+    await testFetchCredentialsInMarginKeyValStoreUsesLock();
+    testTryAcquireCredentialRefreshLock();
     await testEKSPodIdentityCredentialRetrieval();
     await testEKSPodIdentityCredentialRetrievalNon200Response();
     await testEc2CredentialRetrievalNon200Response();
