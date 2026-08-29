@@ -60,6 +60,7 @@ DOCKERFILES       := Dockerfile.oss Dockerfile.plus Dockerfile.latest-njs Docker
 # to repo-relative paths because the shellcheck recipe cds into BASE_DIR.
 SHELL_SCRIPTS     := test.sh \
                      standalone_ubuntu_oss_install.sh \
+                     common/etc/nginx/gateway_env_lib.sh \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)test/*.sh)) \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)test/integration/*.sh)) \
                      $(patsubst $(BASE_DIR)%,%,$(wildcard $(BASE_DIR)common/docker-entrypoint.d/*.sh)) \
@@ -71,7 +72,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -264,11 +265,17 @@ retest-unprivileged: check-nginx-type check-s3-style check-tools ## Test the cur
 
 ##@ Lint
 
-lint: makefile-check shellcheck lint-md ## Run all linters (checkmake + shellcheck + rumdl)
+lint: makefile-check shellcheck envlib-sync-check lint-md ## Run all linters (checkmake + shellcheck + rumdl + helper sync)
 	@echo "All lints passed"
 
 makefile-check: ## Lint this Makefile with checkmake
 	cd "$(BASE_DIR)" && checkmake --config .checkmake.ini GNUmakefile
+
+envlib-sync-check: ## Verify the installer's synced copy of gateway_env_lib.sh matches the canonical file
+	@cd "$(BASE_DIR)" && diff \
+		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' common/etc/nginx/gateway_env_lib.sh) \
+		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' standalone_ubuntu_oss_install.sh) \
+		|| { echo "gateway_env_lib functions differ between common/etc/nginx/gateway_env_lib.sh and standalone_ubuntu_oss_install.sh - edit the marked regions together"; exit 1; }
 
 shellcheck: ## Lint shell scripts (pre-existing findings excluded, see SHELLCHECK_EXCLUDES)
 	cd "$(BASE_DIR)" && shellcheck --severity=warning \

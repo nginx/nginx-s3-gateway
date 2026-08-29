@@ -218,10 +218,15 @@ fi
 # pass. Access-Control-Max-Age and Access-Control-Allow/Expose-Headers are
 # deliberately not asserted: they are static template text a deployment may
 # customize by overriding cors.conf, not part of the method-policy contract
-# under test.
+# under test. Access-Control-Allow-Private-Network IS asserted: the CORS leg
+# configures CORS_ALLOW_PRIVATE_NETWORK_ACCESS=TRUE, so the preflight must
+# carry the header with the normalized literal 'true' (GH-600) - emitted by
+# the OPTIONS_1 block only, hence no matching assertion on GET/HEAD.
 assertRequest "OPTIONS" "/a.txt" "204" "preflight approved"
 assertHeaderEquals "Access-Control-Allow-Origin" "${cors_allowed_origin}" "preflight passes the configured origin through"
 assertHeaderEquals "Access-Control-Allow-Methods" "GET, HEAD, OPTIONS" "preflight advertises the enforced read-only policy"
+assertHeaderEquals "Access-Control-Allow-Private-Network" "true" "preflight carries the normalized private-network consent"
+assertHeaderCount "Access-Control-Allow-Private-Network" "1" "preflight carries the private-network header exactly once"
 
 # --- Served methods ---------------------------------------------------------
 assertRequest "GET" "/a.txt" "200" "GET served with CORS headers"

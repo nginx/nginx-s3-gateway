@@ -53,6 +53,7 @@ services:
       # CORS integration leg overrides both on its compose command line.
       CORS_ENABLED: "${CORS_ENABLED:-false}"
       CORS_ALLOWED_ORIGIN: "${CORS_ALLOWED_ORIGIN:-*}"
+      CORS_ALLOW_PRIVATE_NETWORK_ACCESS: "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}"
       IPV6_ENABLED:
       NGINX_LICENSE_JWT: "${NGINX_LICENSE_JWT-}"
 

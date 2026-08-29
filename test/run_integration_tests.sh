@@ -630,7 +630,10 @@ integration_test_cors() {
   # normalized "1" so the leg also exercises the parseBoolean path in
   # 01-set-defaults.envsh.
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" CORS_ENABLED=true CORS_ALLOWED_ORIGIN="${cors_test_origin}" compose up -d
+  # CORS_ALLOW_PRIVATE_NETWORK_ACCESS uses the uppercase spelling deliberately
+  # so the leg proves the boolean normalization in 01-set-defaults.envsh
+  # reaches the response header as the literal 'true' (GH-600).
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" CORS_ENABLED=true CORS_ALLOWED_ORIGIN="${cors_test_origin}" CORS_ALLOW_PRIVATE_NETWORK_ACCESS=TRUE compose up -d
 
   wait_for_gateway
 
@@ -919,6 +922,9 @@ bash "${test_dir}/integration/test_entrypoint_cache_ignore_headers.sh" "${docker
 
 p "Testing access log cache status entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_access_log_cache_status.sh" "${docker_cmd}"
+
+p "Testing boolean validation entrypoint scripts"
+bash "${test_dir}/integration/test_entrypoint_boolean_validation.sh" "${docker_cmd}"
 
 p "Testing file-backed credential entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"

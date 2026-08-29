@@ -100,14 +100,17 @@ assertRenders() {
   fi
 }
 
-# parseBoolean treats every unrecognized spelling - including the lowercase
-# 'yes' - as false, so these must fail at startup rather than silently keep
+# The boolean grammar (gateway_env_lib.sh) is true|yes|1 / false|no|0 in any
+# letter case; anything else must fail at startup rather than silently keep
 # the cache status out of the access log.
-assertRejects "yes"
 assertRejects "enabled"
+assertRejects "on"
 assertAccepts "true"
 assertAccepts "false"
+assertAccepts "yes"
+assertAccepts "no"
 assertAccepts "YES"
+assertAccepts "TrUe"
 assertAccepts "0"
 
 # Unset must render the historical combined-log-compatible format unchanged;

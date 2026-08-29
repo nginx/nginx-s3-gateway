@@ -20,6 +20,68 @@ import utils from "include/utils.js";
 
 const fs = require('fs');
 
+function testParseBoolean() {
+    printHeader('testParseBoolean');
+
+    function testCanonicalTable() {
+        console.log('  ## testCanonicalTable');
+        // The exported table is the contract the shell helpers
+        // (gateway_env_lib.sh) and test_entrypoint_boolean_validation.sh
+        // pin against - a change here must be made on both sides.
+        const expectedTrue = ['true', 'yes', '1'];
+        const expectedFalse = ['false', 'no', '0'];
+        if (utils.BOOLEAN_TRUE_VALUES.join(',') !== expectedTrue.join(',')) {
+            throw 'Unexpected BOOLEAN_TRUE_VALUES\n' +
+                `Actual:   [${utils.BOOLEAN_TRUE_VALUES.join(',')}]\n` +
+                `Expected: [${expectedTrue.join(',')}]`;
+        }
+        if (utils.BOOLEAN_FALSE_VALUES.join(',') !== expectedFalse.join(',')) {
+            throw 'Unexpected BOOLEAN_FALSE_VALUES\n' +
+                `Actual:   [${utils.BOOLEAN_FALSE_VALUES.join(',')}]\n` +
+                `Expected: [${expectedFalse.join(',')}]`;
+        }
+    }
+    function testTrueSpellings() {
+        console.log('  ## testTrueSpellings');
+        const spellings = ['true', 'TRUE', 'True', 'TrUe',
+            'yes', 'YES', 'Yes', 'yEs', '1'];
+        spellings.forEach((value) => {
+            if (utils.parseBoolean(value) !== true) {
+                throw `True spelling not parsed as true: [${value}]`;
+            }
+        });
+    }
+    function testFalseSpellings() {
+        console.log('  ## testFalseSpellings');
+        const spellings = ['false', 'FALSE', 'False', 'FaLsE',
+            'no', 'NO', 'No', 'nO', '0'];
+        spellings.forEach((value) => {
+            if (utils.parseBoolean(value) !== false) {
+                throw `False spelling not parsed as false: [${value}]`;
+            }
+        });
+    }
+    function testUnrecognizedValuesAreFalse() {
+        console.log('  ## testUnrecognizedValuesAreFalse');
+        // Unrecognized spellings mean false at parse time: startup
+        // validation, not parsing, rejects them. undefined covers unset env
+        // vars read at module scope; the near-misses cover whitespace and
+        // the on/off family that is deliberately not in the grammar.
+        const values = ['on', 'off', 'enabled', 'disabled', '01',
+            'yes ', ' true', 'truthy', '', undefined, null];
+        values.forEach((value) => {
+            if (utils.parseBoolean(value) !== false) {
+                throw `Unrecognized value not parsed as false: [${value}]`;
+            }
+        });
+    }
+
+    testCanonicalTable();
+    testTrueSpellings();
+    testFalseSpellings();
+    testUnrecognizedValuesAreFalse();
+}
+
 function testParseArray() {
     printHeader('testParseArray');
 
@@ -349,6 +411,7 @@ async function test() {
     testAmzDatetime();
     testEightDigitDate();
     testPad();
+    testParseBoolean();
     testParseArray();
     testAreAllEnvVarsSet();
     testReadEnvVarOrFile();
