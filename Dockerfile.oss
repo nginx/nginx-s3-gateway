@@ -10,6 +10,16 @@ ENV PROXY_CACHE_VALID_FORBIDDEN=30s
 ENV PROXY_CACHE_BYPASS_NO_CACHE=false
 ENV PROXY_CACHE_IGNORE_HEADERS=""
 
+# Access log env vars
+ENV ACCESS_LOG_CACHE_STATUS=false
+
+# Restrict the base image's template renderer (20-envsubst-on-templates.sh) to
+# ALL-CAPS variable names: every gateway setting is uppercase, while the nginx
+# runtime variables the templates must keep literally ($status, $remote_addr,
+# $upstream_cache_status, ...) are lowercase and would otherwise be rewritten
+# whenever a same-named environment variable happens to be set.
+ENV NGINX_ENVSUBST_FILTER="^[A-Z0-9_]+$"
+
 # CORS env vars
 ENV CORS_ENABLED=0
 ENV CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""

@@ -311,6 +311,15 @@ case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
   *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
 esac
 
+# Normalize to 1/0: the flag is written to /etc/nginx/environment below, and
+# template_nginx_config.sh derives the log-format fragment from it at every
+# service start. This mirrors the normalization in
+# common/docker-entrypoint.d/01-set-defaults.envsh.
+case "${ACCESS_LOG_CACHE_STATUS:-false}" in
+  TRUE | true | True | YES | Yes | 1) ACCESS_LOG_CACHE_STATUS=1 ;;
+  *) ACCESS_LOG_CACHE_STATUS=0 ;;
+esac
+
 # Normalize to 1/0: cors.conf.template matches "$request_method_1" literally
 # and the LIMIT_METHODS_TO selection below compares against '1', so the
 # documented true/false form would otherwise silently disable CORS. This
@@ -411,6 +420,7 @@ echo "Proxy Caching Time for Forbidden Response: ${PROXY_CACHE_VALID_FORBIDDEN}"
 echo "Proxy Cache Using Stale: ${PROXY_CACHE_USE_STALE}"
 echo "Proxy Cache Bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}"
 echo "Proxy Cache Ignoring S3 Response Headers: ${PROXY_CACHE_IGNORE_HEADERS:-}"
+echo "Access log includes upstream cache status: ${ACCESS_LOG_CACHE_STATUS}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
@@ -562,6 +572,15 @@ LIMIT_METHODS_TO_CSV="GET, HEAD"
 EOF
 fi
 
+# Only the 1/0 flag is persisted; template_nginx_config.sh derives the
+# ACCESS_LOG_CACHE_STATUS_FIELD log-format fragment from it at every service
+# start, so editing the flag here and restarting nginx takes effect without
+# re-running this installer.
+cat >> "/etc/nginx/environment" << EOF
+# Flag (1/0) appending the upstream cache status to each access-log line
+ACCESS_LOG_CACHE_STATUS=${ACCESS_LOG_CACHE_STATUS}
+EOF
+
 # S3_UPSTREAM and S3_HOST_HEADER are computed from S3_STYLE before the
 # settings banner above so the logged origin matches the effective values.
 cat >> "/etc/nginx/environment" << EOF
@@ -693,7 +712,13 @@ auto_envsubst() {
   local output_dir="${NGINX_ENVSUBST_OUTPUT_DIR:-/etc/nginx/conf.d}"
 
   local template defined_envs relative_path output_path subdir
-  defined_envs=$(printf '${%s} ' $(env | cut -d= -f1))
+  # Substitute only ALL-CAPS variable names: every gateway setting in
+  # /etc/nginx/environment is uppercase, while the nginx runtime variables the
+  # templates must keep literally ($status, $remote_addr,
+  # $upstream_cache_status, ...) are lowercase and would otherwise be
+  # rewritten whenever a same-named environment variable happens to be set.
+  # Mirrors NGINX_ENVSUBST_FILTER in the container image.
+  defined_envs=$(printf '${%s} ' $(env | cut -d= -f1 | grep -E '^[A-Z0-9_]+$'))
   [ -d "$template_dir" ] || return 0
   if [ ! -w "$output_dir" ]; then
     echo "$ME: ERROR: $template_dir exists, but $output_dir is not writable"
@@ -753,6 +778,20 @@ CONF
 # Attempt to read DNS Resolvers from /etc/resolv.conf
 if [ -z ${DNS_RESOLVERS+x} ]; then
   export DNS_RESOLVERS="$(cat /etc/resolv.conf | grep nameserver | cut -d' ' -f2 | xargs)"
+fi
+
+# Derive the access-log format fragment before rendering: a trailing
+# ' "$upstream_cache_status"' field when ACCESS_LOG_CACHE_STATUS=1, empty
+# otherwise so the rendered format stays byte-identical to the historical
+# one. Deriving on every start (mirroring the container image's
+# 01-set-defaults.envsh) keeps the flag in /etc/nginx/environment live: edit
+# it and restart nginx to change the format. The single quotes matter:
+# gateway/logging.conf.template must receive a literal $upstream_cache_status
+# for nginx to evaluate.
+if [ "${ACCESS_LOG_CACHE_STATUS:-0}" = "1" ]; then
+  export ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
+else
+  export ACCESS_LOG_CACHE_STATUS_FIELD=''
 fi
 
 auto_envsubst
@@ -870,6 +909,8 @@ env FOUR_O_FOUR_ON_EMPTY_BUCKET;
 # STRIP/PREFIX_LEADING_DIRECTORY_PATH are deliberately not whitelisted, for
 # parity with the container image: njs must only see these through nginx
 # variables, never process.env.
+# ACCESS_LOG_CACHE_STATUS(_FIELD) are excluded for the same reason: njs never
+# reads them, and the rendered gateway/logging.conf is their only consumer.
 
 events {
     worker_connections  1024;
@@ -880,11 +921,13 @@ http {
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 
-    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
-                      '$status $body_bytes_sent "$http_referer" '
-                      '"$http_user_agent" "$http_x_forwarded_for"';
-
-    access_log  /var/log/nginx/access.log  main;
+    # The log_format/access_log block, rendered from
+    # templates/gateway/logging.conf.template so that ACCESS_LOG_CACHE_STATUS
+    # can extend the format. It must replace the old static block rather than
+    # ride the conf.d wildcard below: access_log is additive at the same
+    # level, so a second definition would double-log every request (files
+    # under conf.d/gateway/ are outside the wildcard, which does not recurse).
+    include /etc/nginx/conf.d/gateway/logging.conf;
 
     sendfile        on;
     #tcp_nopush     on;
@@ -913,6 +956,7 @@ download "common/etc/nginx/templates/gateway/cors.conf.template" "/etc/nginx/tem
 download "common/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template" "/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template"
 download "common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template" "/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template"
 download "common/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template" "/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template"
+download "common/etc/nginx/templates/gateway/logging.conf.template" "/etc/nginx/templates/gateway/logging.conf.template"
 download "common/etc/nginx/templates/gateway/s3listing_location.conf.template" "/etc/nginx/templates/gateway/s3listing_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_location.conf.template" "/etc/nginx/templates/gateway/s3_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_server.conf.template" "/etc/nginx/templates/gateway/s3_server.conf.template"

@@ -557,15 +557,27 @@ integration_test_cache_bypass() {
   # configured by the STRIP/PREFIX_LEADING_DIRECTORY_PATH passes cannot leak
   # in. Changing the environment makes compose recreate the gateway
   # container, which discards the proxy cache so that each phase starts with
-  # an empty cache.
+  # an empty cache. ACCESS_LOG_CACHE_STATUS toggles with the phase so the
+  # access-log assertions below get both a cold cache and, in the enabled
+  # phase, the bypass configuration their BYPASS assertion needs - without
+  # an extra gateway recreation of their own.
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" compose up -d
+  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" PROXY_CACHE_BYPASS_NO_CACHE="${bypass_setting}" ACCESS_LOG_CACHE_STATUS="${bypass_setting}" compose up -d
 
   wait_for_gateway
 
   p "Starting cache bypass tests (phase: ${bypass_phase})"
   echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${s3_origin_server}\" \"${s3_origin_bucket}\" \"${s3_origin_user}\" \"${s3_origin_passwd}\""
   bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${s3_origin_server}" "${s3_origin_bucket}" "${s3_origin_user}" "${s3_origin_passwd}"
+
+  # The log assertions read `docker logs` of the phase's gateway container
+  # directly (the access log reaches stdout through the base image's
+  # /var/log/nginx/access.log symlink), so resolve the container the compose
+  # recreation above actually started.
+  gateway_container_id="$(compose ps -q nginx-s3-gateway)"
+  p "Starting access log cache status tests (phase: ${bypass_phase})"
+  echo "  test/integration/test_access_log_cache_status.sh \"$test_server\" ${bypass_phase} \"${docker_cmd}\" \"${gateway_container_id}\""
+  bash "${test_dir}/integration/test_access_log_cache_status.sh" "${test_server}" "${bypass_phase}" "${docker_cmd}" "${gateway_container_id}"
 }
 
 integration_test_cache_ignore_headers() {
@@ -904,6 +916,9 @@ bash "${test_dir}/integration/test_entrypoint_output_settings.sh" "${docker_cmd}
 
 p "Testing proxy cache ignore headers entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_cache_ignore_headers.sh" "${docker_cmd}"
+
+p "Testing access log cache status entrypoint scripts"
+bash "${test_dir}/integration/test_entrypoint_access_log_cache_status.sh" "${docker_cmd}"
 
 p "Testing file-backed credential entrypoint scripts"
 bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"

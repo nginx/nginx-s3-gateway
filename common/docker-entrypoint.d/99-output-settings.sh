@@ -86,4 +86,5 @@ S3 Backend Environment:
   Proxy cache using stale setting: ${PROXY_CACHE_USE_STALE}
   Proxy cache bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}
   Proxy cache ignoring these S3 response headers: ${PROXY_CACHE_IGNORE_HEADERS}
+  Access log includes upstream cache status: ${ACCESS_LOG_CACHE_STATUS}
 EOM

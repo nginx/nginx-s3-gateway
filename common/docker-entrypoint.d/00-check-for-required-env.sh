@@ -350,6 +350,21 @@ if [ -n "${PROXY_CACHE_BYPASS_NO_CACHE:-}" ]; then
   esac
 fi
 
+# ACCESS_LOG_CACHE_STATUS is optional (unset and empty default to false), but
+# when it is set it must be a spelling that parseBoolean recognizes:
+# parseBoolean treats every unrecognized value - including the lowercase
+# 'yes' - as false, so a typo would otherwise silently keep the cache status
+# out of the access log.
+if [ -n "${ACCESS_LOG_CACHE_STATUS:-}" ]; then
+  case "${ACCESS_LOG_CACHE_STATUS}" in
+    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
+    *)
+      >&2 echo "ACCESS_LOG_CACHE_STATUS contains an invalid value (${ACCESS_LOG_CACHE_STATUS}). Valid values: true, false"
+      failed=1
+      ;;
+  esac
+fi
+
 # PROXY_CACHE_IGNORE_HEADERS is optional (unset and empty leave
 # proxy_ignore_headers out of the configuration entirely). Its value is
 # interpolated verbatim into nginx configuration by

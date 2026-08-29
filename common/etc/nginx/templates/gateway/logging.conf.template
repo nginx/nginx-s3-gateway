@@ -1,0 +1,16 @@
+# The access-log format and destination, included explicitly by nginx.conf
+# in place of a static definition so that ACCESS_LOG_CACHE_STATUS can extend
+# the format. ACCESS_LOG_CACHE_STATUS_FIELD is derived by
+# 01-set-defaults.envsh: ' "$upstream_cache_status"' when enabled, empty
+# otherwise - so the disabled rendering is byte-identical to the historical
+# combined-log-compatible format. envsubst leaves the nginx runtime variables
+# below untouched - NGINX_ENVSUBST_FILTER (set in the Dockerfiles, mirrored by
+# the standalone renderer) keeps their lowercase names out of the defined-envs
+# list even when a same-named environment variable is set - and does not
+# re-expand its output, so the literal $upstream_cache_status lands in the
+# rendered config for nginx to evaluate.
+log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+'$status $body_bytes_sent "$http_referer" '
+'"$http_user_agent" "$http_x_forwarded_for"${ACCESS_LOG_CACHE_STATUS_FIELD}';
+
+access_log  /var/log/nginx/access.log  main;
