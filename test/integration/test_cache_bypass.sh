@@ -61,12 +61,6 @@ if [ "${phase}" != "disabled" ] && [ "${phase}" != "enabled" ]; then
   exit ${no_dep_exit_code}
 fi
 
-aws_cmd="$(command -v aws || true)"
-if ! [ -x "${aws_cmd}" ]; then
-  e "required dependency not found: aws (the AWS CLI, used as the S3 test client) not found in the path or not executable"
-  exit ${no_dep_exit_code}
-fi
-
 if [ -z "${origin_endpoint}" ]; then
   e "missing fourth parameter: endpoint URL of the S3 origin (eg http://localhost:9090)"
   exit ${no_dep_exit_code}
@@ -192,23 +186,12 @@ assertRangeGetEquals() {
   fi
 }
 
-# Mirrors origin_client in run_integration_tests.sh: every AWS CLI invocation
-# is isolated from operator AWS state (~/.aws config/credentials, exported
-# profiles and session tokens are all bypassed) so real credentials can never
-# reach the test origin, and the custom --endpoint-url makes the CLI sign
-# path-style requests, which the origin requires. The cache legs only run
-# against the HTTP origin, so no TLS flag is threaded through.
-# origin_client <aws cli args...>
-origin_client() {
-  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_SESSION_TOKEN \
-    AWS_ACCESS_KEY_ID="${origin_access_key}" \
-    AWS_SECRET_ACCESS_KEY="${origin_secret_key}" \
-    AWS_CONFIG_FILE=/dev/null \
-    AWS_SHARED_CREDENTIALS_FILE=/dev/null \
-    AWS_EC2_METADATA_DISABLED=true \
-    AWS_PAGER="" \
-    "${aws_cmd}" --endpoint-url "${origin_endpoint}" --region us-east-1 "$@"
-}
+# origin_client (and the aws_cmd lookup, which aborts with the no-dependency
+# exit code when the AWS CLI is missing) comes from the shared client lib, so
+# its operator-credential isolation cannot drift from the parent runner's.
+# The lib derives TLS handling from the endpoint scheme.
+. "$(dirname "${BASH_SOURCE[0]}")/s3_client_lib.sh" \
+  "${origin_endpoint}" "${origin_access_key}" "${origin_secret_key}"
 
 # Overwrites an object in the S3 origin with the contents of a local
 # file, without touching the gateway's cache.

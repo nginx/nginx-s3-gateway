@@ -1,7 +1,11 @@
 services:
   nginx-s3-gateway:
-    # The healthcheck proves the origin is answering S3 requests, so waiting
-    # on it means the gateway never races the origin's startup.
+    # The healthcheck proves the origin's HTTP listener is up (/health only:
+    # RustFS's IAM subsystem can lag behind it and briefly reject
+    # authenticated S3 calls with "waiting for iam"), so waiting on it keeps
+    # the gateway from racing the origin's startup but does not guarantee the
+    # first S3 call succeeds - run_integration_tests.sh additionally gates
+    # seeding on an authenticated request (see seed_origin_data).
     depends_on:
       rustfs:
         condition: service_healthy

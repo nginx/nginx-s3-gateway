@@ -346,6 +346,10 @@ test-settings.*
 s3-requests.http
 httpRequests/
 
+# Legacy install dir for the retired mc S3 client; pre-AWS-CLI checkouts may
+# still carry the binary there and it must not be committed.
+.bin/
+
 # Created by https://www.toptal.com/developers/gitignore/api/terraform
 # Edit at https://www.toptal.com/developers/gitignore?templates=terraform
 

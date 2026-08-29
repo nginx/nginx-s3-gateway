@@ -68,7 +68,6 @@ s3_origin_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 s3_origin_bucket="bucket-1"
 test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
 test_secrets_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-secrets"
-aws_extra_args=()
 
 DOCKER="${DOCKER:-docker}"
 NGINX_TYPE="${NGINX_TYPE:-oss}"
@@ -159,35 +158,13 @@ if ! [ -x "${curl_cmd}" ]; then
   exit ${no_dep_exit_code}
 fi
 
-aws_cmd="$(command -v aws || true)"
-if ! [ -x "${aws_cmd}" ]; then
-  e "required dependency not found: aws (the AWS CLI, used as the S3 test client) not found in the path or not executable"
-  exit ${no_dep_exit_code}
-fi
-e "Using AWS CLI (S3 test client): ${aws_cmd}"
-
-# Runs the AWS CLI as a generic S3 client against the test origin with the
-# origin's root credentials. Every invocation is isolated from operator AWS
-# state - ~/.aws config/credentials, exported profiles and session tokens are
-# all bypassed - so real credentials can never reach the test origin and a
-# local profile cannot repoint the client: the same isolation the compose_*
-# wrappers apply with env -u. A custom --endpoint-url makes the CLI sign
-# path-style requests, which the origin requires because localhost is not in
-# the compose file's RUSTFS_SERVER_DOMAINS. The ${arr[@]+...} expansion keeps
-# an empty aws_extra_args from tripping `set -o nounset` on bash < 4.4
-# (macOS ships bash 3.2).
-# origin_client <aws cli args...>
-origin_client() {
-  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_SESSION_TOKEN \
-    AWS_ACCESS_KEY_ID="${s3_origin_user}" \
-    AWS_SECRET_ACCESS_KEY="${s3_origin_passwd}" \
-    AWS_CONFIG_FILE=/dev/null \
-    AWS_SHARED_CREDENTIALS_FILE=/dev/null \
-    AWS_EC2_METADATA_DISABLED=true \
-    AWS_PAGER="" \
-    "${aws_cmd}" --endpoint-url "${s3_origin_server}" --region us-east-1 \
-    ${aws_extra_args[@]+"${aws_extra_args[@]}"} "$@"
-}
+# origin_client (and the aws_cmd lookup, which aborts with the no-dependency
+# exit code when the AWS CLI is missing) comes from the shared client lib:
+# the cache sub-tests need the identical operator-credential isolation, and
+# per-script copies of a security contract drift (GH-593).
+. "${test_dir}/integration/s3_client_lib.sh" \
+  "${s3_origin_server}" "${s3_origin_user}" "${s3_origin_passwd}"
+s3_client_announce
 
 # Blocks until the gateway answers an HTTP request, replacing the external
 # wait-for-it dependency.
@@ -284,10 +261,12 @@ compose_secret_file_credentials() {
 compose_assume_role() {
   prepare_compose_env
 
-  # The overlay pins its own AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, but the
-  # null AWS_SESSION_TOKEN entry means "inherit from the shell" to compose,
-  # so an operator's real session token has to be scrubbed here or it would
-  # be signed into the AssumeRole call and rejected by the origin.
+  # The base compose file pins AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY as
+  # literals (the overlay inherits the root pair for the AssumeRole call, so
+  # an operator's exported keys cannot leak in), but the overlay's null
+  # AWS_SESSION_TOKEN entry means "inherit from the shell" to compose, so an
+  # operator's real session token has to be scrubbed here or it would be
+  # signed into the AssumeRole call and rejected by the origin.
   env -u AWS_SESSION_TOKEN \
     "${docker_compose_cmd[@]}" \
     -f "${test_compose_config}" -f "${assume_role_compose_config}" \
@@ -307,6 +286,9 @@ set_test_origin() {
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
   export TEST_PROXY_CACHE_SLICE_SIZE="1m"
   s3_origin_server="${origin_proto}://localhost:9090"
+  # The client lib derives its TLS handling from the endpoint scheme, so
+  # re-pointing it is all an origin flip needs.
+  s3_client_set_endpoint "${s3_origin_server}"
   if [ "${origin_proto}" = "https" ]; then
     # Mount point of the generated test certificates inside the origin
     # container. RustFS serves TLS only when RUSTFS_TLS_PATH names a
@@ -314,12 +296,8 @@ set_test_origin() {
     # start when the path is set but missing or empty, so the HTTP branch
     # must leave the variable empty rather than point at a placeholder.
     export TEST_S3_TLS_PATH="/tls"
-    # --no-verify-ssl makes the AWS CLI print a urllib3 InsecureRequestWarning
-    # on stderr per call; harmless against the throwaway test certificate.
-    aws_extra_args=(--no-verify-ssl)
   else
     export TEST_S3_TLS_PATH=""
-    aws_extra_args=()
   fi
 }
 
@@ -408,12 +386,16 @@ seed_origin_data() {
   # RustFS's IAM subsystem can lag /health right after a stack recreation
   # (authenticated calls are rejected with "waiting for iam"), so also gate
   # on an authenticated API call. list-buckets is used because it succeeds
-  # for the root user whether or not the bucket exists yet.
+  # for the root user whether or not the bucket exists yet. The probe's
+  # stderr is kept (2>&1 before the stdout redirect captures only stderr) and
+  # printed on exhaustion: an InvalidAccessKeyId from drifted credentials
+  # would otherwise be indistinguishable from the IAM lag this loop absorbs.
   iam_is_up=""
+  iam_probe_error=""
   for (( i=1; i<=15; i++ ))
   do
     echo "Querying the S3 origin API to see if it accepts authenticated requests"
-    if origin_client s3api list-buckets > /dev/null 2>&1; then
+    if iam_probe_error="$(origin_client s3api list-buckets 2>&1 > /dev/null)"; then
       iam_is_up="1"
       break
     else
@@ -422,21 +404,32 @@ seed_origin_data() {
   done
   if [ "${iam_is_up}" != "1" ]; then
     e "the S3 origin at ${s3_origin_server} did not accept an authenticated request"
+    e "last error from the S3 client: ${iam_probe_error}"
     exit "$test_fail_exit_code"
   fi
 
   p "Adding test data to container"
   # A bucket left behind by an aborted previous run (compose containers
-  # survive a failed teardown) must not fail the seeding step under errexit,
-  # so only create it when the probe says it is missing (the equivalent of
-  # the previous S3 client's ignore-existing bucket creation).
-  if ! origin_client s3api head-bucket --bucket "${s3_origin_bucket}" > /dev/null 2>&1; then
-    origin_client s3api create-bucket --bucket "${s3_origin_bucket}" > /dev/null
+  # survive a failed teardown) must not fail the seeding step under errexit
+  # (the equivalent of the previous S3 client's ignore-existing bucket
+  # creation), so a create-bucket failure falls back to a head-bucket probe:
+  # it succeeds when the failure was BucketAlreadyOwnedByYou and keeps a
+  # genuine failure loud - head-bucket's stderr is not discarded and errexit
+  # aborts on it. Probe-then-create would instead abort the suite when a
+  # transient probe failure sent an existing bucket into create-bucket.
+  if ! origin_client s3api create-bucket --bucket "${s3_origin_bucket}" > /dev/null 2>&1; then
+    origin_client s3api head-bucket --bucket "${s3_origin_bucket}" > /dev/null
   fi
   echo "Copying contents of ${test_dir}/data/${s3_origin_bucket} to the S3 origin"
   # --no-progress keeps the transfer meter out of CI logs but still prints
-  # one upload line per object.
-  origin_client s3 cp --recursive --no-progress "${test_dir}/data/${s3_origin_bucket}" "s3://${s3_origin_bucket}"
+  # one upload line per object. The --exclude patterns keep hidden files
+  # (.DS_Store, editor swap files - invisible to git because test/data is
+  # blanket-gitignored) out of the bucket the way the dotfile-skipping glob
+  # this replaced did: the directory-listing legs assert an exact object
+  # population, and a stray dotfile would shift every pagination page.
+  origin_client s3 cp --recursive --no-progress \
+    --exclude ".*" --exclude "*/.*" \
+    "${test_dir}/data/${s3_origin_bucket}" "s3://${s3_origin_bucket}"
   # RustFS declares VOLUME /data, so `docker diff` (which the seeding step
   # once printed here) would show nothing; list the seeded objects instead.
   echo "Seeded bucket contents:"
