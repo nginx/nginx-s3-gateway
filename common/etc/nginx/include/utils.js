@@ -39,6 +39,18 @@ const fs = require('fs');
 const NOW = new Date();
 
 /**
+ * The canonical boolean spellings, matched case-insensitively. This is the
+ * same grammar the shell-side helpers in /etc/nginx/gateway_env_lib.sh
+ * accept, and test_entrypoint_boolean_validation.sh pins the two
+ * implementations against each other - change them together.
+ *
+ * Declared ahead of the DEBUG constant below: parseBoolean runs at module
+ * scope for DEBUG, so the tables it reads must already be initialized.
+ */
+const BOOLEAN_TRUE_VALUES = ['true', 'yes', '1'];
+const BOOLEAN_FALSE_VALUES = ['false', 'no', '0'];
+
+/**
  * Flag indicating debug mode operation. If true, additional information
  * about signature generation will be logged.
  * @type {boolean}
@@ -167,25 +179,18 @@ function parseArray(string) {
 }
 
 /**
- * Parses a string to and returns a boolean value based on its value. If the
- * string can't be parsed, this method returns false.
+ * Parses a value to a boolean: true for the spellings in
+ * BOOLEAN_TRUE_VALUES in any letter case, false for everything else.
+ * Unrecognized spellings mean false here so that startup validation
+ * (00-check-for-required-env.sh), not parsing, is the single place that
+ * rejects them - and so unset env vars and nginx js_var defaults keep
+ * parsing cleanly.
  *
- * @param string {*} value representing a boolean
- * @returns {boolean} boolean value of string
+ * @param value {*} value representing a boolean
+ * @returns {boolean} boolean value of value
  */
-function parseBoolean(string) {
-    switch(string) {
-        case "TRUE":
-        case "true":
-        case "True":
-        case "YES":
-        case "yes":
-        case "Yes":
-        case "1":
-            return true;
-        default:
-            return false;
-    }
+function parseBoolean(value) {
+    return BOOLEAN_TRUE_VALUES.indexOf(String(value).toLowerCase()) !== -1;
 }
 
 /**
@@ -296,5 +301,7 @@ export default {
     requireEnvVar,
     // These functions do not need to be exposed, but they are exposed so that
     // unit tests can run against them.
-    resetEnvVarFileCache
+    resetEnvVarFileCache,
+    BOOLEAN_TRUE_VALUES,
+    BOOLEAN_FALSE_VALUES
 }

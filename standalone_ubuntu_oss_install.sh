@@ -28,6 +28,82 @@ if ! dpkg --status wget 2>/dev/null | grep --quiet Status > /dev/null; then
   exit 1
 fi
 
+# Shared boolean parsing/validation helpers. This is a synced copy of the
+# marked region in common/etc/nginx/gateway_env_lib.sh: this installer is a
+# single self-contained download, so it cannot source the library from a
+# repo checkout, and fetching it over the network at run time would source an
+# unpinned, unverified file as root. `make lint` (envlib-sync-check) fails
+# when the two regions differ - edit them together.
+# --- gateway_env_lib functions BEGIN ---
+# Prints $1 lowercased (boolean spellings are ASCII, so tr's classes suffice).
+lowercaseValue() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+# Prints 1 when $1 is a recognized true spelling, otherwise 0. Unrecognized
+# spellings mean false here so that startup validation, not parsing, is the
+# single place that rejects them.
+parseBoolean() {
+  case "$(lowercaseValue "${1:-}")" in
+    true | yes | 1)
+      echo 1
+      ;;
+    *)
+      echo 0
+      ;;
+  esac
+}
+
+# Prints 1 for a recognized true spelling, 0 for a recognized false spelling,
+# and the empty string otherwise - for settings where unset/empty is a third
+# state (IPV6_ENABLED's auto-detection, the omitted
+# Access-Control-Allow-Private-Network header). An unrecognized non-empty
+# value also prints the empty string: validateBooleanVar is expected to have
+# rejected it already, and the historical behavior of both tri-state
+# consumers was to fall back to the unset case.
+parseBooleanTristate() {
+  case "$(lowercaseValue "${1:-}")" in
+    true | yes | 1)
+      echo 1
+      ;;
+    false | no | 0)
+      echo 0
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+# Succeeds (exit 0) when $1 is a recognized boolean spelling.
+isBooleanSpelling() {
+  case "$(lowercaseValue "${1:-}")" in
+    true | yes | 1 | false | no | 0)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# validateBooleanVar NAME VALUE [valid_values_suffix]
+#
+# Returns nonzero and prints the standard diagnostic to stderr when VALUE is
+# non-empty and not a recognized boolean spelling. Empty values pass: every
+# boolean setting treats unset/empty as its default, and the test harness
+# and compose file rely on empty pass-through values staying accepted. The
+# optional suffix extends the "Valid values: true, false" clause for
+# settings where unset is meaningful (e.g. ", or unset for auto-detection").
+validateBooleanVar() {
+  if [ -n "${2:-}" ] && ! isBooleanSpelling "${2:-}"; then
+    >&2 echo "${1:-} contains an invalid value (${2:-}). Valid values: true, false${3:-}"
+    return 1
+  fi
+  return 0
+}
+# --- gateway_env_lib functions END ---
+
 failed=0
 
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
@@ -292,6 +368,25 @@ case "${PREFIX_LEADING_DIRECTORY_PATH:-}" in
     ;;
 esac
 
+# Boolean settings are optional unless listed in `required` above (unset and
+# empty fall back to each setting's default), but a set value must be a
+# recognized spelling - true|yes|1 / false|no|0, any letter case: an
+# unrecognized value would otherwise silently mean false. This mirrors the
+# boolean validation in common/docker-entrypoint.d/00-check-for-required-env.sh,
+# minus IPV6_ENABLED, which the systemd install deliberately has no handling
+# for (container-only setting).
+for name in ALLOW_DIRECTORY_LIST PROVIDE_INDEX_PAGE \
+    APPEND_SLASH_FOR_POSSIBLE_DIRECTORY FOUR_O_FOUR_ON_EMPTY_BUCKET DEBUG \
+    AWS_EC2_METADATA_V1_DISABLED CORS_ENABLED PROXY_CACHE_BYPASS_NO_CACHE \
+    ACCESS_LOG_CACHE_STATUS; do
+  validateBooleanVar "${name}" "${!name:-}" || failed=1
+done
+
+validateBooleanVar CORS_ALLOW_PRIVATE_NETWORK_ACCESS \
+  "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" \
+  ", or unset to omit the Access-Control-Allow-Private-Network header" \
+  || failed=1
+
 if [ $failed -gt 0 ]; then
   exit 1
 fi
@@ -306,29 +401,20 @@ echo "Installing using github '${branch}' branch"
 # Normalize to 1/0: the fail-closed map in default.conf.template only
 # enables the cache bypass for the exact value '1'; anything else
 # disables it.
-case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
-  TRUE | true | True | YES | Yes | 1) PROXY_CACHE_BYPASS_NO_CACHE=1 ;;
-  *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
-esac
+PROXY_CACHE_BYPASS_NO_CACHE="$(parseBoolean "${PROXY_CACHE_BYPASS_NO_CACHE:-false}")"
 
 # Normalize to 1/0: the flag is written to /etc/nginx/environment below, and
 # template_nginx_config.sh derives the log-format fragment from it at every
 # service start. This mirrors the normalization in
 # common/docker-entrypoint.d/01-set-defaults.envsh.
-case "${ACCESS_LOG_CACHE_STATUS:-false}" in
-  TRUE | true | True | YES | Yes | 1) ACCESS_LOG_CACHE_STATUS=1 ;;
-  *) ACCESS_LOG_CACHE_STATUS=0 ;;
-esac
+ACCESS_LOG_CACHE_STATUS="$(parseBoolean "${ACCESS_LOG_CACHE_STATUS:-false}")"
 
 # Normalize to 1/0: cors.conf.template matches "$request_method_1" literally
 # and the LIMIT_METHODS_TO selection below compares against '1', so the
 # documented true/false form would otherwise silently disable CORS. This
 # mirrors the parseBoolean normalization in
 # common/docker-entrypoint.d/01-set-defaults.envsh.
-case "${CORS_ENABLED:-false}" in
-  TRUE | true | True | YES | Yes | 1) CORS_ENABLED=1 ;;
-  *) CORS_ENABLED=0 ;;
-esac
+CORS_ENABLED="$(parseBoolean "${CORS_ENABLED:-false}")"
 
 # Normalize STRIP_LEADING_DIRECTORY_PATH and PREFIX_LEADING_DIRECTORY_PATH for
 # the request-path map in default.conf.template, which concatenates
@@ -596,9 +682,19 @@ if [ -z "${CORS_ALLOWED_ORIGIN+x}" ]; then
 CORS_ALLOWED_ORIGIN="*"
 fi
 
-if [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" != "true" ] && [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" != "false" ]; then
-  CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""
-fi
+# The rendered value is constrained - cors.conf.template interpolates it
+# straight into the Access-Control-Allow-Private-Network add_header, whose
+# only meaningful values are the literal strings "true" and "false" - but the
+# accepted input is the shared boolean grammar. Any true spelling renders
+# "true", any false spelling renders "false", and empty (or a spelling the
+# validation above already rejected) stays empty, which makes nginx omit the
+# add_header entirely. This mirrors
+# common/docker-entrypoint.d/01-set-defaults.envsh.
+case "$(parseBooleanTristate "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}")" in
+  1) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="true" ;;
+  0) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="false" ;;
+  *) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="" ;;
+esac
 
 
 cat >> "/etc/nginx/environment" << EOF

@@ -16,10 +16,14 @@ as Docker images.
 - `common/etc/nginx/templates/` — NGINX config templates that bind to the njs
   exports (`js_set`, `js_content`, `js_body_filter`).
 - `common/docker-entrypoint.d/` — container entrypoint shell scripts.
+- `common/etc/nginx/gateway_env_lib.sh` — shared POSIX `sh` helpers (boolean
+  parsing/validation) sourced, never executed, by the entrypoint scripts; the
+  standalone installer carries a synced copy that `make lint` verifies
+  (`envlib-sync-check`).
 - `oss/`, `plus/` — NGINX config specific to OSS and Plus flavors; keep the two
   functionally equivalent when changing one.
 - `test/unit/` — njs unit tests; `test/integration/` — bash integration tests
-  (seven of the nine `test_entrypoint_*.sh` scripts share
+  (eight of the ten `test_entrypoint_*.sh` scripts share
   `test/integration/entrypoint_test_lib.sh`; `test_entrypoint_ipv6.sh` and
   `test_entrypoint_output_settings.sh` invoke `docker run` directly).
 - `Dockerfile.oss`, `Dockerfile.plus`, `Dockerfile.latest-njs`,
@@ -225,7 +229,12 @@ A new environment variable is never just a code change. The full checklist:
    re-evaluated per request).
 2. Document it in `docs/getting_started.md` (the environment-variable table).
 3. Add presence/validity checks to
-   `common/docker-entrypoint.d/00-check-for-required-env.sh`.
+   `common/docker-entrypoint.d/00-check-for-required-env.sh`. If the setting
+   is a boolean, add its name to the `validateBooleanVar` loop there (and to
+   the matching loop in `standalone_ubuntu_oss_install.sh`) instead of
+   writing a new case block — the spelling grammar lives in
+   `common/etc/nginx/gateway_env_lib.sh` and `utils.js#parseBoolean`, pinned
+   against each other by `test_entrypoint_boolean_validation.sh`.
 4. Add it to the env list in `standalone_ubuntu_oss_install.sh`.
 5. Add a pass-through entry in `test/docker-compose.yaml`; if unit tests need
    it, add it to the `unit_test_env` list in `test/run_unit_tests.sh` too.

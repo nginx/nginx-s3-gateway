@@ -17,16 +17,11 @@
 
 set -eu
 
-parseBoolean() {
-  case "$1" in
-    TRUE | true | True | YES | Yes | 1)
-      echo 1
-      ;;
-    *)
-      echo 0
-      ;;
-  esac
-}
+# Shared boolean parsing helpers (parseBoolean, parseBooleanTristate, ...).
+# Sourced from /etc/nginx rather than /docker-entrypoint.d so the base
+# image's entrypoint never executes it as a script of its own.
+# shellcheck source=common/etc/nginx/gateway_env_lib.sh
+. /etc/nginx/gateway_env_lib.sh
 
 # Prints $1 with all trailing slashes removed ("" stays "").
 trimTrailingSlashes() {
@@ -76,11 +71,20 @@ if [ "${CORS_ALLOWED_ORIGIN+x}" = "" ]; then
   export CORS_ALLOWED_ORIGIN="*"
 fi
 
-# See documentation for this feature. We do not parse this as a boolean
-# since "true" and "false" are the required values of the header this populates
-if [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" != "true" ] && [ "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" != "false" ]; then
-  export CORS_ALLOW_PRIVATE_NETWORK_ACCESS=""
-fi
+# The rendered value is constrained - cors.conf.template interpolates it
+# straight into the Access-Control-Allow-Private-Network add_header, whose
+# only meaningful values are the literal strings "true" and "false" - but the
+# accepted input is the shared boolean grammar. Parse first, then map the
+# three-way result onto what the header needs: any true spelling renders
+# "true", any false spelling renders "false", and empty (or a spelling
+# 00-check-for-required-env.sh already rejected) stays empty, which makes
+# nginx omit the add_header entirely.
+case "$(parseBooleanTristate "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}")" in
+  1) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="true" ;;
+  0) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="false" ;;
+  *) CORS_ALLOW_PRIVATE_NETWORK_ACCESS="" ;;
+esac
+export CORS_ALLOW_PRIVATE_NETWORK_ACCESS
 
 # This is the primary logic to determine the s3 host used for the
 # upstream (the actual proxying action) as well as the `Host` header

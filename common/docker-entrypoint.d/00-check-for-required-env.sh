@@ -20,6 +20,12 @@
 
 set -e
 
+# Shared boolean parsing/validation helpers (parseBoolean, validateBooleanVar,
+# ...). Sourced from /etc/nginx rather than /docker-entrypoint.d so the base
+# image's entrypoint never executes it as a script of its own.
+# shellcheck source=common/etc/nginx/gateway_env_lib.sh
+. /etc/nginx/gateway_env_lib.sh
+
 failed=0
 
 required=("S3_BUCKET_NAME" "S3_SERVER" "S3_SERVER_PORT" "S3_SERVER_PROTO"
@@ -317,17 +323,6 @@ if [ "${AWS_SIGS_VERSION}" = "2" ] && [ "${static_credentials_configured}" = 0 ]
   failed=1
 fi
 
-parseBoolean() {
-  case "$1" in
-    TRUE | true | True | YES | Yes | 1)
-      echo 1
-      ;;
-    *)
-      echo 0
-      ;;
-  esac
-}
-
 if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   if [[ "${HEADER_PREFIXES_TO_STRIP}" =~ [A-Z] ]]; then
     >&2 echo "HEADER_PREFIXES_TO_STRIP must not contain uppercase characters"
@@ -335,35 +330,25 @@ if [ -n "${HEADER_PREFIXES_TO_STRIP+x}" ]; then
   fi
 fi
 
-# PROXY_CACHE_BYPASS_NO_CACHE is optional (unset and empty default to
-# false), but when it is set it must be a spelling that parseBoolean
-# recognizes. parseBoolean treats every unrecognized value - including the
-# lowercase 'yes' - as false, so a typo would otherwise silently disable the
-# cache bypass feature.
-if [ -n "${PROXY_CACHE_BYPASS_NO_CACHE:-}" ]; then
-  case "${PROXY_CACHE_BYPASS_NO_CACHE}" in
-    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
-    *)
-      >&2 echo "PROXY_CACHE_BYPASS_NO_CACHE contains an invalid value (${PROXY_CACHE_BYPASS_NO_CACHE}). Valid values: true, false"
-      failed=1
-      ;;
-  esac
-fi
+# Boolean settings are optional unless listed in `required` above (unset and
+# empty fall back to each setting's default), but a set value must be a
+# spelling gateway_env_lib.sh recognizes - true|yes|1 / false|no|0, any
+# letter case: an unrecognized value would otherwise silently mean false to
+# the shell normalization in 01-set-defaults.envsh and to
+# utils.js#parseBoolean. IPV6_ENABLED and CORS_ALLOW_PRIVATE_NETWORK_ACCESS
+# are validated separately below because unset means a third state for them,
+# which their diagnostics spell out.
+for name in ALLOW_DIRECTORY_LIST PROVIDE_INDEX_PAGE \
+    APPEND_SLASH_FOR_POSSIBLE_DIRECTORY FOUR_O_FOUR_ON_EMPTY_BUCKET DEBUG \
+    AWS_EC2_METADATA_V1_DISABLED CORS_ENABLED PROXY_CACHE_BYPASS_NO_CACHE \
+    ACCESS_LOG_CACHE_STATUS; do
+  validateBooleanVar "${name}" "${!name:-}" || failed=1
+done
 
-# ACCESS_LOG_CACHE_STATUS is optional (unset and empty default to false), but
-# when it is set it must be a spelling that parseBoolean recognizes:
-# parseBoolean treats every unrecognized value - including the lowercase
-# 'yes' - as false, so a typo would otherwise silently keep the cache status
-# out of the access log.
-if [ -n "${ACCESS_LOG_CACHE_STATUS:-}" ]; then
-  case "${ACCESS_LOG_CACHE_STATUS}" in
-    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
-    *)
-      >&2 echo "ACCESS_LOG_CACHE_STATUS contains an invalid value (${ACCESS_LOG_CACHE_STATUS}). Valid values: true, false"
-      failed=1
-      ;;
-  esac
-fi
+validateBooleanVar CORS_ALLOW_PRIVATE_NETWORK_ACCESS \
+  "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}" \
+  ", or unset to omit the Access-Control-Allow-Private-Network header" \
+  || failed=1
 
 # PROXY_CACHE_IGNORE_HEADERS is optional (unset and empty leave
 # proxy_ignore_headers out of the configuration entirely). Its value is
@@ -403,15 +388,8 @@ fi
 # IPv6 support), but when it is set it must be a recognized spelling: an
 # unrecognized value would silently fall through to auto-detection in
 # 02-ipv6-enable.sh, defeating the explicit override.
-if [ -n "${IPV6_ENABLED:-}" ]; then
-  case "${IPV6_ENABLED}" in
-    TRUE | true | True | YES | Yes | 1 | FALSE | false | False | NO | No | 0) ;;
-    *)
-      >&2 echo "IPV6_ENABLED contains an invalid value (${IPV6_ENABLED}). Valid values: true, false, or unset for auto-detection"
-      failed=1
-      ;;
-  esac
-fi
+validateBooleanVar IPV6_ENABLED "${IPV6_ENABLED:-}" \
+  ", or unset for auto-detection" || failed=1
 
 # DIRECTORY_LISTING_PAGE_SIZE is optional (unset and empty mean no max-keys
 # parameter is sent, so S3's own 1000-key page cap applies), but when it is

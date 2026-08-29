@@ -31,6 +31,12 @@
 
 set -e
 
+# Shared boolean parsing helpers (parseBooleanTristate). Sourced from
+# /etc/nginx rather than /docker-entrypoint.d so the base image's entrypoint
+# never executes it as a script of its own.
+# shellcheck source=common/etc/nginx/gateway_env_lib.sh
+. /etc/nginx/gateway_env_lib.sh
+
 ME=$(basename "$0")
 
 # Both paths can be overridden with positional parameters so tests can
@@ -57,12 +63,15 @@ fi
 
 # Explicit IPV6_ENABLED wins; otherwise auto-detect. /proc/net/if_inet6 only
 # exists when the kernel has IPv6 support - the same check the official
-# image's 10-listen-on-ipv6-by-default.sh uses.
-case "${IPV6_ENABLED:-}" in
-  TRUE | true | True | YES | Yes | 1)
+# image's 10-listen-on-ipv6-by-default.sh uses. The empty tri-state result
+# covers unset/empty and unrecognized spellings alike; the latter never get
+# here in a real container because 00-check-for-required-env.sh fails startup
+# on them first.
+case "$(parseBooleanTristate "${IPV6_ENABLED:-}")" in
+  1)
     ipv6_wanted=1
     ;;
-  FALSE | false | False | NO | No | 0)
+  0)
     ipv6_wanted=0
     ;;
   *)
