@@ -118,6 +118,25 @@ fi
 PROXY_CACHE_BYPASS_NO_CACHE="$(parseBoolean "${PROXY_CACHE_BYPASS_NO_CACHE:-false}")"
 export PROXY_CACHE_BYPASS_NO_CACHE
 
+# Normalize ACCESS_LOG_CACHE_STATUS and derive the log-format fragment that
+# gateway/logging.conf.template interpolates: a trailing
+# ' "$upstream_cache_status"' field when enabled, empty otherwise so the
+# rendered format stays byte-identical to the historical one. The single
+# quotes matter: the fragment must reach the template renderer with a literal
+# $upstream_cache_status for nginx to evaluate. Both exports reach the
+# template renderer later in the entrypoint loop but not the nginx master
+# (this script runs in the entrypoint's pipeline subshell); njs never reads
+# either variable, so nginx.conf deliberately omits their env directives.
+ACCESS_LOG_CACHE_STATUS="$(parseBoolean "${ACCESS_LOG_CACHE_STATUS:-false}")"
+export ACCESS_LOG_CACHE_STATUS
+# shellcheck disable=SC2089,SC2090 # the embedded quotes are data, not shell
+# quoting: envsubst renders them into the nginx log format.
+if [ "${ACCESS_LOG_CACHE_STATUS}" = "1" ]; then
+  export ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
+else
+  export ACCESS_LOG_CACHE_STATUS_FIELD=""
+fi
+
 # Normalize STRIP_LEADING_DIRECTORY_PATH and PREFIX_LEADING_DIRECTORY_PATH for
 # the request-path map in default.conf.template, which concatenates
 # $PREFIX_LEADING_DIRECTORY_PATH with paths that always begin with "/": a

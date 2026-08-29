@@ -311,6 +311,23 @@ case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
   *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
 esac
 
+# Normalize to 1/0 and derive the log-format fragment rendered into
+# gateway/logging.conf: a trailing ' "$upstream_cache_status"' field when
+# enabled, empty otherwise so the rendered format stays byte-identical to the
+# historical one. The single quotes matter: the fragment must reach the
+# template renderer with a literal $upstream_cache_status for nginx to
+# evaluate. This mirrors the normalization in
+# common/docker-entrypoint.d/01-set-defaults.envsh.
+case "${ACCESS_LOG_CACHE_STATUS:-false}" in
+  TRUE | true | True | YES | Yes | 1) ACCESS_LOG_CACHE_STATUS=1 ;;
+  *) ACCESS_LOG_CACHE_STATUS=0 ;;
+esac
+if [ "${ACCESS_LOG_CACHE_STATUS}" = "1" ]; then
+  ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
+else
+  ACCESS_LOG_CACHE_STATUS_FIELD=""
+fi
+
 # Normalize to 1/0: cors.conf.template matches "$request_method_1" literally
 # and the LIMIT_METHODS_TO selection below compares against '1', so the
 # documented true/false form would otherwise silently disable CORS. This
@@ -411,6 +428,7 @@ echo "Proxy Caching Time for Forbidden Response: ${PROXY_CACHE_VALID_FORBIDDEN}"
 echo "Proxy Cache Using Stale: ${PROXY_CACHE_USE_STALE}"
 echo "Proxy Cache Bypass on Cache-Control no-cache: ${PROXY_CACHE_BYPASS_NO_CACHE}"
 echo "Proxy Cache Ignoring S3 Response Headers: ${PROXY_CACHE_IGNORE_HEADERS:-}"
+echo "Access log includes upstream cache status: ${ACCESS_LOG_CACHE_STATUS}"
 echo "CORS Enabled: ${CORS_ENABLED}"
 echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
@@ -559,6 +577,27 @@ else
     cat >> "/etc/nginx/environment" << EOF
 LIMIT_METHODS_TO="GET HEAD"
 LIMIT_METHODS_TO_CSV="GET, HEAD"
+EOF
+fi
+
+# The field fragment is written pre-derived, like LIMIT_METHODS_TO, so the
+# template renderer at service start only ever substitutes it. Single-quoted
+# because systemd strips the quotes but keeps the leading space and the
+# literal $ (EnvironmentFile values are never variable-expanded), both of
+# which must survive into the rendered log format.
+cat >> "/etc/nginx/environment" << EOF
+# Flag (1/0) appending the upstream cache status to each access-log line
+ACCESS_LOG_CACHE_STATUS=${ACCESS_LOG_CACHE_STATUS}
+EOF
+if [ "${ACCESS_LOG_CACHE_STATUS}" = "1" ]; then
+  cat >> "/etc/nginx/environment" << 'EOF'
+# Log-format fragment derived from ACCESS_LOG_CACHE_STATUS at install time
+ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
+EOF
+else
+  cat >> "/etc/nginx/environment" << 'EOF'
+# Log-format fragment derived from ACCESS_LOG_CACHE_STATUS at install time
+ACCESS_LOG_CACHE_STATUS_FIELD=''
 EOF
 fi
 
@@ -870,6 +909,8 @@ env FOUR_O_FOUR_ON_EMPTY_BUCKET;
 # STRIP/PREFIX_LEADING_DIRECTORY_PATH are deliberately not whitelisted, for
 # parity with the container image: njs must only see these through nginx
 # variables, never process.env.
+# ACCESS_LOG_CACHE_STATUS(_FIELD) are excluded for the same reason: njs never
+# reads them, and the rendered gateway/logging.conf is their only consumer.
 
 events {
     worker_connections  1024;
@@ -880,11 +921,13 @@ http {
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 
-    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
-                      '$status $body_bytes_sent "$http_referer" '
-                      '"$http_user_agent" "$http_x_forwarded_for"';
-
-    access_log  /var/log/nginx/access.log  main;
+    # The log_format/access_log block, rendered from
+    # templates/gateway/logging.conf.template so that ACCESS_LOG_CACHE_STATUS
+    # can extend the format. It must replace the old static block rather than
+    # ride the conf.d wildcard below: access_log is additive at the same
+    # level, so a second definition would double-log every request (files
+    # under conf.d/gateway/ are outside the wildcard, which does not recurse).
+    include /etc/nginx/conf.d/gateway/logging.conf;
 
     sendfile        on;
     #tcp_nopush     on;
@@ -913,6 +956,7 @@ download "common/etc/nginx/templates/gateway/cors.conf.template" "/etc/nginx/tem
 download "common/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template" "/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template"
 download "common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template" "/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template"
 download "common/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template" "/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template"
+download "common/etc/nginx/templates/gateway/logging.conf.template" "/etc/nginx/templates/gateway/logging.conf.template"
 download "common/etc/nginx/templates/gateway/s3listing_location.conf.template" "/etc/nginx/templates/gateway/s3listing_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_location.conf.template" "/etc/nginx/templates/gateway/s3_location.conf.template"
 download "common/etc/nginx/templates/gateway/s3_server.conf.template" "/etc/nginx/templates/gateway/s3_server.conf.template"

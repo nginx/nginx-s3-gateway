@@ -50,6 +50,7 @@ running as a Container or as a Systemd service.
 | `PROXY_CACHE_USE_STALE`               | No        |                                                                                                                                                       | `error timeout http_500 http_502 http_503 http_504` | Sets conditions under which stale cached data can be used. See the [`proxy_cache_use_stale` directive docs](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_use_stale) for more details                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `PROXY_CACHE_BYPASS_NO_CACHE`         | No        | `true`, `false`                                                                                                                                       | `false`                                             | When `true`, a request whose `Cache-Control` header contains the `no-cache` directive (for example a browser hard refresh) bypasses the local cache and fetches a fresh copy from S3. Off by default because clients can use it to drive up S3 request costs. See [Bypassing the Local Cache with Cache-Control: no-cache](#bypassing-the-local-cache-with-cache-control-no-cache)                                                                                                                                                                                                                                                                                                                                                                                   |
 | `PROXY_CACHE_IGNORE_HEADERS`          | No        | `X-Accel-Redirect`, `X-Accel-Expires`, `X-Accel-Limit-Rate`, `X-Accel-Buffering`, `X-Accel-Charset`, `Expires`, `Cache-Control`, `Set-Cookie`, `Vary` |                                                     | A space-separated list of S3 response header fields whose caching effect is ignored, so that the `PROXY_CACHE_VALID_*` settings alone decide how long a response is cached. Needed for origins such as Google Cloud Storage that return `Cache-Control: private, max-age=0`, which otherwise disables the cache entirely. See [Caching Objects from Origins that Send Cache-Control](#caching-objects-from-origins-that-send-cache-control)                                                                                                                                                                                                                                                                                                                          |
+| `ACCESS_LOG_CACHE_STATUS`             | No        | `true`, `false`                                                                                                                                       | `false`                                             | When `true`, each access-log line gains a final `"$upstream_cache_status"` field (`HIT`, `MISS`, `EXPIRED`, `STALE`, `UPDATING`, `REVALIDATED`, `BYPASS`, or `"-"` for requests that never consulted the cache, such as `/health` or locally answered errors). Off by default so existing log parsers see unchanged lines. See [Measuring Cache Effectiveness](#measuring-cache-effectiveness)                                                                                                                                                                                                                                                                                                                                                                       |
 | `PROVIDE_INDEX_PAGE`                  | No        | `true`, `false`                                                                                                                                       | `false`                                             | Flag which returns the index page if there is one when requesting a directory.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `JS_TRUSTED_CERT_PATH`                | No        |                                                                                                                                                       |                                                     | Enables the `js_fetch_trusted_certificate` directive when retrieving AWS credentials and sets the path (on the container) to the specified path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `HEADER_PREFIXES_TO_STRIP`            | No        |                                                                                                                                                       |                                                     | A list of HTTP header prefixes that exclude headers from client responses. List should be specified in lower-case and a semicolon (;) should be used to as a delimiter between values. For example: x-goog-;x-something-. Headers starting with x-amz- will be stripped by default for security reasons unless explicitly added in HEADER_PREFIXES_ALLOWED.                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -387,6 +388,43 @@ either. Adding `cache-control` to `HEADER_PREFIXES_TO_STRIP` removes it from cli
 > the bucket. Ignoring `Set-Cookie` is riskier still: a response carrying a cookie becomes cacheable and can be
 > replayed to other clients. Add `Set-Cookie` to the list only when you are certain the origin never sets per-user
 > cookies.
+
+## Measuring Cache Effectiveness
+
+By default the gateway's access log uses a combined-log-compatible format that does not record whether a request was
+served from the local cache. Setting `ACCESS_LOG_CACHE_STATUS=true` appends
+[`$upstream_cache_status`](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#var_upstream_cache_status) as a
+final quoted field to every access-log line, so hit rates can be computed from the logs alone without exposing the
+status to clients:
+
+```text
+172.17.0.1 - - [29/Aug/2026:12:00:00 +0000] "GET /a.txt HTTP/1.1" 200 42 "-" "curl/8.5.0" "-" "HIT"
+```
+
+The field is not just `HIT` or `MISS` — log consumers must expect the full value set: `MISS`, `HIT`, `EXPIRED`,
+`STALE`, `UPDATING`, `REVALIDATED` and `BYPASS`, plus `"-"` for requests that never consulted the cache (the unproxied
+`/health` and `/soap` endpoints, and errors the gateway answers locally). The gateway enables `proxy_cache_revalidate`
+and `proxy_cache_background_update`, and defaults `PROXY_CACHE_USE_STALE` to serving stale content on origin errors,
+so `STALE`, `UPDATING` and `REVALIDATED` all occur in normal operation, and `BYPASS` appears whenever
+[`PROXY_CACHE_BYPASS_NO_CACHE`](#bypassing-the-local-cache-with-cache-control-no-cache) lets a request through the
+cache.
+
+Two behaviors to keep in mind when interpreting the field:
+
+- A byte-range request served through the slice cache logs the status of its **first** slice only. The remaining
+  slices are fetched in subrequests, which produce no access-log lines of their own, so a request that mixes cached
+  and uncached slices still logs a single status.
+- Directory listings and index-page requests log a real cache status: their handler redirects internally into a
+  proxying location in the main-request context.
+
+The field records the same variable as the commented-out `add_header X-Cache-Status $upstream_cache_status;` in
+[`default.conf.template`][default-conf-template], which exposes the status to *clients* instead and remains available
+unchanged.
+
+Off by default, the rendered format is byte-identical to the previous static one, so existing log parsers are
+unaffected until the option is switched on. Deployments that override the gateway's templates directory with a copy
+that lacks `gateway/logging.conf.template` will fail at startup on the missing include; deployments that mount their
+own complete `nginx.conf` keep their own logging configuration, and this option has no effect for them.
 
 ## Usage with AWS S3 Express One Zone
 
@@ -974,6 +1012,8 @@ authentication. Please use AWS IAM role credentials that do not have MFA enabled
 
 If `/var/cache/nginx/s3_proxy` stays empty no matter how often an object is requested, the origin is most likely
 returning a `Cache-Control` or `Expires` header that forbids caching — the default for authenticated reads on Google
-Cloud Storage. Uncomment `add_header X-Cache-Status $upstream_cache_status;` in
-[`default.conf.template`][default-conf-template] to confirm that every response is a `MISS`, then see
+Cloud Storage. Set `ACCESS_LOG_CACHE_STATUS=true` (see
+[Measuring Cache Effectiveness](#measuring-cache-effectiveness)) and confirm that every access-log line ends in
+`"MISS"` — or, to expose the same variable to clients instead, uncomment
+`add_header X-Cache-Status $upstream_cache_status;` in [`default.conf.template`][default-conf-template] — then see
 [Caching Objects from Origins that Send Cache-Control](#caching-objects-from-origins-that-send-cache-control).

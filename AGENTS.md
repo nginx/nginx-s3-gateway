@@ -19,7 +19,7 @@ as Docker images.
 - `oss/`, `plus/` — NGINX config specific to OSS and Plus flavors; keep the two
   functionally equivalent when changing one.
 - `test/unit/` — njs unit tests; `test/integration/` — bash integration tests
-  (six of the eight `test_entrypoint_*.sh` scripts share
+  (seven of the nine `test_entrypoint_*.sh` scripts share
   `test/integration/entrypoint_test_lib.sh`; `test_entrypoint_ipv6.sh` and
   `test_entrypoint_output_settings.sh` invoke `docker run` directly).
 - `Dockerfile.oss`, `Dockerfile.plus`, `Dockerfile.latest-njs`,
