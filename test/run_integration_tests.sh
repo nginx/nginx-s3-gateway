@@ -60,20 +60,14 @@ secret_file_credentials_compose_config="${test_dir}/docker-compose.secret-file-c
 assume_role_compose_config="${test_dir}/docker-compose.assume-role.yaml"
 test_compose_project="${COMPOSE_PROJECT:-ngt}"
 
-# The S3 origin is RustFS (see test/docker-compose.yaml); mc, used purely as
-# a generic S3 client, still talks to it for seeding and object mutation.
+# The S3 origin is RustFS (see test/docker-compose.yaml); the AWS CLI, used
+# purely as a generic S3 client, talks to it for seeding and object mutation.
 s3_origin_server="http://localhost:9090"
 s3_origin_user="AKIAIOSFODNN7EXAMPLE"
 s3_origin_passwd="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-s3_origin_container="${test_compose_project}_rustfs_1"
 s3_origin_bucket="bucket-1"
-# Dedicated non-root origin user whose keys sign the STS AssumeRole call in
-# integration_test_assume_role. Must match docker-compose.assume-role.yaml.
-assume_role_user="assume-role-user"
-assume_role_passwd="assume-role-secret-key-0000"
 test_tls_cert_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-tls"
 test_secrets_dir="${TMPDIR:-/tmp}/nginx-s3-gateway-${test_compose_project}-secrets"
-mc_extra_args=()
 
 DOCKER="${DOCKER:-docker}"
 NGINX_TYPE="${NGINX_TYPE:-oss}"
@@ -164,15 +158,13 @@ if ! [ -x "${curl_cmd}" ]; then
   exit ${no_dep_exit_code}
 fi
 
-if command -v mc > /dev/null; then
-  mc_cmd="$(command -v mc)"
-elif [ -x "${repo_dir}/.bin/mc" ]; then
-  mc_cmd="${repo_dir}/.bin/mc"
-else
-  e "required dependency not found: mc not found in the path or not executable"
-  exit ${no_dep_exit_code}
-fi
-e "Using mc (S3 test client): ${mc_cmd}"
+# origin_client (and the aws_cmd lookup, which aborts with the no-dependency
+# exit code when the AWS CLI is missing) comes from the shared client lib:
+# the cache sub-tests need the identical operator-credential isolation, and
+# per-script copies of a security contract drift (GH-593).
+. "${test_dir}/integration/s3_client_lib.sh" \
+  "${s3_origin_server}" "${s3_origin_user}" "${s3_origin_passwd}"
+s3_client_announce
 
 # Blocks until the gateway answers an HTTP request, replacing the external
 # wait-for-it dependency.
@@ -269,17 +261,19 @@ compose_secret_file_credentials() {
 compose_assume_role() {
   prepare_compose_env
 
-  # The overlay pins its own AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, but the
-  # null AWS_SESSION_TOKEN entry means "inherit from the shell" to compose,
-  # so an operator's real session token has to be scrubbed here or it would
-  # be signed into the AssumeRole call and rejected by the origin.
+  # The base compose file pins AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY as
+  # literals (the overlay inherits the root pair for the AssumeRole call, so
+  # an operator's exported keys cannot leak in), but the overlay's null
+  # AWS_SESSION_TOKEN entry means "inherit from the shell" to compose, so an
+  # operator's real session token has to be scrubbed here or it would be
+  # signed into the AssumeRole call and rejected by the origin.
   env -u AWS_SESSION_TOKEN \
     "${docker_compose_cmd[@]}" \
     -f "${test_compose_config}" -f "${assume_role_compose_config}" \
     -p "${test_compose_project}" "$@"
 }
 
-# Configure the compose environment and mc/curl endpoints for an HTTP or
+# Configure the compose environment and client/curl endpoints for an HTTP or
 # HTTPS S3 origin. Kept as one function so the two origin modes cannot
 # drift apart when a new TEST_* knob is added.
 # set_test_origin <http|https>
@@ -292,6 +286,9 @@ set_test_origin() {
   export TEST_TLS_CERT_DIR="${test_tls_cert_dir}"
   export TEST_PROXY_CACHE_SLICE_SIZE="1m"
   s3_origin_server="${origin_proto}://localhost:9090"
+  # The client lib derives its TLS handling from the endpoint scheme, so
+  # re-pointing it is all an origin flip needs.
+  s3_client_set_endpoint "${s3_origin_server}"
   if [ "${origin_proto}" = "https" ]; then
     # Mount point of the generated test certificates inside the origin
     # container. RustFS serves TLS only when RUSTFS_TLS_PATH names a
@@ -299,10 +296,8 @@ set_test_origin() {
     # start when the path is set but missing or empty, so the HTTP branch
     # must leave the variable empty rather than point at a placeholder.
     export TEST_S3_TLS_PATH="/tls"
-    mc_extra_args=(--insecure)
   else
     export TEST_S3_TLS_PATH=""
-    mc_extra_args=()
   fi
 }
 
@@ -367,7 +362,7 @@ seed_origin_data() {
   # (integration_test_assume_role's `up -d rustfs` returns before the
   # healthcheck passes, unlike the full `up -d`, where the gateway's
   # depends_on blocks on it), so fail with a clear message rather than
-  # falling through to mc commands that would abort the suite with an
+  # falling through to client commands that would abort the suite with an
   # opaque connectivity error.
   origin_is_up=""
   for (( i=1; i<=15; i++ ))
@@ -388,22 +383,57 @@ seed_origin_data() {
     exit "$test_fail_exit_code"
   fi
 
-  p "Adding test data to container"
-  # ${arr[@]+...} keeps the empty-array expansion from tripping `set -o
-  # nounset` on bash < 4.4 (macOS ships bash 3.2).
-  "${mc_cmd}" alias set ${mc_extra_args[@]+"${mc_extra_args[@]}"} "$s3_origin_container" "$s3_origin_server" "$s3_origin_user" "$s3_origin_passwd"
-  # --ignore-existing keeps a bucket left behind by an aborted previous run
-  # (compose containers survive a failed teardown) from failing the seeding
-  # step under errexit on every subsequent run.
-  "${mc_cmd}" mb ${mc_extra_args[@]+"${mc_extra_args[@]}"} --ignore-existing "$s3_origin_container/$s3_origin_bucket"
-  echo "Copying contents of ${test_dir}/data/$s3_origin_bucket to Docker container $s3_origin_container"
-  for file in "${test_dir}/data/$s3_origin_bucket"/*; do
-    "${mc_cmd}" cp ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "${file}" "$s3_origin_container/$s3_origin_bucket"
+  # RustFS's IAM subsystem can lag /health right after a stack recreation
+  # (authenticated calls are rejected with "waiting for iam"), so also gate
+  # on an authenticated API call. list-buckets is used because it succeeds
+  # for the root user whether or not the bucket exists yet. The probe's
+  # stderr is kept (2>&1 before the stdout redirect captures only stderr) and
+  # printed on exhaustion: an InvalidAccessKeyId from drifted credentials
+  # would otherwise be indistinguishable from the IAM lag this loop absorbs.
+  iam_is_up=""
+  iam_probe_error=""
+  for (( i=1; i<=15; i++ ))
+  do
+    echo "Querying the S3 origin API to see if it accepts authenticated requests"
+    if iam_probe_error="$(origin_client s3api list-buckets 2>&1 > /dev/null)"; then
+      iam_is_up="1"
+      break
+    else
+      sleep 2
+    fi
   done
+  if [ "${iam_is_up}" != "1" ]; then
+    e "the S3 origin at ${s3_origin_server} did not accept an authenticated request"
+    e "last error from the S3 client: ${iam_probe_error}"
+    exit "$test_fail_exit_code"
+  fi
+
+  p "Adding test data to container"
+  # A bucket left behind by an aborted previous run (compose containers
+  # survive a failed teardown) must not fail the seeding step under errexit
+  # (the equivalent of the previous S3 client's ignore-existing bucket
+  # creation), so a create-bucket failure falls back to a head-bucket probe:
+  # it succeeds when the failure was BucketAlreadyOwnedByYou and keeps a
+  # genuine failure loud - head-bucket's stderr is not discarded and errexit
+  # aborts on it. Probe-then-create would instead abort the suite when a
+  # transient probe failure sent an existing bucket into create-bucket.
+  if ! origin_client s3api create-bucket --bucket "${s3_origin_bucket}" > /dev/null 2>&1; then
+    origin_client s3api head-bucket --bucket "${s3_origin_bucket}" > /dev/null
+  fi
+  echo "Copying contents of ${test_dir}/data/${s3_origin_bucket} to the S3 origin"
+  # --no-progress keeps the transfer meter out of CI logs but still prints
+  # one upload line per object. The --exclude patterns keep hidden files
+  # (.DS_Store, editor swap files - invisible to git because test/data is
+  # blanket-gitignored) out of the bucket the way the dotfile-skipping glob
+  # this replaced did: the directory-listing legs assert an exact object
+  # population, and a stray dotfile would shift every pagination page.
+  origin_client s3 cp --recursive --no-progress \
+    --exclude ".*" --exclude "*/.*" \
+    "${test_dir}/data/${s3_origin_bucket}" "s3://${s3_origin_bucket}"
   # RustFS declares VOLUME /data, so `docker diff` (which the seeding step
   # once printed here) would show nothing; list the seeded objects instead.
   echo "Seeded bucket contents:"
-  "${mc_cmd}" ls ${mc_extra_args[@]+"${mc_extra_args[@]}"} -r "$s3_origin_container/$s3_origin_bucket"
+  origin_client s3 ls --recursive "s3://${s3_origin_bucket}"
 }
 
 integration_test_listen_directives() {
@@ -534,8 +564,8 @@ integration_test_cache_bypass() {
   wait_for_gateway
 
   p "Starting cache bypass tests (phase: ${bypass_phase})"
-  echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${mc_cmd}\" \"${s3_origin_container}\" \"${s3_origin_bucket}\""
-  bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${mc_cmd}" "${s3_origin_container}" "${s3_origin_bucket}"
+  echo "  test/integration/test_cache_bypass.sh \"$test_server\" \"$test_dir\" ${bypass_phase} \"${s3_origin_server}\" \"${s3_origin_bucket}\" \"${s3_origin_user}\" \"${s3_origin_passwd}\""
+  bash "${test_dir}/integration/test_cache_bypass.sh" "${test_server}" "${test_dir}" "${bypass_phase}" "${s3_origin_server}" "${s3_origin_bucket}" "${s3_origin_user}" "${s3_origin_passwd}"
 }
 
 integration_test_cache_ignore_headers() {
@@ -563,8 +593,8 @@ integration_test_cache_ignore_headers() {
   wait_for_gateway
 
   p "Starting cache ignore headers tests (phase: ${ignore_phase})"
-  echo "  test/integration/test_cache_ignore_headers.sh \"$test_server\" \"$test_dir\" ${ignore_phase} \"${mc_cmd}\" \"${s3_origin_container}\" \"${s3_origin_bucket}\""
-  bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${mc_cmd}" "${s3_origin_container}" "${s3_origin_bucket}"
+  echo "  test/integration/test_cache_ignore_headers.sh \"$test_server\" \"$test_dir\" ${ignore_phase} \"${s3_origin_server}\" \"${s3_origin_bucket}\" \"${s3_origin_user}\" \"${s3_origin_passwd}\""
+  bash "${test_dir}/integration/test_cache_ignore_headers.sh" "${test_server}" "${test_dir}" "${ignore_phase}" "${s3_origin_server}" "${s3_origin_bucket}" "${s3_origin_user}" "${s3_origin_passwd}"
 }
 
 integration_test_cors() {
@@ -764,20 +794,14 @@ integration_test_assume_role() {
   compose_assume_role down --volumes --remove-orphans || true
   set_http_test_origin
 
-  # The origin comes up alone first: the AssumeRole caller must exist before
-  # the gateway starts, because even wait_for_gateway's probe request
-  # triggers a credential fetch, and a failed pre-provisioning STS call
-  # would break the exactly-one-fetch cache assertion below.
+  # The origin comes up alone and is seeded before the gateway starts: even
+  # wait_for_gateway's probe request triggers a credential fetch, and a
+  # failed STS call against a not-yet-ready origin would break the
+  # exactly-one-fetch cache assertion below. The AssumeRole caller is the
+  # origin's root user - RustFS permits that, where other S3 stores demand a
+  # dedicated IAM user - so no caller provisioning is needed.
   COMPOSE_COMPATIBILITY=true compose_assume_role up -d rustfs
   seed_origin_data
-
-  # Create the non-root user whose keys sign the AssumeRole call. RustFS
-  # exposes an admin API compatible with mc's admin subcommands, addressed
-  # through the alias seed_origin_data registered. The stack was brought
-  # down with --volumes first, so the user never pre-exists.
-  p "Creating the AssumeRole caller on the origin"
-  "${mc_cmd}" admin user add "$s3_origin_container" "$assume_role_user" "$assume_role_passwd"
-  "${mc_cmd}" admin policy attach "$s3_origin_container" readonly --user "$assume_role_user"
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_assume_role up -d
   wait_for_gateway
@@ -799,13 +823,13 @@ integration_test_assume_role() {
   # strings carry the scope on a line without any access key, so an
   # unfiltered inverted match would pass no matter which keys signed.
   gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
-  static_signature_lines="$(grep -F "Credential=${assume_role_user}/" <<< "${gateway_logs}" || true)"
+  static_signature_lines="$(grep -F "Credential=${s3_origin_user}/" <<< "${gateway_logs}" || true)"
   s3_signature_lines="$(grep -F "/s3/aws4_request" <<< "${gateway_logs}" | grep -F "Credential=" || true)"
   if ! grep -qF "/sts/aws4_request" <<< "${static_signature_lines}"; then
-    e "FAIL [assume role STS signature]: no sts-scoped signature by ${assume_role_user} found in the gateway logs"
+    e "FAIL [assume role STS signature]: no sts-scoped signature by ${s3_origin_user} found in the gateway logs"
     exit "$test_fail_exit_code"
   fi
-  if [ -z "${s3_signature_lines}" ] || ! grep -qvF "Credential=${assume_role_user}/" <<< "${s3_signature_lines}"; then
+  if [ -z "${s3_signature_lines}" ] || ! grep -qvF "Credential=${s3_origin_user}/" <<< "${s3_signature_lines}"; then
     e "FAIL [assume role S3 signature]: no s3-scoped signature by the assumed credentials found in the gateway logs"
     exit "$test_fail_exit_code"
   fi
@@ -837,7 +861,7 @@ finish() {
   # Disarm the traps first: a test failure otherwise runs finish twice (ERR,
   # then again when its `exit` fires the EXIT trap), double-dumping logs and
   # re-running the teardown. Cleanup steps are best-effort (`|| true`) so a
-  # failing step - e.g. removing an mc alias that was never registered
+  # failing step - e.g. tearing down a compose project that never came up
   # because the run aborted before integration_test_data - cannot trip
   # errexit inside the trap and replace the preserved test exit code.
   trap - EXIT ERR SIGTERM SIGINT
@@ -849,7 +873,6 @@ finish() {
 
   p "Cleaning up Docker compose environment"
   compose_dynamic_credentials down --volumes --remove-orphans || true
-  "${mc_cmd}" alias rm "$s3_origin_container" || true
   # Try a plain removal first: the cert dir is created by the invoking user,
   # so its entries are usually unlinkable without root even though the files
   # themselves are root-owned. Only spin up a root container (1-2s, and

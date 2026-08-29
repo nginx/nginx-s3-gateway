@@ -104,9 +104,6 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install mc
-        uses: ./.github/actions/install-mc
-
       - name: Build and test - stable njs version
         run: make test NGINX_TYPE=oss S3_STYLE=${{ matrix.s3_style }}
 
@@ -117,9 +114,6 @@ jobs:
     steps:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install mc
-        uses: ./.github/actions/install-mc
 
       # S3_STYLE is pinned the same way the local test-matrix target pins it,
       # so a change to the GNUmakefile default cannot silently repoint this job.
@@ -133,9 +127,6 @@ jobs:
     steps:
       - name: Check out the codebase
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install mc
-        uses: ./.github/actions/install-mc
 
       # S3_STYLE is pinned the same way the local test-matrix target pins it,
       # so a change to the GNUmakefile default cannot silently repoint this job.

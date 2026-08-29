@@ -2,6 +2,8 @@
 # paths (they only COPY oss/, plus/, and common/). node_modules alone is
 # ~250MB and was being sent to the daemon on every build.
 .git
+# Legacy install dir for the retired mc S3 client; pre-AWS-CLI checkouts
+# may still carry the ~25MB binary there.
 .bin
 node_modules
 out
