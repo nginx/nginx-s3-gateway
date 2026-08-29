@@ -85,14 +85,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
-  # It may be useful to enable the client container so that you can debug
-  # what calls were made to the origin by the gateway. RustFS exposes an
-  # admin API compatible with mc's admin subcommands.
-#  origin-client:
-#    depends_on:
-#      - "rustfs"
-#    image: "minio/mc"
-#    restart: "no"
-#    command: "admin trace --verbose nginx-test-gateway"
-#    environment:
-#      MC_HOST_nginx-test-gateway: "http://AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY@rustfs:9000"

@@ -91,9 +91,8 @@ check-tools: ## Verify required build and test tooling is present
 	done; \
 	{ $(DOCKER) compose version > /dev/null 2>&1 || command -v docker-compose > /dev/null 2>&1; } || \
 		{ echo "MISSING (required): docker compose plugin (or legacy docker-compose)"; ok=0; }; \
-	if ! command -v mc > /dev/null 2>&1 && [ ! -x "$(BASE_DIR).bin/mc" ]; then \
-		echo "MISSING (required): mc (the S3 test client) - or place the binary at ./.bin/mc"; ok=0; \
-	fi; \
+	command -v aws > /dev/null 2>&1 || \
+		{ echo "MISSING (required): aws (the AWS CLI, used as the S3 test client)"; ok=0; }; \
 	if ! command -v md5sum > /dev/null 2>&1 && ! command -v md5 > /dev/null 2>&1; then \
 		echo "MISSING (required): md5sum (or md5 on macOS)"; ok=0; \
 	fi; \
@@ -236,9 +235,9 @@ test-integration: check-nginx-type check-s3-style check-tools ## Run only the in
 	$(call NONVARIANT_GUARD,unprivileged)
 	$(RUN_INTEGRATION_TESTS)
 
-# check-tools fails fast on a missing integration dependency (mc, curl,
-# compose, md5sum) before the unit suite spends a minute in docker, matching
-# the up-front dependency checks the legacy test.sh ran at startup.
+# check-tools fails fast on a missing integration dependency (the AWS CLI,
+# curl, compose, md5sum) before the unit suite spends a minute in docker,
+# matching the up-front dependency checks the legacy test.sh ran at startup.
 retest: check-nginx-type check-s3-style check-tools ## Test the currently tagged image without rebuilding
 	$(call NONVARIANT_GUARD,latest-njs)
 	$(call NONVARIANT_GUARD,unprivileged)
@@ -308,11 +307,11 @@ jsdoc: docs ## Back-compat alias for docs (previous Makefile's target name)
 # The teardown mirrors the profile-aware compose_dynamic_credentials()
 # invocation in test/run_integration_tests.sh, including its docker-compose
 # fallback, so it removes the fixed metadata network as well as the regular
-# stack. It also removes the mc alias that script registers and the TLS cert
-# scratch directory its finish() trap normally cleans (a killed test run
-# never reaches finish()). The generated keys in there are root-owned, so a
-# plain rm is tried first (it works while the directory itself is
-# user-owned) with a root-container fallback, the same way finish() does.
+# stack. It also removes the TLS cert scratch directory the script's finish()
+# trap normally cleans (a killed test run never reaches finish()). The
+# generated keys in there are root-owned, so a plain rm is tried first (it
+# works while the directory itself is user-owned) with a root-container
+# fallback, the same way finish() does.
 clean: ## Remove generated docs and tear down the test compose environment
 	@case "$(DOCS_DIR)" in \
 		""|.|..|/*|*..*|*/) echo "ERROR: refusing to rm -rf suspicious DOCS_DIR '$(DOCS_DIR)'"; exit 1;; \
@@ -324,8 +323,6 @@ clean: ## Remove generated docs and tear down the test compose environment
 		$$compose_cmd --profile dynamic-credentials \
 		-f "$(COMPOSE_FILE)" -f "$(DYNAMIC_CREDENTIALS_COMPOSE_FILE)" -p $(COMPOSE_PROJECT) \
 		down --volumes --remove-orphans 2> /dev/null || true
-	@mc_cmd="$$(command -v mc || echo "$(BASE_DIR).bin/mc")"; \
-	[ -x "$$mc_cmd" ] && "$$mc_cmd" alias rm $(COMPOSE_PROJECT)_rustfs_1 2> /dev/null || true
 	@tls_dir="$${TMPDIR:-/tmp}/nginx-s3-gateway-$(COMPOSE_PROJECT)-tls"; \
 	if [ -d "$$tls_dir" ]; then \
 		rm -f "$$tls_dir"/* 2> /dev/null || true; \

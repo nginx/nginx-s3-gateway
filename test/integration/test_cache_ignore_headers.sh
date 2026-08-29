@@ -40,9 +40,10 @@ set -o pipefail  # don't hide errors within pipes
 test_server=$1
 test_dir=$2
 phase=$3
-mc_cmd=$4
-origin_alias=$5
-origin_bucket=$6
+origin_endpoint=$4
+origin_bucket=$5
+origin_access_key=$6
+origin_secret_key=$7
 
 test_fail_exit_code=2
 no_dep_exit_code=3
@@ -51,9 +52,7 @@ checksum_length=32
 # The Google Cloud Storage default for objects that are not publicly
 # readable. Any value containing 'private' or 'no-store' makes NGINX treat the
 # response as uncacheable; this one mirrors the origin behavior from GH-64.
-# No space after the comma: mc splits --attr pairs on ';' and a bare comma is
-# valid HTTP.
-cache_control_attr="Cache-Control=private,max-age=0"
+cache_control_value="private,max-age=0"
 
 set -o nounset   # abort on unbound variable
 
@@ -76,18 +75,24 @@ if [ "${phase}" != "disabled" ] && [ "${phase}" != "enabled" ]; then
   exit ${no_dep_exit_code}
 fi
 
-if ! [ -x "${mc_cmd}" ]; then
-  e "required dependency not found: mc not found at [${mc_cmd}] or not executable"
+aws_cmd="$(command -v aws || true)"
+if ! [ -x "${aws_cmd}" ]; then
+  e "required dependency not found: aws (the AWS CLI, used as the S3 test client) not found in the path or not executable"
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${origin_alias}" ]; then
-  e "missing fifth parameter: mc alias of the S3 origin"
+if [ -z "${origin_endpoint}" ]; then
+  e "missing fourth parameter: endpoint URL of the S3 origin (eg http://localhost:9090)"
   exit ${no_dep_exit_code}
 fi
 
 if [ -z "${origin_bucket}" ]; then
-  e "missing sixth parameter: name of the S3 origin bucket"
+  e "missing fifth parameter: name of the S3 origin bucket"
+  exit ${no_dep_exit_code}
+fi
+
+if [ -z "${origin_access_key}" ] || [ -z "${origin_secret_key}" ]; then
+  e "missing sixth/seventh parameter: access key and secret key for the S3 origin"
   exit ${no_dep_exit_code}
 fi
 
@@ -117,6 +122,24 @@ fi
 
 fixture_dir="${test_dir}/data/${origin_bucket}/cache-ignore-headers"
 
+# Mirrors origin_client in run_integration_tests.sh: every AWS CLI invocation
+# is isolated from operator AWS state (~/.aws config/credentials, exported
+# profiles and session tokens are all bypassed) so real credentials can never
+# reach the test origin, and the custom --endpoint-url makes the CLI sign
+# path-style requests, which the origin requires. The cache legs only run
+# against the HTTP origin, so no TLS flag is threaded through.
+# origin_client <aws cli args...>
+origin_client() {
+  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_SESSION_TOKEN \
+    AWS_ACCESS_KEY_ID="${origin_access_key}" \
+    AWS_SECRET_ACCESS_KEY="${origin_secret_key}" \
+    AWS_CONFIG_FILE=/dev/null \
+    AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+    AWS_EC2_METADATA_DISABLED=true \
+    AWS_PAGER="" \
+    "${aws_cmd}" --endpoint-url "${origin_endpoint}" --region us-east-1 "$@"
+}
+
 # Writes a local file to an object in the S3 origin with the
 # cache-defeating Cache-Control metadata attached. Used both to seed and to
 # mutate, so the header is present on every response the gateway sees - the
@@ -125,9 +148,9 @@ fixture_dir="${test_dir}/data/${origin_bucket}/cache-ignore-headers"
 putObjectWithCacheControl() {
   local_src="$1"
   object_key="$2"
-  echo "  Writing ${origin_bucket}/${object_key} from $(basename "${local_src}") with ${cache_control_attr}"
-  "${mc_cmd}" cp --attr "${cache_control_attr}" "${local_src}" \
-    "${origin_alias}/${origin_bucket}/${object_key}" > /dev/null
+  echo "  Writing ${origin_bucket}/${object_key} from $(basename "${local_src}") with Cache-Control=${cache_control_value}"
+  origin_client s3 cp --no-progress --cache-control "${cache_control_value}" "${local_src}" \
+    "s3://${origin_bucket}/${object_key}" > /dev/null
 }
 
 # Asserts that a GET of <url_path> returns a body identical to <local_file>.

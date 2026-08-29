@@ -82,8 +82,8 @@ script is deprecated and only forwards to the equivalent make targets — do
 not invoke it directly.
 
 Automated tests require `docker`, `docker compose`, `curl`, `md5sum` (or `md5`
-on macOS), and [`mc`](https://min.io/docs/minio/linux/reference/minio-mc.html) (used
-as a generic S3 client against the RustFS test origin) to be
+on macOS), and the [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
+(used as a generic S3 client against the RustFS test origin) to be
 installed; run `make check-tools` to verify all prerequisites are present.
 
 To build the gateway image and run the full unit and integration test suite:

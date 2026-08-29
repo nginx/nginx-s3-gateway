@@ -31,9 +31,10 @@ set -o pipefail  # don't hide errors within pipes
 test_server=$1
 test_dir=$2
 phase=$3
-mc_cmd=$4
-origin_alias=$5
-origin_bucket=$6
+origin_endpoint=$4
+origin_bucket=$5
+origin_access_key=$6
+origin_secret_key=$7
 
 test_fail_exit_code=2
 no_dep_exit_code=3
@@ -60,18 +61,24 @@ if [ "${phase}" != "disabled" ] && [ "${phase}" != "enabled" ]; then
   exit ${no_dep_exit_code}
 fi
 
-if ! [ -x "${mc_cmd}" ]; then
-  e "required dependency not found: mc not found at [${mc_cmd}] or not executable"
+aws_cmd="$(command -v aws || true)"
+if ! [ -x "${aws_cmd}" ]; then
+  e "required dependency not found: aws (the AWS CLI, used as the S3 test client) not found in the path or not executable"
   exit ${no_dep_exit_code}
 fi
 
-if [ -z "${origin_alias}" ]; then
-  e "missing fifth parameter: mc alias of the S3 origin"
+if [ -z "${origin_endpoint}" ]; then
+  e "missing fourth parameter: endpoint URL of the S3 origin (eg http://localhost:9090)"
   exit ${no_dep_exit_code}
 fi
 
 if [ -z "${origin_bucket}" ]; then
-  e "missing sixth parameter: name of the S3 origin bucket"
+  e "missing fifth parameter: name of the S3 origin bucket"
+  exit ${no_dep_exit_code}
+fi
+
+if [ -z "${origin_access_key}" ] || [ -z "${origin_secret_key}" ]; then
+  e "missing sixth/seventh parameter: access key and secret key for the S3 origin"
   exit ${no_dep_exit_code}
 fi
 
@@ -185,6 +192,24 @@ assertRangeGetEquals() {
   fi
 }
 
+# Mirrors origin_client in run_integration_tests.sh: every AWS CLI invocation
+# is isolated from operator AWS state (~/.aws config/credentials, exported
+# profiles and session tokens are all bypassed) so real credentials can never
+# reach the test origin, and the custom --endpoint-url makes the CLI sign
+# path-style requests, which the origin requires. The cache legs only run
+# against the HTTP origin, so no TLS flag is threaded through.
+# origin_client <aws cli args...>
+origin_client() {
+  env -u AWS_PROFILE -u AWS_DEFAULT_PROFILE -u AWS_SESSION_TOKEN \
+    AWS_ACCESS_KEY_ID="${origin_access_key}" \
+    AWS_SECRET_ACCESS_KEY="${origin_secret_key}" \
+    AWS_CONFIG_FILE=/dev/null \
+    AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+    AWS_EC2_METADATA_DISABLED=true \
+    AWS_PAGER="" \
+    "${aws_cmd}" --endpoint-url "${origin_endpoint}" --region us-east-1 "$@"
+}
+
 # Overwrites an object in the S3 origin with the contents of a local
 # file, without touching the gateway's cache.
 # overwriteObject <local_src_file> <object_key>
@@ -192,7 +217,7 @@ overwriteObject() {
   local_src="$1"
   object_key="$2"
   echo "  Overwriting object ${origin_bucket}/${object_key} with contents of $(basename "${local_src}")"
-  "${mc_cmd}" cp "${local_src}" "${origin_alias}/${origin_bucket}/${object_key}" > /dev/null
+  origin_client s3 cp --no-progress "${local_src}" "s3://${origin_bucket}/${object_key}" > /dev/null
 }
 
 # Check to see if HTTP server is available
