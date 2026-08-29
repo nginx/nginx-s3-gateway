@@ -103,6 +103,13 @@ matchedLogLines() {
   grep -F "\"GET ${test_object_path} HTTP/1.1\" 200 " <<< "${gateway_logs}" || true
 }
 
+# nginx writes each access-log line at request finalization, but the
+# container-stdout -> dockerd -> `docker logs` pipeline is asynchronous, so
+# the last line can lag the curl exit on a loaded runner. Both phases retry
+# briefly before asserting rather than reading the logs exactly once.
+log_wait_attempts=20
+log_wait_interval=0.5
+
 if [ "${phase}" = "enabled" ]; then
   announce "Access log cache status [enabled]: MISS, HIT, then BYPASS for ${test_object_path}"
 
@@ -113,22 +120,39 @@ if [ "${phase}" = "enabled" ]; then
   getTestObject "cached fetch"
   getTestObject "bypassing fetch" -H "Cache-Control: no-cache"
 
-  statuses="$(matchedLogLines | awk '{printf "%s ", $NF}')"
-  if [ "${statuses}" != '"MISS" "HIT" "BYPASS" ' ]; then
-    e "FAIL [access log cache status sequence]: expected [\"MISS\" \"HIT\" \"BYPASS\"], got [${statuses}] from:"
-    matchedLogLines >&2
-    exit ${test_fail_exit_code}
-  fi
+  expected_statuses='"MISS" "HIT" "BYPASS"'
+  attempt=0
+  while true; do
+    statuses="$(matchedLogLines | awk '{print $NF}' | paste -sd' ')"
+    if [ "${statuses}" = "${expected_statuses}" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ "${attempt}" -ge "${log_wait_attempts}" ]; then
+      e "FAIL [access log cache status sequence]: expected [${expected_statuses}], got [${statuses}] from:"
+      matchedLogLines >&2
+      exit ${test_fail_exit_code}
+    fi
+    sleep "${log_wait_interval}"
+  done
 else
   announce "Access log cache status [disabled]: log lines end at the X-Forwarded-For field"
 
   getTestObject "fetch with cache status logging off"
 
-  log_line="$(matchedLogLines | tail -n 1)"
-  if [ -z "${log_line}" ]; then
-    e "FAIL [access log format]: no access-log line found for GET ${test_object_path}"
-    exit ${test_fail_exit_code}
-  fi
+  attempt=0
+  while true; do
+    log_line="$(matchedLogLines | tail -n 1)"
+    if [ -n "${log_line}" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ "${attempt}" -ge "${log_wait_attempts}" ]; then
+      e "FAIL [access log format]: no access-log line found for GET ${test_object_path}"
+      exit ${test_fail_exit_code}
+    fi
+    sleep "${log_wait_interval}"
+  done
   # curl sends no X-Forwarded-For, so the historical format ends in its "-"
   # placeholder; a trailing cache-status field would end in "MISS" instead.
   if [ "${log_line%\"-\"}" = "${log_line}" ]; then

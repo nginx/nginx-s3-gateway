@@ -263,11 +263,17 @@ Baseline (Step 2 defaults; `PROXY_CACHE_VALID_OK` is 1h):
 2. Same request with `Cache-Control: no-cache` → still the OLD body
    (bypass is off by default — the header must not bust the cache).
 
-Recreate with `PROXY_CACHE_BYPASS_NO_CACHE=true`:
+Recreate with `PROXY_CACHE_BYPASS_NO_CACHE=true` and
+`ACCESS_LOG_CACHE_STATUS=true` (the suite toggles both together in its
+cache-bypass phases):
 
 3. Warm → overwrite at origin → `GET` with `Cache-Control: no-cache` →
    NEW body; then `GET` without the header → NEW body (the bypass also
-   refreshed the cache entry). **pin (suite parity)**
+   refreshed the cache entry). **pin (suite parity)** With
+   `ACCESS_LOG_CACHE_STATUS=true`, `docker logs` of the gateway ends each
+   of these access-log lines in a quoted cache status (`"MISS"`,
+   `"BYPASS"`, ...); in the baseline (flag false/unset) the lines end at
+   the X-Forwarded-For `"-"` field. **pin (suite parity)**
 
 Ignored headers (**pin #566**): seed an object whose origin response
 carries `Cache-Control: private,max-age=0` — no space after the comma;
@@ -308,7 +314,8 @@ Slice cache:
     only redirects there when `Range` is present — so it proves nothing
     about the slice cache.
 
-Covers: #566 pin, USE_STALE HOLE, bypass contract, slice integrity.
+Covers: #566 pin, USE_STALE HOLE, bypass contract, access-log cache
+status (#466), slice integrity.
 
 ---
 

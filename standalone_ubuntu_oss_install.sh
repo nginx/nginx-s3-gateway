@@ -311,22 +311,14 @@ case "${PROXY_CACHE_BYPASS_NO_CACHE:-false}" in
   *) PROXY_CACHE_BYPASS_NO_CACHE=0 ;;
 esac
 
-# Normalize to 1/0 and derive the log-format fragment rendered into
-# gateway/logging.conf: a trailing ' "$upstream_cache_status"' field when
-# enabled, empty otherwise so the rendered format stays byte-identical to the
-# historical one. The single quotes matter: the fragment must reach the
-# template renderer with a literal $upstream_cache_status for nginx to
-# evaluate. This mirrors the normalization in
+# Normalize to 1/0: the flag is written to /etc/nginx/environment below, and
+# template_nginx_config.sh derives the log-format fragment from it at every
+# service start. This mirrors the normalization in
 # common/docker-entrypoint.d/01-set-defaults.envsh.
 case "${ACCESS_LOG_CACHE_STATUS:-false}" in
   TRUE | true | True | YES | Yes | 1) ACCESS_LOG_CACHE_STATUS=1 ;;
   *) ACCESS_LOG_CACHE_STATUS=0 ;;
 esac
-if [ "${ACCESS_LOG_CACHE_STATUS}" = "1" ]; then
-  ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
-else
-  ACCESS_LOG_CACHE_STATUS_FIELD=""
-fi
 
 # Normalize to 1/0: cors.conf.template matches "$request_method_1" literally
 # and the LIMIT_METHODS_TO selection below compares against '1', so the
@@ -580,26 +572,14 @@ LIMIT_METHODS_TO_CSV="GET, HEAD"
 EOF
 fi
 
-# The field fragment is written pre-derived, like LIMIT_METHODS_TO, so the
-# template renderer at service start only ever substitutes it. Single-quoted
-# because systemd strips the quotes but keeps the leading space and the
-# literal $ (EnvironmentFile values are never variable-expanded), both of
-# which must survive into the rendered log format.
+# Only the 1/0 flag is persisted; template_nginx_config.sh derives the
+# ACCESS_LOG_CACHE_STATUS_FIELD log-format fragment from it at every service
+# start, so editing the flag here and restarting nginx takes effect without
+# re-running this installer.
 cat >> "/etc/nginx/environment" << EOF
 # Flag (1/0) appending the upstream cache status to each access-log line
 ACCESS_LOG_CACHE_STATUS=${ACCESS_LOG_CACHE_STATUS}
 EOF
-if [ "${ACCESS_LOG_CACHE_STATUS}" = "1" ]; then
-  cat >> "/etc/nginx/environment" << 'EOF'
-# Log-format fragment derived from ACCESS_LOG_CACHE_STATUS at install time
-ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
-EOF
-else
-  cat >> "/etc/nginx/environment" << 'EOF'
-# Log-format fragment derived from ACCESS_LOG_CACHE_STATUS at install time
-ACCESS_LOG_CACHE_STATUS_FIELD=''
-EOF
-fi
 
 # S3_UPSTREAM and S3_HOST_HEADER are computed from S3_STYLE before the
 # settings banner above so the logged origin matches the effective values.
@@ -732,7 +712,13 @@ auto_envsubst() {
   local output_dir="${NGINX_ENVSUBST_OUTPUT_DIR:-/etc/nginx/conf.d}"
 
   local template defined_envs relative_path output_path subdir
-  defined_envs=$(printf '${%s} ' $(env | cut -d= -f1))
+  # Substitute only ALL-CAPS variable names: every gateway setting in
+  # /etc/nginx/environment is uppercase, while the nginx runtime variables the
+  # templates must keep literally ($status, $remote_addr,
+  # $upstream_cache_status, ...) are lowercase and would otherwise be
+  # rewritten whenever a same-named environment variable happens to be set.
+  # Mirrors NGINX_ENVSUBST_FILTER in the container image.
+  defined_envs=$(printf '${%s} ' $(env | cut -d= -f1 | grep -E '^[A-Z0-9_]+$'))
   [ -d "$template_dir" ] || return 0
   if [ ! -w "$output_dir" ]; then
     echo "$ME: ERROR: $template_dir exists, but $output_dir is not writable"
@@ -792,6 +778,20 @@ CONF
 # Attempt to read DNS Resolvers from /etc/resolv.conf
 if [ -z ${DNS_RESOLVERS+x} ]; then
   export DNS_RESOLVERS="$(cat /etc/resolv.conf | grep nameserver | cut -d' ' -f2 | xargs)"
+fi
+
+# Derive the access-log format fragment before rendering: a trailing
+# ' "$upstream_cache_status"' field when ACCESS_LOG_CACHE_STATUS=1, empty
+# otherwise so the rendered format stays byte-identical to the historical
+# one. Deriving on every start (mirroring the container image's
+# 01-set-defaults.envsh) keeps the flag in /etc/nginx/environment live: edit
+# it and restart nginx to change the format. The single quotes matter:
+# gateway/logging.conf.template must receive a literal $upstream_cache_status
+# for nginx to evaluate.
+if [ "${ACCESS_LOG_CACHE_STATUS:-0}" = "1" ]; then
+  export ACCESS_LOG_CACHE_STATUS_FIELD=' "$upstream_cache_status"'
+else
+  export ACCESS_LOG_CACHE_STATUS_FIELD=''
 fi
 
 auto_envsubst
