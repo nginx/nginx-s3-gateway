@@ -72,7 +72,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -265,7 +265,7 @@ retest-unprivileged: check-nginx-type check-s3-style check-tools ## Test the cur
 
 ##@ Lint
 
-lint: makefile-check shellcheck envlib-sync-check lint-md ## Run all linters (checkmake + shellcheck + rumdl + helper sync)
+lint: makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md ## Run all linters (checkmake + shellcheck + rumdl + helper sync)
 	@echo "All lints passed"
 
 makefile-check: ## Lint this Makefile with checkmake
@@ -287,6 +287,9 @@ envlib-sync-check: ## Verify the installer's synced copy of gateway_env_lib.sh m
 	fi; \
 	diff <(printf '%s\n' "$$lib_region") <(printf '%s\n' "$$installer_region") \
 		|| { echo "gateway_env_lib functions differ between common/etc/nginx/gateway_env_lib.sh and standalone_ubuntu_oss_install.sh - edit the marked regions together"; exit 1; }
+
+envlib-sync-selftest: ## Verify envlib-sync-check itself catches drift and missing markers
+	@bash "$(BASE_DIR)test/envlib_sync_check_test.sh"
 
 shellcheck: ## Lint shell scripts (pre-existing findings excluded, see SHELLCHECK_EXCLUDES)
 	cd "$(BASE_DIR)" && shellcheck --severity=warning \

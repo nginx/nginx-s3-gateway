@@ -47,7 +47,8 @@ and the AWS CLI).
 - `make test-unit` / `make test-integration` — run just one half of the suite
   against the already-built image.
 - `make test-matrix` — reproduce the CI matrix locally.
-- `make lint` — checkmake + shellcheck + rumdl (Markdown).
+- `make lint` — checkmake + shellcheck + rumdl (Markdown) + the
+  `gateway_env_lib.sh` sync check and its self-test.
 - `make lint-md` / `make fmt-md` — report or auto-fix Markdown issues with
   `rumdl` (config in `.rumdl.toml`) without running the other linters.
 - `make docs` — generate JSDoc reference documentation.

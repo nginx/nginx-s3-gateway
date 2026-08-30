@@ -142,9 +142,19 @@ while IFS= read -r v; do
 done < /tmp/spellings > /tmp/shell_verdicts
 # A trailing newline cannot ride through the line-based spellings file, and it
 # is the one artifact command substitution would hide (GH-600 review): probe
-# it explicitly on both sides.
+# it explicitly on both sides, and pin the other two helpers to the same
+# strictness (they share lowercaseValueInto, so a regression means someone
+# stopped routing through it).
 nl="$(printf '\nx')"; nl="${nl%x}"
 printf 'trailing-newline=%s\n' "$(parseBoolean "true${nl}")" >> /tmp/shell_verdicts
+if [ "$(parseBooleanTristate "false${nl}")" != "" ]; then
+  echo "parseBooleanTristate accepted a trailing-newline spelling"
+  exit 1
+fi
+if isBooleanSpelling "true${nl}"; then
+  echo "isBooleanSpelling accepted a trailing-newline spelling"
+  exit 1
+fi
 cat > /tmp/pb_test.js << 'JS'
 import utils from "include/utils.js";
 import fs from "fs";
