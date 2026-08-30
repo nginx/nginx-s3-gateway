@@ -271,10 +271,21 @@ lint: makefile-check shellcheck envlib-sync-check lint-md ## Run all linters (ch
 makefile-check: ## Lint this Makefile with checkmake
 	cd "$(BASE_DIR)" && checkmake --config .checkmake.ini GNUmakefile
 
+# The empty-region guards keep the check from passing vacuously: if the BEGIN
+# marker ever disappears from a file, its sed extraction is empty, and two
+# empty extractions would otherwise diff clean.
 envlib-sync-check: ## Verify the installer's synced copy of gateway_env_lib.sh matches the canonical file
-	@cd "$(BASE_DIR)" && diff \
-		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' common/etc/nginx/gateway_env_lib.sh) \
-		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' standalone_ubuntu_oss_install.sh) \
+	@cd "$(BASE_DIR)"; \
+	extract() { sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' "$$1"; }; \
+	lib_region="$$(extract common/etc/nginx/gateway_env_lib.sh)"; \
+	installer_region="$$(extract standalone_ubuntu_oss_install.sh)"; \
+	if [ -z "$$lib_region" ]; then \
+		echo "envlib-sync-check: marked 'gateway_env_lib functions' region not found in common/etc/nginx/gateway_env_lib.sh"; exit 1; \
+	fi; \
+	if [ -z "$$installer_region" ]; then \
+		echo "envlib-sync-check: marked 'gateway_env_lib functions' region not found in standalone_ubuntu_oss_install.sh"; exit 1; \
+	fi; \
+	diff <(printf '%s\n' "$$lib_region") <(printf '%s\n' "$$installer_region") \
 		|| { echo "gateway_env_lib functions differ between common/etc/nginx/gateway_env_lib.sh and standalone_ubuntu_oss_install.sh - edit the marked regions together"; exit 1; }
 
 shellcheck: ## Lint shell scripts (pre-existing findings excluded, see SHELLCHECK_EXCLUDES)

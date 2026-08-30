@@ -140,6 +140,11 @@ printf '%s\n' true TRUE TrUe yes YES yEs Yes 1 false FALSE FaLsE no NO nO No 0 \
 while IFS= read -r v; do
   printf '%s=%s\n' "$v" "$(parseBoolean "$v")"
 done < /tmp/spellings > /tmp/shell_verdicts
+# A trailing newline cannot ride through the line-based spellings file, and it
+# is the one artifact command substitution would hide (GH-600 review): probe
+# it explicitly on both sides.
+nl="$(printf '\nx')"; nl="${nl%x}"
+printf 'trailing-newline=%s\n' "$(parseBoolean "true${nl}")" >> /tmp/shell_verdicts
 cat > /tmp/pb_test.js << 'JS'
 import utils from "include/utils.js";
 import fs from "fs";
@@ -148,6 +153,7 @@ lines.pop();
 lines.forEach(function (v) {
     console.log(v + "=" + (utils.parseBoolean(v) ? "1" : "0"));
 });
+console.log("trailing-newline=" + (utils.parseBoolean("true\n") ? "1" : "0"));
 JS
 if /usr/bin/njs -t module /dev/null > /dev/null 2>&1; then
   njs_flags="-t module"

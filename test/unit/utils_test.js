@@ -68,7 +68,7 @@ function testParseBoolean() {
         // vars read at module scope; the near-misses cover whitespace and
         // the on/off family that is deliberately not in the grammar.
         const values = ['on', 'off', 'enabled', 'disabled', '01',
-            'yes ', ' true', 'truthy', '', undefined, null];
+            'yes ', ' true', 'true\n', 'truthy', '', undefined, null];
         values.forEach((value) => {
             if (utils.parseBoolean(value) !== false) {
                 throw `Unrecognized value not parsed as false: [${value}]`;
