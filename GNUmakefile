@@ -72,7 +72,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -265,17 +265,31 @@ retest-unprivileged: check-nginx-type check-s3-style check-tools ## Test the cur
 
 ##@ Lint
 
-lint: makefile-check shellcheck envlib-sync-check lint-md ## Run all linters (checkmake + shellcheck + rumdl + helper sync)
+lint: makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md ## Run all linters (checkmake + shellcheck + rumdl + helper sync)
 	@echo "All lints passed"
 
 makefile-check: ## Lint this Makefile with checkmake
 	cd "$(BASE_DIR)" && checkmake --config .checkmake.ini GNUmakefile
 
+# The empty-region guards keep the check from passing vacuously: if the BEGIN
+# marker ever disappears from a file, its sed extraction is empty, and two
+# empty extractions would otherwise diff clean.
 envlib-sync-check: ## Verify the installer's synced copy of gateway_env_lib.sh matches the canonical file
-	@cd "$(BASE_DIR)" && diff \
-		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' common/etc/nginx/gateway_env_lib.sh) \
-		<(sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' standalone_ubuntu_oss_install.sh) \
+	@cd "$(BASE_DIR)"; \
+	extract() { sed -n '/^# --- gateway_env_lib functions BEGIN ---$$/,/^# --- gateway_env_lib functions END ---$$/p' "$$1"; }; \
+	lib_region="$$(extract common/etc/nginx/gateway_env_lib.sh)"; \
+	installer_region="$$(extract standalone_ubuntu_oss_install.sh)"; \
+	if [ -z "$$lib_region" ]; then \
+		echo "envlib-sync-check: marked 'gateway_env_lib functions' region not found in common/etc/nginx/gateway_env_lib.sh"; exit 1; \
+	fi; \
+	if [ -z "$$installer_region" ]; then \
+		echo "envlib-sync-check: marked 'gateway_env_lib functions' region not found in standalone_ubuntu_oss_install.sh"; exit 1; \
+	fi; \
+	diff <(printf '%s\n' "$$lib_region") <(printf '%s\n' "$$installer_region") \
 		|| { echo "gateway_env_lib functions differ between common/etc/nginx/gateway_env_lib.sh and standalone_ubuntu_oss_install.sh - edit the marked regions together"; exit 1; }
+
+envlib-sync-selftest: ## Verify envlib-sync-check itself catches drift and missing markers
+	@bash "$(BASE_DIR)test/envlib_sync_check_test.sh"
 
 shellcheck: ## Lint shell scripts (pre-existing findings excluded, see SHELLCHECK_EXCLUDES)
 	cd "$(BASE_DIR)" && shellcheck --severity=warning \

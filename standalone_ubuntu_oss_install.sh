@@ -35,16 +35,24 @@ fi
 # unpinned, unverified file as root. `make lint` (envlib-sync-check) fails
 # when the two regions differ - edit them together.
 # --- gateway_env_lib functions BEGIN ---
-# Prints $1 lowercased (boolean spellings are ASCII, so tr's classes suffice).
-lowercaseValue() {
-  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+# Sets gw_lowercased to $1 lowercased (boolean spellings are ASCII, so tr's
+# classes suffice). The result travels through a variable, not stdout: a
+# command substitution around the value would strip trailing newlines, making
+# the shell accept spellings like 'true<newline>' that utils.js#parseBoolean
+# rejects. The 'x' sentinel carries the trailing newlines through the one
+# substitution used internally.
+gw_lowercased=""
+lowercaseValueInto() {
+  gw_lowercased="$(printf '%sx' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  gw_lowercased="${gw_lowercased%x}"
 }
 
 # Prints 1 when $1 is a recognized true spelling, otherwise 0. Unrecognized
 # spellings mean false here so that startup validation, not parsing, is the
 # single place that rejects them.
 parseBoolean() {
-  case "$(lowercaseValue "${1:-}")" in
+  lowercaseValueInto "${1:-}"
+  case "${gw_lowercased}" in
     true | yes | 1)
       echo 1
       ;;
@@ -62,7 +70,8 @@ parseBoolean() {
 # rejected it already, and the historical behavior of both tri-state
 # consumers was to fall back to the unset case.
 parseBooleanTristate() {
-  case "$(lowercaseValue "${1:-}")" in
+  lowercaseValueInto "${1:-}"
+  case "${gw_lowercased}" in
     true | yes | 1)
       echo 1
       ;;
@@ -77,7 +86,8 @@ parseBooleanTristate() {
 
 # Succeeds (exit 0) when $1 is a recognized boolean spelling.
 isBooleanSpelling() {
-  case "$(lowercaseValue "${1:-}")" in
+  lowercaseValueInto "${1:-}"
+  case "${gw_lowercased}" in
     true | yes | 1 | false | no | 0)
       return 0
       ;;
