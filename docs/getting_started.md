@@ -512,6 +512,13 @@ that file from `http://nginx.org/packages/ubuntu` to
 sudo apt-get update && sudo apt-get upgrade
 ```
 
+A host set up before nginx.org rotated its signing keys on 2024-05-29 also has a
+`/usr/share/keyrings/nginx-archive-keyring.gpg` holding only the old 2011 key,
+which no longer signs any `Release` file — `apt-get update` fails there with
+`NO_PUBKEY` regardless of the branch. Re-running the install script rebuilds the
+keyring from the current key bundle, so run it before the commands above if
+`apt-get update` reports a missing key.
+
 ## Running in Containers
 
 ### Running the Public Open Source NGINX Container Image

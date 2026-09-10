@@ -522,11 +522,27 @@ echo "CORS Allow Private Network Access: ${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}"
 
 set -o nounset   # abort on unbound variable
 
-if [ ! -f /usr/share/keyrings/nginx-archive-keyring.gpg ]; then
+# Fingerprint of the key that currently signs the repository metadata on both
+# nginx.org branches. A plain existence check on the keyring is not enough: a
+# host set up before nginx.org rotated keys on 2024-05-29 holds a keyring with
+# only the 2011 key 573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62 in it, which no
+# longer signs any Release file, so every apt-get update on that host fails with
+# NO_PUBKEY until the keyring is rebuilt from the current bundle.
+nginx_signing_key_fingerprint="8540A6F18833A80E9C1653A42FD21310B49F6B46"
+
+if [ ! -f /usr/share/keyrings/nginx-archive-keyring.gpg ] \
+    || ! gpg --show-keys --with-colons /usr/share/keyrings/nginx-archive-keyring.gpg 2>/dev/null \
+       | grep --quiet --fixed-strings "${nginx_signing_key_fingerprint}"; then
   echo "▶ Adding NGINX signing key"
   key_tmp_file="$(mktemp)"
   wget --quiet --max-redirect=3 --output-document="${key_tmp_file}" https://nginx.org/keys/nginx_signing.key
-  echo "dd4da5dc599ef9e7a7ac20a87275024b4923a917a306ab5d53fa77871220ecda  ${key_tmp_file}" | sha256sum --check
+  # Checksum of the published key bundle, which currently carries three keys:
+  # ABF5BD827BD9BF62 (2011, expires 2027-05-24) plus 2FD21310B49F6B46 and
+  # BCDCD8A38D88A2B3, both published 2024-05-29. nginx.org rewrites this file
+  # whenever it adds a key, and a stale pin aborts the install here, so re-pin
+  # the hash after checking the fingerprints against
+  # https://nginx.org/en/pgp_keys.html
+  echo "55385da31d198fa6a5012d40ae98ecb272a6c4e8fffffba94719ffd3e87de37a  ${key_tmp_file}" | sha256sum --check
   gpg --dearmor < "${key_tmp_file}" | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
   rm -f "${key_tmp_file}"
 fi
