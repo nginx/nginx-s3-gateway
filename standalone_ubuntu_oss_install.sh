@@ -531,13 +531,31 @@ if [ ! -f /usr/share/keyrings/nginx-archive-keyring.gpg ]; then
   rm -f "${key_tmp_file}"
 fi
 
+# The gateway container images build on the nginx.org mainline branch
+# (see Dockerfile.oss), so the standalone install tracks mainline as well. The
+# stable branch is cut roughly once a year, and installing from it would leave
+# systemd hosts a full development cycle behind every container deployment -
+# including any mainline feature the shared configuration templates adopt.
+nginx_repo_path="nginx.org/packages/mainline/ubuntu"
+nginx_repo_url="https://${nginx_repo_path}"
+
 if [ ! -f /etc/apt/sources.list.d/nginx.list ]; then
   release="$(grep 'VERSION_CODENAME' /etc/os-release | cut --delimiter='=' --field=2)"
   echo "▶ Adding NGINX package repository"
   echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-  http://nginx.org/packages/ubuntu ${release} nginx" \
+  ${nginx_repo_url} ${release} nginx" \
       | sudo tee /etc/apt/sources.list.d/nginx.list
   apt-get -qq update
+elif ! grep --quiet --fixed-strings "${nginx_repo_path}" /etc/apt/sources.list.d/nginx.list; then
+  # An existing repository file is never rewritten, so local edits survive a
+  # re-run - which also means hosts installed before the mainline switch keep
+  # the stable branch until an operator migrates them by hand. The match is on
+  # the host and path only, so an operator who migrated the file by hand is not
+  # nagged over an unrelated difference such as an http:// scheme.
+  >&2 echo "WARNING: /etc/apt/sources.list.d/nginx.list does not reference ${nginx_repo_path}, so this host"
+  >&2 echo "WARNING: stays on the NGINX branch it was first installed from and may run an older NGINX than"
+  >&2 echo "WARNING: the gateway container images. To migrate, point the deb line in that file at"
+  >&2 echo "WARNING: ${nginx_repo_url} and then run: apt-get update && apt-get upgrade"
 fi
 
 to_install=""
@@ -547,8 +565,21 @@ if ! dpkg --status nginx 2>/dev/null | grep --quiet Status > /dev/null; then
 fi
 
 if ! dpkg --status nginx-module-njs 2>/dev/null | grep --quiet Status > /dev/null; then
-  # find latest njs version because the package manager gets this wrong
-  latest_njs_version="$(apt show -a nginx-module-njs 2>/dev/null | grep 'Version:' | cut --delimiter=' ' --field=2 | sort --reverse | head --lines=1)"
+  # find latest njs version because the package manager gets this wrong.
+  # The sort is version-aware: package versions embed the NGINX release
+  # (1.31.5+1.0.1-1~noble), so a plain lexicographic sort would rank
+  # 1.31.9 above 1.31.10 and pin njs to a version whose exact-match NGINX
+  # dependency conflicts with the mainline nginx package installed above.
+  # The trailing `|| true` keeps an empty result from aborting the script with
+  # no output: `grep` exits nonzero when apt lists no candidate, and errexit
+  # plus pipefail would turn that into a silent exit mid-install.
+  latest_njs_version="$(apt show -a nginx-module-njs 2>/dev/null | grep 'Version:' | cut --delimiter=' ' --field=2 | sort --version-sort --reverse | head --lines=1 || true)"
+  if [ -z "${latest_njs_version}" ]; then
+    >&2 echo "ERROR: apt lists no nginx-module-njs candidate, so the module version cannot be pinned."
+    >&2 echo "ERROR: check that /etc/apt/sources.list.d/nginx.list points at a repository carrying this"
+    >&2 echo "ERROR: release, run 'apt-get update', and then re-run this script."
+    exit 1
+  fi
   to_install="${to_install} nginx-module-njs=${latest_njs_version}"
 fi
 
