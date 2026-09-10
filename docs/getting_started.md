@@ -493,6 +493,32 @@ For example:
 sudo env $(cat settings.example) ./standalone_ubuntu_oss_install.sh
 ```
 
+NGINX is installed from the
+[mainline package repository](https://nginx.org/en/linux_packages.html#Ubuntu)
+(`https://nginx.org/packages/mainline/ubuntu`), which is the same branch the
+container images track, so a systemd install runs the same NGINX version as a
+container deployment. Note that nginx.org labels the suite `stable` in both
+branches, so `apt-cache policy nginx` reports `nginx:stable` either way — the
+branch is selected by the repository URL, not by the suite name.
+
+Hosts installed before the gateway switched to mainline are still configured for
+the stable branch. The script never rewrites an existing
+`/etc/apt/sources.list.d/nginx.list` — so that local edits survive a re-run — and
+prints a warning instead. To migrate such a host, change the repository URL in
+that file from `http://nginx.org/packages/ubuntu` to
+`https://nginx.org/packages/mainline/ubuntu` and then run:
+
+```shell-session
+sudo apt-get update && sudo apt-get upgrade
+```
+
+A host set up before nginx.org rotated its signing keys on 2024-05-29 also has a
+`/usr/share/keyrings/nginx-archive-keyring.gpg` holding only the old 2011 key,
+which no longer signs any `Release` file — `apt-get update` fails there with
+`NO_PUBKEY` regardless of the branch. Re-running the install script rebuilds the
+keyring from the current key bundle, so run it before the commands above if
+`apt-get update` reports a missing key.
+
 ## Running in Containers
 
 ### Running the Public Open Source NGINX Container Image
