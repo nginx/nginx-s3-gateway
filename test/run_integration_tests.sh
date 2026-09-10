@@ -691,7 +691,18 @@ start_tls_gateway() {
   tls_s3_server=${3:-rustfs}
   export TEST_S3_TRUSTED_CERT_PATH="${trusted_cert_path}"
   export TEST_S3_SERVER="${tls_s3_server}"
-  COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose up -d
+  # --force-recreate because callers stop the gateway between sub-tests and can
+  # then start it again with an identical configuration - the hostname
+  # validation case does exactly that when S3_STYLE is already `path`. Without a
+  # config change to act on, `up -d` decides from the container state it
+  # observes, and that state can still read as running milliseconds after
+  # `compose stop` returns: compose then reports `Running`, does nothing, and
+  # leaves the gateway down until wait_for_gateway times out.
+  #
+  # Named explicitly so the recreation stops at the gateway. The origin holds
+  # the seeded bucket in its container filesystem rather than a volume, so
+  # recreating it here would silently empty the bucket every sub-test.
+  COMPOSE_COMPATIBILITY=true S3_STYLE="${tls_s3_style}" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=1 PROVIDE_INDEX_PAGE=1 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=1 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose up -d --force-recreate nginx-s3-gateway
   wait_for_gateway
 }
 
