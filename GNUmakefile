@@ -46,8 +46,9 @@ DOCS_DIR          ?= reference
 # files before turning this into a knob.
 override IMAGE_NAME := nginx-s3-gateway
 
-# Passed through to test/run_integration_tests.sh (which defaults to the
-# same value), so the suite and the `clean` teardown share one project name.
+# Passed through to test/run_integration_tests.sh and test/run_gateway.sh
+# (both default to the same value), so the suite, make test-run and the
+# `clean` teardown share one project name.
 COMPOSE_PROJECT   := ngt
 COMPOSE_FILE      := $(BASE_DIR)test/docker-compose.yaml
 DYNAMIC_CREDENTIALS_COMPOSE_FILE := $(BASE_DIR)test/docker-compose.dynamic-credentials.yaml
@@ -72,7 +73,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-run test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -206,16 +207,19 @@ test-matrix-plus: ## Run the same matrix against NGINX Plus (certs + license.jwt
 ##@ Test (no rebuild)
 
 # Single source for the runner invocation contracts (see the script headers
-# in test/ for the full environment documentation). Both run against whatever
-# image is currently tagged as the floating IMAGE_NAME tag; S3_STYLE reaches
-# the integration environment through docker-compose interpolation. The
-# variant retest targets flip the runners' NJS_LATEST/UNPRIVILEGED knobs
+# in test/ for the full environment documentation). All three run against
+# whatever image is currently tagged as the floating IMAGE_NAME tag; S3_STYLE
+# reaches the compose environment through docker-compose interpolation. The
+# variant retest targets flip the test runners' NJS_LATEST/UNPRIVILEGED knobs
 # (default 0) with an env prefix on the recipe line.
 RUN_UNIT_TESTS = DOCKER="$(DOCKER)" IMAGE_NAME="$(IMAGE_NAME)" \
 	"$(BASE_DIR)test/run_unit_tests.sh"
 RUN_INTEGRATION_TESTS = DOCKER="$(DOCKER)" NGINX_TYPE="$(NGINX_TYPE)" \
 	S3_STYLE="$(S3_STYLE)" COMPOSE_PROJECT="$(COMPOSE_PROJECT)" \
 	"$(BASE_DIR)test/run_integration_tests.sh"
+RUN_GATEWAY = DOCKER="$(DOCKER)" NGINX_TYPE="$(NGINX_TYPE)" \
+	S3_STYLE="$(S3_STYLE)" COMPOSE_PROJECT="$(COMPOSE_PROJECT)" \
+	"$(BASE_DIR)test/run_gateway.sh"
 
 # Inverse of VARIANT_GUARD below: the non-variant targets must not drive a
 # floating tag that is actually the named variant image, or the run fails
@@ -235,6 +239,19 @@ test-unit: ## Run only the njs unit tests against the currently tagged image
 test-integration: check-nginx-type check-s3-style check-tools ## Run only the integration suite against the currently tagged image
 	$(call NONVARIANT_GUARD,unprivileged)
 	$(RUN_INTEGRATION_TESTS)
+
+# Interactive sibling of test-integration: same stack, seeding and
+# unprivileged guard (host 8989 maps to port 80), but it stays in the
+# foreground streaming gateway logs until Ctrl-C, which tears the stack
+# down (`make clean` is the fallback). The gateway settings the compose file
+# passes through are overridable per run - `make test-run
+# ALLOW_DIRECTORY_LIST=false` - because make exports command-line variables
+# into the recipe environment, where the script applies them over its
+# defaults. Not to be run alongside test-integration: both drive compose
+# project COMPOSE_PROJECT.
+test-run: check-nginx-type check-s3-style check-tools ## Run the current image + seeded S3 origin until Ctrl-C
+	$(call NONVARIANT_GUARD,unprivileged)
+	$(RUN_GATEWAY)
 
 # check-tools fails fast on a missing integration dependency (the AWS CLI,
 # curl, compose, md5sum) before the unit suite spends a minute in docker,
@@ -326,10 +343,12 @@ jsdoc: docs ## Back-compat alias for docs (previous Makefile's target name)
 # trailing-slash values so the rm -rf can never escape the repository (a
 # trailing slash would make rm follow a symlinked DOCS_DIR into its target).
 # The teardown mirrors the profile-aware compose_dynamic_credentials()
-# invocation in test/run_integration_tests.sh, including its docker-compose
-# fallback, so it removes the fixed metadata network as well as the regular
-# stack. It also removes the TLS cert scratch directory the script's finish()
-# trap normally cleans (a killed test run never reaches finish()). The
+# invocation in test/run_integration_tests.sh, including the docker-compose
+# fallback of the compose wrapper in test/integration/compose_stack_lib.sh,
+# so it removes the fixed metadata network as well as the regular stack
+# (which make test-run starts too). It also removes the TLS cert scratch
+# directory the scripts' finish() traps normally clean (a killed run never
+# reaches finish()). The
 # generated keys in there are root-owned, so a plain rm is tried first (it
 # works while the directory itself is user-owned) with a root-container
 # fallback, the same way finish() does.

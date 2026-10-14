@@ -78,7 +78,8 @@ jsdoc                            JSDoc configuration files
 oss/                             contains files used solely in NGINX OSS configurations
 plus/                            contains files used solely in NGINX Plus configurations
 test/                            contains the test runner scripts (run_unit_tests.sh and
-                                 run_integration_tests.sh, both driven by make) plus the njs
+                                 run_integration_tests.sh, both driven by make), the
+                                 `make test-run` launcher run_gateway.sh, plus the njs
                                  unit tests and bash integration tests they execute
 Dockerfile.oss                   Dockerfile that configures NGINX OSS to act as a S3 gateway
 Dockerfile.plus                  Dockerfile that builds a NGINX Plus instance that is configured
