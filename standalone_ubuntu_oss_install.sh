@@ -968,7 +968,7 @@ mkdir -p /etc/nginx/conf.d/gateway
 mkdir -p /etc/nginx/templates/gateway
 
 function download() {
-  wget --quiet --output-document="$2" "https://raw.githubusercontent.com/nginxinc/nginx-s3-gateway/${branch}/$1"
+  wget --quiet --output-document="$2" "https://raw.githubusercontent.com/nginx/nginx-s3-gateway/${branch}/$1"
 }
 
 if [ ! -f /etc/nginx/nginx.conf.orig ]; then

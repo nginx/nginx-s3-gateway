@@ -378,7 +378,7 @@ docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
     --env S3_SERVER=storage.googleapis.com \
     --env PROXY_CACHE_IGNORE_HEADERS="Cache-Control Expires" \
     --env HEADER_PREFIXES_TO_STRIP="x-goog-;x-guploader-uploadid;cache-control" \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
 ```
 
 `PROXY_CACHE_IGNORE_HEADERS` changes only what the *gateway* caches. The origin's `Cache-Control` header is still
@@ -524,21 +524,21 @@ keyring from the current key bundle, so run it before the commands above if
 ### Running the Public Open Source NGINX Container Image
 
 The latest builds of the gateway (that use open source NGINX) are available on
-the project's Github [package repository](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway).
+the project's Github [package repository](https://github.com/nginx/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway).
 
 To run with the public open source image, replace the `settings` file specified
 below with a file containing your settings, and run the following command:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
 ```
 
 If you would like to run with the latest njs version, run:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
 ```
 
 Alternatively, if you would like to pin your version to a specific point in
@@ -546,7 +546,7 @@ time release, find the version with an embedded date and run:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
 ```
 
 #### Running Unprivileged Container Images
@@ -558,14 +558,14 @@ To run an unprivileged image, use the `unprivileged-oss` tag and map to port **8
 
 ```text
 docker run --env-file ./settings --publish 80:8080 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
 ```
 
 Alternatively, you can map host port 8080 to container port 8080 to avoid requiring elevated privileges on the host:
 
 ```text
 docker run --env-file ./settings --publish 8080:8080 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
 ```
 
 ### Building the Public Open Source NGINX Container Image
@@ -918,7 +918,7 @@ spec:
       serviceAccountName: nginx-s3-gateway
       containers:
         - name: nginx-s3-gateway
-          image: "ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-20220916"
+          image: "ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-20220916"
           imagePullPolicy: IfNotPresent
           env:
             - name: S3_BUCKET_NAME
@@ -1000,8 +1000,8 @@ which is routed to trailing-slash handling instead) and all three equivalent `er
 The templates are re-rendered on every container start, so rather than rebuilding the image you can bind-mount an
 edited copy of a template over its path under `/etc/nginx/templates/`.
 
-[default-conf-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/default.conf.template
-[s3-location-common-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/gateway/s3_location_common.conf.template
+[default-conf-template]: https://github.com/nginx/nginx-s3-gateway/blob/main/common/etc/nginx/templates/default.conf.template
+[s3-location-common-template]: https://github.com/nginx/nginx-s3-gateway/blob/main/common/etc/nginx/templates/gateway/s3_location_common.conf.template
 
 ```bash
 error_page 400 401 402 403 405 406 407 408 409 410 411 412 413 414 415 416 417 418 420 422 423 424 426 428 429 431 444 449 450 451 500 501 502 503 504 505 506 507 508 509 510 511 =404 @error404;

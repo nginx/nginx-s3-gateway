@@ -38,7 +38,7 @@ if [ "${DNS_RESOLVERS+x}" = "" ]; then
     # This method of pulling individual nameservers from
     # /etc/resolv.conf taken from the entrypoint script in the
     # official docker image.
-    # https://github.com/nginxinc/docker-nginx/blob/master/entrypoint/15-local-resolvers.envsh
+    # https://github.com/nginx/docker-nginx/blob/master/entrypoint/15-local-resolvers.envsh
     for ip in $(awk 'BEGIN{ORS=" "} $1=="nameserver" {print $2}' /etc/resolv.conf)
     do
         if echo "${ip}" | grep -q ':'; then

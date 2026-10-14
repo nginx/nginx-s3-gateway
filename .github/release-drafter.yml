@@ -115,5 +115,5 @@ template: |
 
   ## Install & Upgrade
 
-  - Container images and installation instructions are available in the [GitHub Container Registry](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway)
-  - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginxinc/nginx-s3-gateway/blob/main/docs/getting_started.md)
+  - Container images and installation instructions are available in the [GitHub Container Registry](https://github.com/nginx/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway)
+  - Detailed installation and configuration instructions can be found in the [Getting Started Guide](https://github.com/nginx/nginx-s3-gateway/blob/main/docs/getting_started.md)
