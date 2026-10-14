@@ -24,7 +24,9 @@
 # The suite starts RustFS plus the gateway, seeds test data, then drives
 # test/integration/test_api.sh and test_cache_bypass.sh through a matrix of
 # gateway configurations. The entrypoint-script tests run first since they
-# only need the image, not the compose environment.
+# only need the image, not the compose environment. The compose wrapper, the
+# readiness polls and the seeding recipe are shared with make test-run
+# through test/integration/compose_stack_lib.sh.
 #
 # Environment:
 #   DOCKER           docker CLI to use (default: docker)
@@ -50,10 +52,8 @@ nginx_server_port="8989"
 test_server="${nginx_server_proto}://${nginx_server_host}:${nginx_server_port}"
 test_fail_exit_code=2
 no_dep_exit_code=3
-build_dep_exit_code=4
 
 test_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-repo_dir="$( dirname "${test_dir}" )"
 test_compose_config="${test_dir}/docker-compose.yaml"
 dynamic_credentials_compose_config="${test_dir}/docker-compose.dynamic-credentials.yaml"
 secret_file_credentials_compose_config="${test_dir}/docker-compose.secret-file-credentials.yaml"
@@ -121,42 +121,29 @@ else
   gateway_listen_port=80
 fi
 
-is_windows="0"
-if [ "${OS:-}" == "Windows_NT" ]; then
-  is_windows="1"
-elif command -v uname > /dev/null; then
-  uname_output="$(uname -s)"
-  if [[ "${uname_output}" == *"_NT-"* ]]; then
-    is_windows="1"
-  fi
-fi
-
 docker_cmd="$(command -v "${DOCKER}" || true)"
 if ! [ -x "${docker_cmd}" ]; then
   e "required dependency not found: ${DOCKER} not found in the path or not executable"
   exit ${no_dep_exit_code}
 fi
 
-# An array so that a docker path containing spaces (e.g. Git Bash resolving
-# to '/c/Program Files/Docker/.../docker') survives expansion intact. The
-# legacy docker-compose fallback only applies to the stock docker CLI: with a
-# DOCKER override (e.g. podman) it would silently drive the compose stack
-# with a different engine than the rest of the suite.
-if "${docker_cmd}" compose version > /dev/null 2>&1; then
-  docker_compose_cmd=("${docker_cmd}" compose)
-elif [ "${DOCKER}" == "docker" ] && command -v docker-compose > /dev/null; then
-  docker_compose_cmd=(docker-compose)
-else
-  e "required dependency not found: ${DOCKER} compose (or docker-compose) not found in the path or not executable"
-  exit ${no_dep_exit_code}
-fi
-e "Using Docker Compose command: ${docker_compose_cmd[*]}"
-
 curl_cmd="$(command -v curl || true)"
 if ! [ -x "${curl_cmd}" ]; then
   e "required dependency not found: curl not found in the path or not executable"
   exit ${no_dep_exit_code}
 fi
+
+# The compose command detection, compose wrapper, gateway readiness poll and
+# origin seeding recipe come from the shared stack lib so that make test-run
+# stands up exactly the stack this suite tests against. The directive lets
+# the linter follow the lib, whose docker_compose_cmd the overlay wrappers
+# below read back (their env -u scrub cannot invoke a shell function).
+# shellcheck source=test/integration/compose_stack_lib.sh
+. "${test_dir}/integration/compose_stack_lib.sh" \
+  "${docker_cmd}" "${DOCKER}" "${curl_cmd}" \
+  "${test_compose_config}" "${test_compose_project}" \
+  "${NGINX_TYPE}" "${gateway_listen_port}" \
+  "${test_server}" "${s3_origin_bucket}"
 
 # origin_client (and the aws_cmd lookup, which aborts with the no-dependency
 # exit code when the AWS CLI is missing) comes from the shared client lib:
@@ -165,71 +152,6 @@ fi
 . "${test_dir}/integration/s3_client_lib.sh" \
   "${s3_origin_server}" "${s3_origin_user}" "${s3_origin_passwd}"
 s3_client_announce
-
-# Blocks until the gateway answers an HTTP request, replacing the external
-# wait-for-it dependency.
-#
-# Two problems with the previous arrangement. wait-for-it was an optional
-# tool, so on a host that lacked it these waits silently became no-ops. And
-# even where it was installed it only proved the *published* port was open:
-# docker binds the host side of a port mapping as soon as the container
-# starts, so a TCP connect succeeds while nginx inside is still booting. The
-# downstream suites each carry their own 2s/4s/6s backoff loop to absorb that
-# gap, and it fired on nearly every configuration change - 13 times in a
-# representative CI run, all of it pure sleep.
-#
-# Polling the same HEAD request those suites use closes the gap for real:
-# curl reports 000 until nginx accepts and answers, so this returns only once
-# a request would actually succeed, and the downstream backoffs stop firing.
-#
-# Exits non-zero on timeout so callers abort under errexit rather than
-# proceeding against a gateway that never came up.
-gateway_wait_timeout=15
-wait_for_gateway() {
-  poll_limit=$((gateway_wait_timeout * 5))
-  for (( poll=0; poll<poll_limit; poll++ )); do
-    # `|| true` because curl exits non-zero (while still printing 000) until
-    # the gateway answers, which errexit would otherwise treat as fatal.
-    gateway_status="$("${curl_cmd}" -s -o /dev/null -w '%{http_code}' \
-      --head --max-time 2 "${test_server}" || true)"
-    if [ "${gateway_status}" != "000" ]; then
-      return 0
-    fi
-    sleep 0.2
-  done
-  e "timed out after ${gateway_wait_timeout}s waiting for the gateway at ${test_server}"
-  return 1
-}
-
-prepare_compose_env() {
-  # Hint to docker-compose the internal port to map for the container
-  if [ "${UNPRIVILEGED}" -eq 1 ]; then
-    export NGINX_INTERNAL_PORT=8080
-  else
-    export NGINX_INTERNAL_PORT=80
-  fi
-
-  if [ "${NGINX_TYPE}" == "plus" ]; then
-    if [ -f /etc/nginx/license.jwt ]; then
-      NGINX_LICENSE_JWT="$(cat /etc/nginx/license.jwt)"
-    elif [ -f "${repo_dir}/license.jwt" ]; then
-      NGINX_LICENSE_JWT="$(cat "${repo_dir}/license.jwt")"
-    else
-      e "NGINX Plus license file not found: /etc/nginx/license.jwt or ${repo_dir}/license.jwt"
-      exit ${build_dep_exit_code}
-    fi
-  else
-    NGINX_LICENSE_JWT=""
-  fi
-
-  export NGINX_LICENSE_JWT
-}
-
-compose() {
-  prepare_compose_env
-
-  "${docker_compose_cmd[@]}" -f "${test_compose_config}" -p "${test_compose_project}" "$@"
-}
 
 compose_dynamic_credentials() {
   prepare_compose_env
@@ -340,100 +262,13 @@ generate_tls_test_certs() {
 }
 
 integration_test_data() {
-  # Write problematic files to disk if we are not on Windows. Originally,
-  # these files were checked in, but that prevented the git repository from
-  # being cloned on Windows machines.
-  if [ "$is_windows" == "0" ]; then
-    echo "Writing weird filename: ${test_dir}/data/bucket-1/a/%@!*()=\$#^&|.txt"
-    echo 'We are but selling water next to a river.' > "${test_dir}"'/data/bucket-1/a/%@!*()=$#^&|.txt'
-  fi
+  write_special_character_fixture
 
   p "Starting Docker Compose Environment"
   # COMPOSE_COMPATIBILITY=true Supports older style compose filenames with _ vs -
   COMPOSE_COMPATIBILITY=true compose up -d
 
-  seed_origin_data
-}
-
-seed_origin_data() {
-
-  # Hit the origin's health check end point to see if it has started up.
-  # This is the only readiness gate for phases that start the origin alone
-  # (integration_test_assume_role's `up -d rustfs` returns before the
-  # healthcheck passes, unlike the full `up -d`, where the gateway's
-  # depends_on blocks on it), so fail with a clear message rather than
-  # falling through to client commands that would abort the suite with an
-  # opaque connectivity error.
-  origin_is_up=""
-  for (( i=1; i<=15; i++ ))
-  do
-    echo "Querying the S3 origin to see if it is ready"
-    # `|| true` keeps errexit from aborting the retry loop when the origin is
-    # not listening yet (curl exits 7 on connection refused but still prints
-    # 000).
-    origin_is_up="$(${curl_cmd} --insecure -s -o /dev/null -w '%{http_code}' "${s3_origin_server}"/health || true)"
-    if [ "${origin_is_up}" = "200" ]; then
-      break
-    else
-      sleep 2
-    fi
-  done
-  if [ "${origin_is_up}" != "200" ]; then
-    e "the S3 origin at ${s3_origin_server} did not become ready (last health status: ${origin_is_up})"
-    exit "$test_fail_exit_code"
-  fi
-
-  # RustFS's IAM subsystem can lag /health right after a stack recreation
-  # (authenticated calls are rejected with "waiting for iam"), so also gate
-  # on an authenticated API call. list-buckets is used because it succeeds
-  # for the root user whether or not the bucket exists yet. The probe's
-  # stderr is kept (2>&1 before the stdout redirect captures only stderr) and
-  # printed on exhaustion: an InvalidAccessKeyId from drifted credentials
-  # would otherwise be indistinguishable from the IAM lag this loop absorbs.
-  iam_is_up=""
-  iam_probe_error=""
-  for (( i=1; i<=15; i++ ))
-  do
-    echo "Querying the S3 origin API to see if it accepts authenticated requests"
-    if iam_probe_error="$(origin_client s3api list-buckets 2>&1 > /dev/null)"; then
-      iam_is_up="1"
-      break
-    else
-      sleep 2
-    fi
-  done
-  if [ "${iam_is_up}" != "1" ]; then
-    e "the S3 origin at ${s3_origin_server} did not accept an authenticated request"
-    e "last error from the S3 client: ${iam_probe_error}"
-    exit "$test_fail_exit_code"
-  fi
-
-  p "Adding test data to container"
-  # A bucket left behind by an aborted previous run (compose containers
-  # survive a failed teardown) must not fail the seeding step under errexit
-  # (the equivalent of the previous S3 client's ignore-existing bucket
-  # creation), so a create-bucket failure falls back to a head-bucket probe:
-  # it succeeds when the failure was BucketAlreadyOwnedByYou and keeps a
-  # genuine failure loud - head-bucket's stderr is not discarded and errexit
-  # aborts on it. Probe-then-create would instead abort the suite when a
-  # transient probe failure sent an existing bucket into create-bucket.
-  if ! origin_client s3api create-bucket --bucket "${s3_origin_bucket}" > /dev/null 2>&1; then
-    origin_client s3api head-bucket --bucket "${s3_origin_bucket}" > /dev/null
-  fi
-  echo "Copying contents of ${test_dir}/data/${s3_origin_bucket} to the S3 origin"
-  # --no-progress keeps the transfer meter out of CI logs but still prints
-  # one upload line per object. The --exclude patterns keep hidden files
-  # (.DS_Store, editor swap files - invisible to git because test/data is
-  # blanket-gitignored) out of the bucket the way the dotfile-skipping glob
-  # this replaced did: the directory-listing legs assert an exact object
-  # population, and a stray dotfile would shift every pagination page.
-  origin_client s3 cp --recursive --no-progress \
-    --exclude ".*" --exclude "*/.*" \
-    "${test_dir}/data/${s3_origin_bucket}" "s3://${s3_origin_bucket}"
-  # RustFS declares VOLUME /data, so `docker diff` (which the seeding step
-  # once printed here) would show nothing; list the seeded objects instead.
-  echo "Seeded bucket contents:"
-  origin_client s3 ls --recursive "s3://${s3_origin_bucket}"
+  seed_origin_data "${s3_origin_server}"
 }
 
 integration_test_listen_directives() {
@@ -752,7 +587,7 @@ integration_test_dynamic_credentials() {
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
   wait_for_gateway
-  seed_origin_data
+  seed_origin_data "${s3_origin_server}"
 
   assert_request_status 200 "dynamic credentials first object request" "${test_server}/a.txt"
 
@@ -795,7 +630,7 @@ integration_test_secret_file_credentials() {
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_secret_file_credentials up -d
   wait_for_gateway
-  seed_origin_data
+  seed_origin_data "${s3_origin_server}"
 
   # A signed request only succeeds if the credentials made it out of the files
   # and through the nginx.conf env allowlist into the njs modules - a missing
@@ -820,14 +655,14 @@ integration_test_assume_role() {
   compose_assume_role down --volumes --remove-orphans || true
   set_http_test_origin
 
-  # The origin comes up alone and is seeded before the gateway starts: even
-  # wait_for_gateway's probe request triggers a credential fetch, and a
-  # failed STS call against a not-yet-ready origin would break the
-  # exactly-one-fetch cache assertion below. The AssumeRole caller is the
-  # origin's root user - RustFS permits that, where other S3 stores demand a
-  # dedicated IAM user - so no caller provisioning is needed.
+  # The origin comes up alone and is seeded before the gateway starts so
+  # that the first signed request below, which triggers the STS fetch,
+  # cannot race a not-yet-ready origin and break the exactly-one-fetch cache
+  # assertion. The AssumeRole caller is the origin's root user - RustFS
+  # permits that, where other S3 stores demand a dedicated IAM user - so no
+  # caller provisioning is needed.
   COMPOSE_COMPATIBILITY=true compose_assume_role up -d rustfs
-  seed_origin_data
+  seed_origin_data "${s3_origin_server}"
 
   COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_assume_role up -d
   wait_for_gateway
@@ -870,9 +705,8 @@ integration_test_assume_role() {
   fi
 
   # Cache reuse: a second object request must not add an STS call. Compared
-  # as a count delta rather than against an absolute 1 because the
-  # wait_for_gateway HEAD probe (2s cap) can legitimately abort its first
-  # credential fetch mid-flight on a slow runner and trigger one retry.
+  # as a count delta rather than against an absolute 1 so that the assertion
+  # does not depend on how many fetches the first request needed.
   assert_request_status 200 "assume role cached second object request" "${test_server}/b/e.txt"
   gateway_logs="$(compose_assume_role logs nginx-s3-gateway 2>&1)"
   sts_fetch_count_after="$(grep -cF 'Fetching credentials via STS AssumeRole' <<< "${gateway_logs}" || true)"
