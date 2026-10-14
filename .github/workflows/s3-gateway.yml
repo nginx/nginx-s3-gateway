@@ -201,20 +201,12 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get secrets from Azure
-        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
-        with:
-          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
-          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
-          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
-          secret-names: "docker-username, docker-github-syseng-rw-token"
-          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
-
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: 9830d11e-91eb-4ddb-babb-9badee0db80b
         with:
-          username: ${{ env.DOCKER_HUB_USERNAME }}
-          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
+          username: nginx
 
       # provenance: false keeps the pushed reference a plain manifest list.
       # With attestations attached, the index also carries provenance
@@ -232,8 +224,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:latest-${{ steps.date.outputs.date }}
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:latest
-            nginxinc/nginx-s3-gateway:latest-${{ steps.date.outputs.date }}
-            nginxinc/nginx-s3-gateway:latest
+            nginx/nginx-s3-gateway:latest-${{ steps.date.outputs.date }}
+            nginx/nginx-s3-gateway:latest
 
   publish-unprivileged:
     name: Publish NGINX OSS unprivileged image
@@ -262,20 +254,12 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get secrets from Azure
-        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
-        with:
-          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
-          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
-          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
-          secret-names: "docker-username, docker-github-syseng-rw-token"
-          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
-
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: 9830d11e-91eb-4ddb-babb-9badee0db80b
         with:
-          username: ${{ env.DOCKER_HUB_USERNAME }}
-          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
+          username: nginx
 
       - name: Build and push image [unprivileged]
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -290,8 +274,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss
-            nginxinc/nginx-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
-            nginxinc/nginx-s3-gateway:unprivileged-oss
+            nginx/nginx-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
+            nginx/nginx-s3-gateway:unprivileged-oss
 
   # One job per architecture, each on a native runner. Pushed by digest so no
   # per-architecture tag is published: the digests are collected by the
@@ -390,20 +374,12 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get secrets from Azure
-        uses: nginx/ci-self-hosted/.github/actions/get-from-vault@5c3e1f8b51f66a851fdba80f70e19cf966199730
-        with:
-          client-id: ${{ secrets.SYSENG_CLIENT_ID }}
-          tenant-id: ${{ secrets.SYSENG_TENANT_ID }}
-          vault-name: ${{ secrets.SYSENG_VAULT_NAME }}
-          secret-names: "docker-username, docker-github-syseng-rw-token"
-          env-names: "DOCKER_HUB_USERNAME, DOCKER_HUB_RW_TOKEN"
-
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: 9830d11e-91eb-4ddb-babb-9badee0db80b
         with:
-          username: ${{ env.DOCKER_HUB_USERNAME }}
-          password: ${{ env.DOCKER_HUB_RW_TOKEN }}
+          username: nginx
 
       # imagetools assembles the manifest list from the staged per-architecture
       # digests and pushes it to every tag. The ghcr tags resolve within the
@@ -428,8 +404,8 @@ jobs:
           docker buildx imagetools create \
             --tag "${STAGING_IMAGE}:latest-njs-oss-${DATE}" \
             --tag "${STAGING_IMAGE}:latest-njs-oss" \
-            --tag "nginxinc/nginx-s3-gateway:latest-njs-oss-${DATE}" \
-            --tag "nginxinc/nginx-s3-gateway:latest-njs-oss" \
+            --tag "nginx/nginx-s3-gateway:latest-njs-oss-${DATE}" \
+            --tag "nginx/nginx-s3-gateway:latest-njs-oss" \
             "${sources[@]}"
 
       - name: Show the published manifest
