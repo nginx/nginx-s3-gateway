@@ -52,8 +52,8 @@ All read-only. Do this in every mode.
    host port mapping; the origin service name, image, internal/host ports,
    root credentials, region, and bucket name; which gateway `environment:`
    keys are **bare pass-through** (a bare key whose variable is unset in
-   the invoking shell reaches the container as an *empty string that
-   overrides the image's `ENV` default* — every one of these must be
+   the invoking shell is *removed from the container's environment, taking
+   the image's `ENV` default with it* — every one of these must be
    exported explicitly); which keys use `${VAR:-default}` interpolation;
    and which documented gateway settings have **no compose key at all**
    (those need the overlay technique in Step 3).
@@ -63,11 +63,15 @@ All read-only. Do this in every mode.
    diff it against the checklist in `references/phases.md`. Any setting in
    the docs that no phase covers gets an improvised probe and, if it
    misbehaves, a `coverage-gap` finding.
-4. Find the data-seeding function in `test/run_integration_tests.sh`
-   (search for the bucket name). It names the origin's CLI client command,
-   the alias/bucket setup, and the data directory (`test/data/<bucket>/`).
-   Read it — **never source or execute that script**; it runs the whole
-   suite at import time and arms exit traps.
+4. Find the data-seeding function (`seed_origin_data`) and the fixture
+   writer (`write_special_character_fixture`) in
+   `test/integration/compose_stack_lib.sh`. The bucket name and the data
+   directory (`test/data/<bucket>/`) reach them as sourcing arguments (the
+   literal is the compose file's `S3_BUCKET_NAME`), and the CLI client they
+   call, `origin_client`, lives in `test/integration/s3_client_lib.sh` with
+   the credential-isolation flags the suite uses. Read them — never source
+   them, and **never source or execute `test/run_integration_tests.sh`**;
+   that runner runs the whole suite at import time and arms exit traps.
 5. Preflight:
    - `docker image inspect nginx-s3-gateway` — if missing, run
      `make build`.
@@ -86,13 +90,16 @@ All read-only. Do this in every mode.
 ## Step 2: Stand up and seed
 
 Substitute discovered values throughout; the commands below reflect the
-compose file at the time this skill was written.
+compose file at the time this skill was written. `make test-run` performs
+this stand-up and seed for a human at a terminal, but it streams logs in the
+foreground and tears down on exit, so keep the detached recipe below for
+phase-by-phase reconfiguration.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 export COMPOSE_COMPATIBILITY=true NGINX_INTERNAL_PORT=80
 # Every bare pass-through key gets an explicit value — never rely on shell
-# inheritance (bare key + unset var = empty string inside the container):
+# inheritance (bare key + unset var = variable absent inside the container):
 export AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=false \
   PROVIDE_INDEX_PAGE=false APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=false \
   STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" \

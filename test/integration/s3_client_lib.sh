@@ -17,8 +17,8 @@
 #
 
 # Shared AWS CLI wrapper for the integration test scripts, used as a generic
-# S3 client against the test origin (run_integration_tests.sh plus the cache
-# sub-tests it invokes).
+# S3 client against the test origin (run_integration_tests.sh and the cache
+# sub-tests it invokes, plus run_gateway.sh for make test-run's seeding).
 #
 # This file is sourced, never executed; it carries a shebang only because a
 # dialect is what shellcheck needs to lint it (make lint globs

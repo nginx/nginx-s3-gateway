@@ -106,6 +106,17 @@ Other useful targets:
   `common/etc/nginx/include/*.js` use `make test` to rebuild first.
 - `make test-unit` / `make test-integration` — run just the unit or just the
   integration half of the suite against the already-built image.
+- `make test-run` — bring up the integration stack (gateway on
+  `http://localhost:8989`, seeded S3 origin on `http://localhost:9090`,
+  credentials in `test/docker-compose.yaml`) and stream the gateway logs; a
+  single Ctrl-C tears it down (`make clean` if a run is ever left behind, for
+  example after repeated Ctrl-Cs interrupted the teardown). Directory
+  listing and append-slash are on and index pages are off with SigV4 by
+  default, so the root URL shows the object listing; override
+  any gateway setting the compose file passes through per run, e.g.
+  `make test-run ALLOW_DIRECTORY_LIST=false AWS_SIGS_VERSION=2`. It shares
+  the compose project and host ports with `make test-integration`, so run
+  one at a time.
 - `make test-latest-njs` / `make test-unprivileged` — build and test the
   image variants.
 - `make test-matrix` — reproduce the CI matrix locally.
@@ -137,7 +148,9 @@ credential-endpoint mock for the dynamic-credentials phase, the
 static credentials as mounted secret files, and the
 `test/docker-compose.assume-role.yaml` override switching the gateway to STS
 AssumeRole credentials for the assume-role phase), seeds the RustFS S3 origin with
-the fixtures in `test/data/`, and invokes the test scripts across a matrix of
+the fixtures in `test/data/` (the compose wrapper, readiness poll and seeding recipe
+live in `test/integration/compose_stack_lib.sh`, shared with `make test-run`), and
+invokes the test scripts across a matrix of
 gateway configurations, including HTTPS origins with TLS verification and a
 CORS-enabled phase. New
 shell scripts under `test/` and `test/integration/` are picked up by
