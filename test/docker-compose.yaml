@@ -4,8 +4,9 @@ services:
     # RustFS's IAM subsystem can lag behind it and briefly reject
     # authenticated S3 calls with "waiting for iam"), so waiting on it keeps
     # the gateway from racing the origin's startup but does not guarantee the
-    # first S3 call succeeds - run_integration_tests.sh additionally gates
-    # seeding on an authenticated request (see seed_origin_data).
+    # first S3 call succeeds - the test harness additionally gates seeding on
+    # an authenticated request (see seed_origin_data in
+    # test/integration/compose_stack_lib.sh).
     depends_on:
       rustfs:
         condition: service_healthy
@@ -47,10 +48,10 @@ services:
       PROXY_CACHE_IGNORE_HEADERS:
       ACCESS_LOG_CACHE_STATUS:
       # Interpolated with defaults rather than bare pass-through keys: a bare
-      # key whose variable is unset in the invoking shell reaches the
-      # container as an EMPTY value, which overrides the image's
-      # ENV CORS_ENABLED=0 and fails the required-env startup check. The
-      # CORS integration leg overrides both on its compose command line.
+      # key whose variable is unset in the invoking shell is REMOVED from the
+      # container's environment, taking the image's ENV CORS_ENABLED=0 with
+      # it, which fails the required-env startup check. The CORS integration
+      # leg overrides both on its compose command line.
       CORS_ENABLED: "${CORS_ENABLED:-false}"
       CORS_ALLOWED_ORIGIN: "${CORS_ALLOWED_ORIGIN:-*}"
       CORS_ALLOW_PRIVATE_NETWORK_ACCESS: "${CORS_ALLOW_PRIVATE_NETWORK_ACCESS:-}"

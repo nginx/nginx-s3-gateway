@@ -46,6 +46,11 @@ and the AWS CLI).
   but see the staleness warning below).
 - `make test-unit` / `make test-integration` — run just one half of the suite
   against the already-built image.
+- `make test-run` — start the gateway plus the seeded S3 origin from the
+  integration stack and stream the gateway logs until Ctrl-C (which tears it
+  down); the gateway settings the compose file passes through are overridable
+  per run, e.g. `make test-run ALLOW_DIRECTORY_LIST=false`. It shares the
+  compose project with `make test-integration`, so run one at a time.
 - `make test-matrix` — reproduce the CI matrix locally.
 - `make lint` — checkmake + shellcheck + rumdl (Markdown) + the
   `gateway_env_lib.sh` sync check and its self-test.
@@ -60,7 +65,8 @@ Notes:
   bind-mounted. After editing `common/etc/nginx/include/*.js`, run `make test`
   (rebuilds first); `make retest` would test the stale copy.
 - Integration tests spin up a RustFS S3 origin via `test/docker-compose.yaml` (compose
-  project `ngt`) and hit the gateway on `localhost:8989`.
+  project `ngt`) and hit the gateway on `localhost:8989`; `make test-run` brings up the
+  same seeded stack interactively (origin on `localhost:9090`).
 - `S3_STYLE` (`virtual`, `virtual-v2`, or `path`) selects the S3 addressing
   style under test; CI runs all three.
 - The `latest-njs` variant runs the njs CLI with `-m` instead of `-t module`
