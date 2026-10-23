@@ -530,6 +530,40 @@ which no longer signs any `Release` file — `apt-get update` fails there with
 keyring from the current key bundle, so run it before the commands above if
 `apt-get update` reports a missing key.
 
+### Upgrading NGINX on an Existing Install
+
+The install script only installs packages that are absent, so re-running it
+does **not** upgrade an NGINX that is already installed. To move a host to a
+newer NGINX release — for example, to pick up a security release — first
+confirm that `/etc/apt/sources.list.d/nginx.list` points at the branch that
+carries the release you need (see the mainline migration note above; a
+security fix is published to both branches, under different version numbers),
+then upgrade the server and its modules together (the njs module package
+depends on an exact NGINX version, so naming all three keeps apt from holding
+one of them back):
+
+```shell-session
+sudo apt-get update
+sudo apt-get install nginx nginx-module-njs nginx-module-xslt
+```
+
+Then re-run the install script to refresh the gateway's configuration templates
+(it downloads them from the branch it is given, `main` by default), and restart
+the service:
+
+```shell-session
+sudo systemctl restart nginx
+```
+
+A restart is required rather than `nginx -s reload`: the templates are
+re-rendered by the service's `ExecStartPre` step, and a reload keeps the master
+process — and so the old binary — running. Confirm the running version with
+`nginx -v` and check that the master process in `ps` was started after the
+upgrade. The fixed version for a given advisory is listed on the
+[nginx security advisories](https://nginx.org/en/security_advisories.html) page
+for both branches; a host still on the stable branch needs that branch's fixed
+version, not mainline's.
+
 ## Running in Containers
 
 ### Running the Public Open Source NGINX Container Image
@@ -559,6 +593,35 @@ time release, find the version with an embedded date and run:
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
     ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
 ```
+
+#### Upgrading a Running Container
+
+The gateway's configuration is rendered from templates at container start, and
+the NGINX binary lives in the image, so neither is changed by anything short of
+replacing the container. To pick up a new image — for example, one built on an
+NGINX security release — pull it and recreate the container:
+
+```text
+docker pull ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+docker rm -f nginx-s3-gateway
+docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+```
+
+The NGINX release an image ships is reported by the binary inside it, not by
+the image's `NGINX_VERSION` environment variable, which is inherited from the
+base image and is not updated when a build moves the binary:
+
+```text
+docker run --rm --entrypoint nginx \
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest -v
+```
+
+If you maintain a copy of `default.conf.template` (or another template) outside
+the image — mounted over `/etc/nginx/templates/` or baked into a derived image —
+it is not updated by pulling a new image. Compare it against the version in the
+release you are upgrading to and carry across any changes, so that fixes made in
+the shipped templates reach your deployment.
 
 #### Running Unprivileged Container Images
 
