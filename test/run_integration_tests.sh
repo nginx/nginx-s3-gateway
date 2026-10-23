@@ -856,6 +856,12 @@ integration_test 4 0 0 0 "" "/b"
 p "Test API with AWS Signature V4 and prefix leading directory path on and prefix stripping on"
 integration_test 4 0 0 0 "/tostrip" "/b"
 
+# STRIP_LEADING_DIRECTORY_PATH is a regex fragment; this leg's fragment has
+# a capturing group of its own, which must not displace the named capture
+# the map binds the path remainder to (test_api.sh asserts the rewrites).
+p "Test API with AWS Signature V4, prefix leading directory path on and a capturing group in the stripped prefix"
+integration_test 4 0 0 0 "/v(1|2)" "/b"
+
 p "Testing API with AWS Signature V2 and prefix leading directory path"
 integration_test 2 0 0 0 "" "/b"
 

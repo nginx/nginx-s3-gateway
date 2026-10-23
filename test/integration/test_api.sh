@@ -31,6 +31,20 @@ append_slash=$6
 strip_leading_directory=$7
 prefix_leading_directory_path=$8
 
+# STRIP_LEADING_DIRECTORY_PATH is a regex fragment. Most legs pass a literal
+# path, which doubles as the client path to request; a leg that passes a
+# fragment with regex metacharacters must map it to a literal client path
+# here. Unmapped metacharacters abort the run rather than being sent as a
+# path verbatim, which would surface as a string of baffling 404s.
+case "${strip_leading_directory}" in
+  "/v(1|2)") strip_request_path="/v1" ;;
+  *[\(\)\|\?\[\]\*\+\^\$\\]*)
+    >&2 echo "STRIP_LEADING_DIRECTORY_PATH [${strip_leading_directory}] contains regex metacharacters but has no client path mapping in test_api.sh"
+    exit 3
+    ;;
+  *) strip_request_path="${strip_leading_directory}" ;;
+esac
+
 test_fail_exit_code=2
 no_dep_exit_code=3
 checksum_length=32
@@ -484,11 +498,11 @@ if [ -n "${prefix_leading_directory_path}" ]; then
       # The probe URI is built from the raw client path, so it traverses the
       # strip map arm on loopback: ${strip_leading_directory}/index.html must
       # strip and prefix to the same S3 key as /index.html.
-      assertHttpRequestEquals "GET" "${strip_leading_directory}/" "data/bucket-1/statichost/index.html"
+      assertHttpRequestEquals "GET" "${strip_request_path}/" "data/bucket-1/statichost/index.html"
       # GH-88: the collapse precedes the strip on the index probe's loopback
       # re-entry too - a doubled-slash spelling of the stripped prefix must
       # land on the same index page instead of bypassing the strip.
-      assertHttpRequestEquals "GET" "/${strip_leading_directory}//" "data/bucket-1/statichost/index.html"
+      assertHttpRequestEquals "GET" "/${strip_request_path}//" "data/bucket-1/statichost/index.html"
     fi
 
     # Exit early like the non-index prefix branch below: everything past the
@@ -504,7 +518,22 @@ if [ -n "${prefix_leading_directory_path}" ]; then
     # wrong S3 key. Cold-cache: stays ABOVE every other request for
     # b/c/d.txt (all slash spellings share one cache entry keyed on the
     # normalized $s3uri, and a warmed entry would mask the regression).
-    assertHttpRequestEquals "GET" "/${strip_leading_directory}//c/d.txt" "data/bucket-1/b/c/d.txt"
+    assertHttpRequestEquals "GET" "/${strip_request_path}//c/d.txt" "data/bucket-1/b/c/d.txt"
+  fi
+
+  # The path remainder is bound to a named capture, not $1. Non-canonical
+  # encodings and raw sub-delims must still reach the
+  # right S3 key, with a valid signature, after the strip+prefix rewrite -
+  # the GH-578 block below never runs for prefixed legs (they exit early), so
+  # the encoded spellings are covered here. Cold-cache for the same reason as
+  # the GH-578 block: these must precede any canonical request for the same
+  # objects, which otherwise serve from the cache warmed by the canonical
+  # spelling and hide a signing or rewrite regression.
+  assertHttpRequestEquals "HEAD" "/c/%3d" "200"
+  assertHttpRequestEquals "GET" "/c/%3d" "data/bucket-1/b/c/="
+  assertHttpRequestEquals "GET" "/%63/@" "data/bucket-1/b/c/@"
+  if [ -n "${strip_leading_directory}" ]; then
+    assertHttpRequestEquals "GET" "/${strip_request_path}/c/%27(1).txt" "data/bucket-1/b/c/'(1).txt"
   fi
 
   # GH-88: duplicate client slashes collapse after the PREFIX map prepends
@@ -517,7 +546,20 @@ if [ -n "${prefix_leading_directory_path}" ]; then
   if [ -n "${strip_leading_directory}" ]; then
     # When these two flags are used together, stripped value is basically
     # replaced with the specified prefix
-    assertHttpRequestEquals "GET" "/tostrip/c/d.txt" "data/bucket-1/b/c/d.txt"
+    assertHttpRequestEquals "GET" "/${strip_request_path}/c/d.txt" "data/bucket-1/b/c/d.txt"
+  fi
+
+  if [ "${strip_leading_directory}" == "/v(1|2)" ]; then
+    # Named-capture regression: STRIP is a regex fragment, and this leg's
+    # fragment carries a capturing group of its own. The map binds
+    # the path remainder to a named capture, so the group cannot displace it;
+    # with the former $1 the group's text ("1") was captured instead of the
+    # remainder, and every request under the strip rewrote to /b1 and 404'd.
+    # Both alternatives must strip, and a path that only shares the prefix
+    # text must take the map's default arm (no strip).
+    assertHttpRequestEquals "GET" "/v1/c/d.txt" "data/bucket-1/b/c/d.txt"
+    assertHttpRequestEquals "GET" "/v2/e.txt" "data/bucket-1/b/e.txt"
+    assertHttpRequestEquals "HEAD" "/v3/e.txt" "404"
   fi
 
   if [ "${allow_directory_list}" == "1" ]; then
@@ -549,12 +591,12 @@ if [ -n "${prefix_leading_directory_path}" ]; then
       # canonical, prefix-free listing as "/" - links emitted under the strip
       # alias land back on canonical paths. Without these requests the strip
       # map arm is never traversed while listing is on.
-      assertHttpBodyPart "contains" "${strip_leading_directory}/" '<h1>Index of /</h1>'
-      assertHttpBodyPart "contains" "${strip_leading_directory}/" 'href="/c/"'
-      assertHttpBodyPart "lacks" "${strip_leading_directory}/" 'href="/b/c/"'
-      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" '<h1>Index of /c/</h1>'
-      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" 'href="/c/d.txt"'
-      assertHttpBodyPart "contains" "${strip_leading_directory}/c/" 'href="../"'
+      assertHttpBodyPart "contains" "${strip_request_path}/" '<h1>Index of /</h1>'
+      assertHttpBodyPart "contains" "${strip_request_path}/" 'href="/c/"'
+      assertHttpBodyPart "lacks" "${strip_request_path}/" 'href="/b/c/"'
+      assertHttpBodyPart "contains" "${strip_request_path}/c/" '<h1>Index of /c/</h1>'
+      assertHttpBodyPart "contains" "${strip_request_path}/c/" 'href="/c/d.txt"'
+      assertHttpBodyPart "contains" "${strip_request_path}/c/" 'href="../"'
     fi
   fi
 
@@ -612,7 +654,7 @@ if [ -n "${strip_leading_directory}" ]; then
   # (uncollapsed, '//<strip>/...' fails the map's anchored regex and the
   # unstripped path becomes the S3 key). Cold-cache: a.txt's canonical
   # spelling is first requested below.
-  assertHttpRequestEquals "HEAD" "/${strip_leading_directory}//a.txt" "200"
+  assertHttpRequestEquals "HEAD" "/${strip_request_path}//a.txt" "200"
 fi
 
 # Ordinary filenames

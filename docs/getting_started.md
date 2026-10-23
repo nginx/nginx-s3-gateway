@@ -228,6 +228,17 @@ S3 bucket in a subfolder on an ALB. For example, if you wanted to expose the
 root of a bucket under the path `www.mysite.com/somepath`, you would set this
 variable to `/somepath`.
 
+The value is a regular-expression fragment that the gateway anchors to the
+start of the request path; the remainder of the path is bound to a named
+capture (`$s3gw_path_after_strip`) that is used only inside the rewrite. That
+name is reserved — a fragment that declares the same capture name fails at
+startup with a duplicate-name regex error. Because the remainder is named, a
+fragment may contain groups of its own without affecting the rewrite:
+`/v(1|2)` strips `/v1` and `/v2` alike. Prefer non-capturing groups,
+`(?:...)`, when a group only exists to bound an alternation. Alternatives
+must be grouped: `^/foo|/bar` means "`/foo` at the start, or `/bar`
+anywhere", not "`/foo` or `/bar` at the start".
+
 ### Path Normalization
 
 Runs of duplicate literal slashes in a request path are collapsed into a single slash before the gateway signs and
