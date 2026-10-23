@@ -227,6 +227,22 @@ jobs:
             nginx/nginx-s3-gateway:latest-${{ steps.date.outputs.date }}
             nginx/nginx-s3-gateway:latest
 
+      # Verify the pushed image, per architecture, by the digest just emitted
+      # - the same digest the variant jobs build on. The check reads the nginx
+      # release from the binary and the package database inside the image,
+      # not from the Dockerfile: the scheduled weekly run republishes :latest
+      # without a commit, so a build-time drift (an apt resolution moving the
+      # binary off the pinned release) would otherwise ship unnoticed. A
+      # failure here also stops the dependent variant jobs.
+      - name: Verify the published image [oss]
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway@${{ steps.build.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --quiet --platform "${platform}" "${IMAGE}"
+            make verify-image NGINX_TYPE=oss VERIFY_IMAGE="${IMAGE}" VERIFY_PLATFORM="${platform}"
+          done
+
   publish-unprivileged:
     name: Publish NGINX OSS unprivileged image
     runs-on: ubuntu-24.04
@@ -262,6 +278,7 @@ jobs:
           username: nginx
 
       - name: Build and push image [unprivileged]
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           file: Dockerfile.unprivileged
@@ -276,6 +293,18 @@ jobs:
             ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway:unprivileged-oss
             nginx/nginx-s3-gateway:unprivileged-oss-${{ needs.publish-base.outputs.date }}
             nginx/nginx-s3-gateway:unprivileged-oss
+
+      # Same check as the base image's, on the variant's own digest: the
+      # unprivileged build runs as the nginx user, and the verifier renders the
+      # templates and runs nginx -t under that user too.
+      - name: Verify the published image [unprivileged]
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway@${{ steps.build.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --quiet --platform "${platform}" "${IMAGE}"
+            make verify-image NGINX_TYPE=oss VERIFY_IMAGE="${IMAGE}" VERIFY_PLATFORM="${platform}"
+          done
 
   # One job per architecture, each on a native runner. Pushed by digest so no
   # per-architecture tag is published: the digests are collected by the
@@ -326,6 +355,17 @@ jobs:
           platforms: ${{ matrix.platform }}
           provenance: false
           outputs: type=image,name=ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway,push-by-digest=true,name-canonical=true,push=true
+
+      # Verified here, on the native runner, before the manifest job turns the
+      # digest into user-visible tags. This variant overwrites the njs module
+      # and CLI with files built from source, so the check that nginx -t loads
+      # the module into the base's binary is the one that matters most for it.
+      - name: Verify the published image [latest-njs]
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/nginx-oss-s3-gateway@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull --quiet "${IMAGE}"
+          make verify-image NGINX_TYPE=oss VERIFY_IMAGE="${IMAGE}" VERIFY_PLATFORM="${{ matrix.platform }}"
 
       # The digest is the filename; the file itself is empty. The manifest job
       # globs the directory, so it needs no knowledge of how many
