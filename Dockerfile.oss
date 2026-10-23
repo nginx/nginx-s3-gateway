@@ -1,4 +1,4 @@
-FROM nginx:1.31.6@sha256:908dc23e643a1447dbfb2e189ed268bfde6a51a5bf9a34d3dd3440a24f58ccf7
+FROM nginx:1.31.7@sha256:8632b3314d74c61f0e27f59055bab13f7793b988c94c090154d867bc29e0f39b
 
 # Proxy cache env vars
 ENV PROXY_CACHE_MAX_SIZE=10g
@@ -36,14 +36,27 @@ ENV PREFIX_LEADING_DIRECTORY_PATH=""
 # 3. Adding a directory for proxied objects to be stored.
 # 4. Replacing the entrypoint script with a modified version that explicitly sets resolvers.
 
-# Note: the PKG_RELEASE environment variable is inherited
+# Note: the NGINX_VERSION, NJS_VERSION, NJS_RELEASE, PKG_RELEASE and
+# DYNPKG_RELEASE environment variables are inherited from the base image.
+#
+# The module packages are pinned to the base image's own nginx release. An
+# unpinned install resolves to the newest mainline packages, and because
+# nginx-module-njs depends on an exact nginx version, apt then upgrades (or
+# could downgrade) the nginx binary itself - the shipped version would be
+# decided by whatever the repository served on build day rather than by the
+# FROM pin above. The trailing check fails the build if the installed binary
+# and the pinned release ever disagree.
 
 RUN set -x \
     && echo "deb [signed-by=/etc/apt/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/debian/ $(echo $PKG_RELEASE | cut -f2 -d~) nginx" >> /etc/apt/sources.list.d/nginx.list \
     && apt-get update \
     && apt-get install --no-install-recommends --no-install-suggests -y \
-      libedit2 nginx-module-njs nginx-module-xslt \
-    && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/*
+      libedit2 \
+      nginx-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${NJS_RELEASE} \
+      nginx-module-xslt=${NGINX_VERSION}-${DYNPKG_RELEASE} \
+    && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/* \
+    && test "$(nginx -v 2>&1)" = "nginx version: nginx/${NGINX_VERSION}" \
+    && test "$(dpkg-query -W -f '${Version}' nginx)" = "${NGINX_VERSION}-${PKG_RELEASE}"
 
 COPY oss/etc/nginx /etc/nginx
 COPY common/etc /etc
