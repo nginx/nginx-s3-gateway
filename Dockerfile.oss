@@ -52,6 +52,7 @@ RUN set -x \
     && apt-get update \
     && apt-get install --no-install-recommends --no-install-suggests -y \
       libedit2 \
+      libbrotli1 \
       nginx-module-njs=${NGINX_VERSION}+${NJS_VERSION}-${NJS_RELEASE} \
       nginx-module-xslt=${NGINX_VERSION}-${DYNPKG_RELEASE} \
     && apt-get remove --purge --auto-remove -y && rm -rf /var/lib/apt/lists/* \
