@@ -228,6 +228,17 @@ S3 bucket in a subfolder on an ALB. For example, if you wanted to expose the
 root of a bucket under the path `www.mysite.com/somepath`, you would set this
 variable to `/somepath`.
 
+The value is a regular-expression fragment that the gateway anchors to the
+start of the request path; the remainder of the path is bound to a named
+capture (`$s3gw_path_after_strip`) that is used only inside the rewrite. That
+name is reserved — a fragment that declares the same capture name fails at
+startup with a duplicate-name regex error. Because the remainder is named, a
+fragment may contain groups of its own without affecting the rewrite:
+`/v(1|2)` strips `/v1` and `/v2` alike. Prefer non-capturing groups,
+`(?:...)`, when a group only exists to bound an alternation. Alternatives
+must be grouped: `^/foo|/bar` means "`/foo` at the start, or `/bar`
+anywhere", not "`/foo` or `/bar` at the start".
+
 ### Path Normalization
 
 Runs of duplicate literal slashes in a request path are collapsed into a single slash before the gateway signs and
@@ -378,7 +389,7 @@ docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
     --env S3_SERVER=storage.googleapis.com \
     --env PROXY_CACHE_IGNORE_HEADERS="Cache-Control Expires" \
     --env HEADER_PREFIXES_TO_STRIP="x-goog-;x-guploader-uploadid;cache-control" \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
 ```
 
 `PROXY_CACHE_IGNORE_HEADERS` changes only what the *gateway* caches. The origin's `Cache-Control` header is still
@@ -519,26 +530,60 @@ which no longer signs any `Release` file — `apt-get update` fails there with
 keyring from the current key bundle, so run it before the commands above if
 `apt-get update` reports a missing key.
 
+### Upgrading NGINX on an Existing Install
+
+The install script only installs packages that are absent, so re-running it
+does **not** upgrade an NGINX that is already installed. To move a host to a
+newer NGINX release — for example, to pick up a security release — first
+confirm that `/etc/apt/sources.list.d/nginx.list` points at the branch that
+carries the release you need (see the mainline migration note above; a
+security fix is published to both branches, under different version numbers),
+then upgrade the server and its modules together (the njs module package
+depends on an exact NGINX version, so naming all three keeps apt from holding
+one of them back):
+
+```shell-session
+sudo apt-get update
+sudo apt-get install nginx nginx-module-njs nginx-module-xslt
+```
+
+Then re-run the install script to refresh the gateway's configuration templates
+(it downloads them from the branch it is given, `main` by default), and restart
+the service:
+
+```shell-session
+sudo systemctl restart nginx
+```
+
+A restart is required rather than `nginx -s reload`: the templates are
+re-rendered by the service's `ExecStartPre` step, and a reload keeps the master
+process — and so the old binary — running. Confirm the running version with
+`nginx -v` and check that the master process in `ps` was started after the
+upgrade. The fixed version for a given advisory is listed on the
+[nginx security advisories](https://nginx.org/en/security_advisories.html) page
+for both branches; a host still on the stable branch needs that branch's fixed
+version, not mainline's.
+
 ## Running in Containers
 
 ### Running the Public Open Source NGINX Container Image
 
 The latest builds of the gateway (that use open source NGINX) are available on
-the project's Github [package repository](https://github.com/nginxinc/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway).
+the project's Github [package repository](https://github.com/nginx/nginx-s3-gateway/pkgs/container/nginx-s3-gateway%2Fnginx-oss-s3-gateway).
 
 To run with the public open source image, replace the `settings` file specified
 below with a file containing your settings, and run the following command:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
 ```
 
 If you would like to run with the latest njs version, run:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
 ```
 
 Alternatively, if you would like to pin your version to a specific point in
@@ -546,8 +591,37 @@ time release, find the version with an embedded date and run:
 
 ```text
 docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss-20220310
 ```
+
+#### Upgrading a Running Container
+
+The gateway's configuration is rendered from templates at container start, and
+the NGINX binary lives in the image, so neither is changed by anything short of
+replacing the container. To pick up a new image — for example, one built on an
+NGINX security release — pull it and recreate the container:
+
+```text
+docker pull ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+docker rm -f nginx-s3-gateway
+docker run --env-file ./settings --publish 80:80 --name nginx-s3-gateway \
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest
+```
+
+The NGINX release an image ships is reported by the binary inside it, not by
+the image's `NGINX_VERSION` environment variable, which is inherited from the
+base image and is not updated when a build moves the binary:
+
+```text
+docker run --rm --entrypoint nginx \
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest -v
+```
+
+If you maintain a copy of `default.conf.template` (or another template) outside
+the image — mounted over `/etc/nginx/templates/` or baked into a derived image —
+it is not updated by pulling a new image. Compare it against the version in the
+release you are upgrading to and carry across any changes, so that fixes made in
+the shipped templates reach your deployment.
 
 #### Running Unprivileged Container Images
 
@@ -558,14 +632,14 @@ To run an unprivileged image, use the `unprivileged-oss` tag and map to port **8
 
 ```text
 docker run --env-file ./settings --publish 80:8080 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
 ```
 
 Alternatively, you can map host port 8080 to container port 8080 to avoid requiring elevated privileges on the host:
 
 ```text
 docker run --env-file ./settings --publish 8080:8080 --name nginx-s3-gateway \
-    ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
+    ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:unprivileged-oss-20250718
 ```
 
 ### Building the Public Open Source NGINX Container Image
@@ -918,7 +992,7 @@ spec:
       serviceAccountName: nginx-s3-gateway
       containers:
         - name: nginx-s3-gateway
-          image: "ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-20220916"
+          image: "ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-20220916"
           imagePullPolicy: IfNotPresent
           env:
             - name: S3_BUCKET_NAME
@@ -1000,8 +1074,8 @@ which is routed to trailing-slash handling instead) and all three equivalent `er
 The templates are re-rendered on every container start, so rather than rebuilding the image you can bind-mount an
 edited copy of a template over its path under `/etc/nginx/templates/`.
 
-[default-conf-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/default.conf.template
-[s3-location-common-template]: https://github.com/nginxinc/nginx-s3-gateway/blob/main/common/etc/nginx/templates/gateway/s3_location_common.conf.template
+[default-conf-template]: https://github.com/nginx/nginx-s3-gateway/blob/main/common/etc/nginx/templates/default.conf.template
+[s3-location-common-template]: https://github.com/nginx/nginx-s3-gateway/blob/main/common/etc/nginx/templates/gateway/s3_location_common.conf.template
 
 ```bash
 error_page 400 401 402 403 405 406 407 408 409 410 411 412 413 414 415 416 417 418 420 422 423 424 426 428 429 431 444 449 450 451 500 501 502 503 504 505 506 507 508 509 510 511 =404 @error404;

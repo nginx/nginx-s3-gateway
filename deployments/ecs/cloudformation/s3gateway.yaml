@@ -241,7 +241,7 @@ Resources:
               Value: default
             - Name: DEBUG
               Value: 'false'
-          Image: ghcr.io/nginxinc/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
+          Image: ghcr.io/nginx/nginx-s3-gateway/nginx-oss-s3-gateway:latest-njs-oss
           LogConfiguration:
             LogDriver: awslogs
             Options:

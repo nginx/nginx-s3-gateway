@@ -1,5 +1,5 @@
-[![NGINX S3 Gateway CI/CD](https://github.com/nginxinc/nginx-s3-gateway/actions/workflows/s3-gateway.yml/badge.svg)](https://github.com/nginxinc/nginx-s3-gateway/actions/workflows/s3-gateway.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/nginxinc/nginx-s3-gateway/badge)](https://securityscorecards.dev/viewer/?uri=github.com/nginxinc/nginx-s3-gateway)
+[![NGINX S3 Gateway CI/CD](https://github.com/nginx/nginx-s3-gateway/actions/workflows/s3-gateway.yml/badge.svg)](https://github.com/nginx/nginx-s3-gateway/actions/workflows/s3-gateway.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/nginx/nginx-s3-gateway/badge)](https://securityscorecards.dev/viewer/?uri=github.com/nginx/nginx-s3-gateway)
 [![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
 [![Community Support](https://badgen.net/badge/support/community/cyan?icon=awesome)](/SUPPORT.md)
 [![Community Forum](https://img.shields.io/badge/community-forum-009639?logo=discourse&link=https%3A%2F%2Fcommunity.nginx.org)](https://community.nginx.org)

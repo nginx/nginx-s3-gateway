@@ -2,7 +2,7 @@
 # inherited image (which could be OSS NGINX or NGINX Plus) in order
 # to allow running NGINX S3 Gateway as a non root user.
 # Steps are based on the official unprivileged container:
-# https://github.com/nginxinc/docker-nginx-unprivileged/blob/main/Dockerfile-debian.template
+# https://github.com/nginx/docker-nginx-unprivileged/blob/main/Dockerfile-debian.template
 FROM nginx-s3-gateway
 
 # Implement changes required to run NGINX as an unprivileged user

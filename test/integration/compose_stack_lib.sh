@@ -153,14 +153,13 @@ e "Using Docker Compose command: ${docker_compose_cmd[*]}"
 # and printed the error twice.
 stack_license_jwt=""
 if [ "${stack_nginx_type}" == "plus" ]; then
-  if [ -f /etc/nginx/license.jwt ]; then
-    stack_license_jwt="$(cat /etc/nginx/license.jwt)"
-  elif [ -f "${stack_repo_dir}/license.jwt" ]; then
-    stack_license_jwt="$(cat "${stack_repo_dir}/license.jwt")"
-  else
-    e "NGINX Plus license file not found: /etc/nginx/license.jwt or ${stack_repo_dir}/license.jwt"
+  # shellcheck source=test/plus_license_lib.sh
+  . "${stack_test_dir}/plus_license_lib.sh"
+  if ! resolvePlusLicenseInto; then
+    e "${plus_license_not_found_message}"
     exit "${stack_build_dep_exit_code}"
   fi
+  stack_license_jwt="${plus_license_jwt}"
 fi
 
 # Blocks until the gateway answers an HTTP request, replacing the external

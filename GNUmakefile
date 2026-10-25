@@ -73,7 +73,7 @@ SHELL_SCRIPTS     := test.sh \
 SHELLCHECK_EXCLUDES := SC2027,SC2034,SC2068,SC2140
 
 # Single line on purpose: checkmake's parser does not follow continuations
-.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-run test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
+.PHONY: help check-tools check-nginx-type check-s3-style check-plus-creds build build-oss build-plus build-latest-njs build-unprivileged test test-unit test-integration test-run test-latest-njs test-unprivileged test-matrix test-matrix-plus retest retest-latest-njs retest-unprivileged verify-image lint makefile-check shellcheck envlib-sync-check envlib-sync-selftest lint-md fmt-md hadolint docs docs-open jsdoc clean clean-images all ci
 
 ##@ Help
 
@@ -279,6 +279,22 @@ retest-unprivileged: check-nginx-type check-s3-style check-tools ## Test the cur
 	$(call VARIANT_GUARD,unprivileged)
 	$(RUN_UNIT_TESTS)
 	UNPRIVILEGED=1 $(RUN_INTEGRATION_TESTS)
+
+##@ Verify
+
+# VERIFY_IMAGE defaults to the floating tag; pass a pushed digest reference
+# and optionally VERIFY_PLATFORM to check one architecture of a published
+# image (the publish workflow does both). The expected release is read from
+# the NGINX_TYPE Dockerfile's pin by the script, so the check and the pin
+# cannot drift apart. Interrogates the image itself (the binary, the package
+# database, a rendered nginx -t) rather than its build inputs - see
+# test/verify_image.sh for why the FROM line is not enough.
+VERIFY_IMAGE    ?= $(IMAGE_NAME)
+VERIFY_PLATFORM ?=
+
+verify-image: check-nginx-type ## Verify VERIFY_IMAGE ships the pinned NGINX_TYPE release and a scoped config
+	DOCKER="$(DOCKER)" "$(BASE_DIR)test/verify_image.sh" \
+		"$(VERIFY_IMAGE)" "$(NGINX_TYPE)" "$(BASE_DIR)Dockerfile.$(NGINX_TYPE)" "$(VERIFY_PLATFORM)"
 
 ##@ Lint
 

@@ -13,19 +13,34 @@ include /etc/nginx/conf.d/gateway/v${AWS_SIGS_VERSION}_js_vars.conf;
 # do a global replace, so this variable is njs-derived.
 js_set $uri_full_path s3gateway.uriFullPath;
 
-# Remove/replace a portion of request URL (if configured)
+# Remove/replace a portion of request URL (if configured).
+#
+# The remainder of the path is bound to a named capture rather than to $1.
+# Positional captures are a single set shared by every regex in the request
+# (any later match replaces them), and nginx's guidance is to use unique
+# named captures only within the block that performs the match - which is
+# exactly how $s3gw_path_after_strip is used here. The
+# name also makes the result independent of any capturing groups inside the
+# operator-supplied STRIP_LEADING_DIRECTORY_PATH regex fragment: with $1, a
+# fragment such as "/v(1|2)" captured the group's text instead of the rest
+# of the path. The name is reserved: a fragment that declares the same name
+# fails at startup with a duplicate-name regex error. envsubst does not
+# touch it - the renderer is limited to ALL-CAPS names (NGINX_ENVSUBST_FILTER
+# in the Dockerfiles, mirrored by the standalone installer).
 map $uri_full_path $uri_path {
-	"~^$STRIP_LEADING_DIRECTORY_PATH(.*)"  $PREFIX_LEADING_DIRECTORY_PATH$1;
-    default $PREFIX_LEADING_DIRECTORY_PATH$uri_full_path;
+    "~^${STRIP_LEADING_DIRECTORY_PATH}(?<s3gw_path_after_strip>.*)"  ${PREFIX_LEADING_DIRECTORY_PATH}$s3gw_path_after_strip;
+    default ${PREFIX_LEADING_DIRECTORY_PATH}$uri_full_path;
 }
 
 # Detects a 'no-cache' token in the client's Cache-Control request header
 # (sent by browsers on a hard refresh). Token-aware so that substrings of
 # other tokens (e.g. 'x-no-cache-y') do not match. NGINX 1.23.0+ joins
-# repeated Cache-Control headers into one comma-separated value.
+# repeated Cache-Control headers into one comma-separated value. The groups
+# are non-capturing: nothing reads them, and the gateway config keeps no
+# positional captures at all (see the $uri_path map above).
 map $http_cache_control $req_cc_no_cache {
-    default                       0;
-    "~*(^|,)\s*no-cache\s*(,|$)"  1;
+    default                           0;
+    "~*(?:^|,)\s*no-cache\s*(?:,|$)"  1;
 }
 
 # PROXY_CACHE_BYPASS_NO_CACHE is normalized to 1/0 by 01-set-defaults.envsh
