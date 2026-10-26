@@ -63,6 +63,42 @@ Two similarly located files in the same directory are *not* extension points
   `PROXY_CACHE_IGNORE_HEADERS` is set, and stays empty otherwise. Set that
   variable instead of editing this file.
 
+#### Predicate routing and custom locations
+
+The gateway uses predicate locations (GH-609) nested inside `location /` to
+reject unsupported methods and answer CORS preflights. A matching nested
+predicate finishes lookup **before server-level regex locations are checked**.
+The shipped `*/index.html` regex is explicitly excluded from these predicates
+to preserve its sanitized method-rejection responses.
+
+When upgrading a deployment with custom regex locations in `s3_server.conf`,
+check whether those handlers must still receive non-read requests. Such a
+handler can now be preempted by the gateway's 405 or preflight 204 response.
+To preserve its precedence, override `default.conf.template` and place the
+applicable regex alongside the predicate locations inside `location /`, for
+example:
+
+```nginx
+location / {
+    location ~ ^/custom-health$ {
+        auth_request off;
+        return 200;
+    }
+
+    # Keep the gateway's predicate locations and remaining directives here.
+}
+```
+
+Regex locations at that nesting level are checked before its predicates.
+Review inherited directives when moving a handler: the example explicitly
+disables the parent's credential `auth_request`. Custom handlers that must
+apply beneath other, longer prefix locations need placement appropriate to
+those prefixes as well. Exact matches and longer custom prefix locations
+also bypass the predicates under `/`, just like the shipped health/SOAP
+prefixes. See the [location lookup documentation][location-lookup].
+
+[location-lookup]: https://nginx.org/en/docs/http/ngx_http_core_module.html#location
+
 ### Examples
 
 In the [examples/ directory](/examples), there are `Dockerfile` examples that

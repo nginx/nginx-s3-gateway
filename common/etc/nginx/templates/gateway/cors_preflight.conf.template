@@ -1,0 +1,16 @@
+# Included only by the two terminal preflight predicate locations. Keep the
+# return when customizing headers: OPTIONS must never reach a signed proxy.
+add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}';
+
+# Advertise exactly the enforced read-only policy (GH-574). This renders
+# "GET, HEAD, OPTIONS" because preflight requires normalized CORS_ENABLED=1.
+# Keep the GET/HEAD rows in cors.conf.template in sync with this value.
+add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}';
+add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range';
+# Preflight information is valid for 20 days.
+add_header 'Access-Control-Max-Age' 1728000;
+# https://developer.chrome.com/blog/private-network-access-preflight/
+add_header 'Access-Control-Allow-Private-Network' '${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}';
+add_header 'Content-Type' 'text/plain; charset=utf-8';
+add_header 'Content-Length' 0;
+return 204;

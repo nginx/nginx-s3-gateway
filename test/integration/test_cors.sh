@@ -213,15 +213,15 @@ fi
 # actually enforces (LIMIT_METHODS_TO_CSV). The previous hardcoded list
 # advertised POST - which every path rejects on this read-only gateway
 # (GH-496/GH-551) - and omitted HEAD, which the gateway serves. Each of the
-# three Access-Control-Allow-Methods rows in cors.conf.template (OPTIONS,
-# GET, HEAD) gets its own assertion below so a partially applied edit cannot
-# pass. Access-Control-Max-Age and Access-Control-Allow/Expose-Headers are
+# three Access-Control-Allow-Methods rows in cors_preflight.conf.template
+# and cors.conf.template (OPTIONS, GET, HEAD) gets its own assertion below so
+# a partially applied edit cannot pass. Access-Control-Max-Age and Access-Control-Allow/Expose-Headers are
 # deliberately not asserted: they are static template text a deployment may
 # customize by overriding cors.conf, not part of the method-policy contract
 # under test. Access-Control-Allow-Private-Network IS asserted: the CORS leg
 # configures CORS_ALLOW_PRIVATE_NETWORK_ACCESS=TRUE, so the preflight must
 # carry the header with the normalized literal 'true' (GH-600) - emitted by
-# the OPTIONS_1 block only, hence no matching assertion on GET/HEAD.
+# the preflight predicate only, hence no matching assertion on GET/HEAD.
 assertRequest "OPTIONS" "/a.txt" "204" "preflight approved"
 assertHeaderEquals "Access-Control-Allow-Origin" "${cors_allowed_origin}" "preflight passes the configured origin through"
 assertHeaderEquals "Access-Control-Allow-Methods" "GET, HEAD, OPTIONS" "preflight advertises the enforced read-only policy"
@@ -246,9 +246,10 @@ assertHeaderEquals "Access-Control-Allow-Origin" "${cors_allowed_origin}" "index
 assertHeaderCount "Access-Control-Allow-Origin" "1" "index.html GET carries the origin exactly once"
 
 # --- Rejected methods -------------------------------------------------------
-# Non-read methods are rejected in the rewrite phase of `location /`
+# Non-read methods select a predicate child of `location /`, whose return
+# rejects them in the rewrite phase
 # (GH-496) and answered by @error405, which cors.conf cannot decorate - its
-# if rows only ever match GET, HEAD, and OPTIONS. The origin here comes from
+# if rows only ever match GET and HEAD. The origin here comes from
 # the $cors_error_origin map in default.conf.template; without it a
 # cross-origin caller sees an opaque CORS failure instead of this
 # 405 + Allow contract. With CORS enabled, Allow must include OPTIONS

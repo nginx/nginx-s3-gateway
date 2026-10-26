@@ -1,11 +1,11 @@
 # Pull from NGINX image that provides the XSLT module and supporting libraries
-FROM private-registry.nginx.com/nginx-plus/modules:r37.0-xslt-debian@sha256:0b4c950977bb5670f450c4c5428e9d4e931e12919dd97e72517c6ab8d5d52501 AS xslt
+FROM private-registry.nginx.com/nginx-plus/modules:r37.2-xslt-debian@sha256:3f8c5d518e0df32dcfe35782ac8498fff85dba2c248951adf5ff6cf57d7eef2f AS xslt
 
-# Pinned to the nginx-plus 37.0.7 (PLS.37.0.7.1 LTS) security release. The
-# r37.0 tag floats across LTS patch releases, so the digest is what pins the
-# version; the check at the end of the RUN below fails the build if the pin
-# and the installed package ever disagree.
-FROM private-registry.nginx.com/nginx-plus/base:r37.0-debian-trixie@sha256:7cc3c191a9f0aab30036fd799c2f67443daaf96d2ef34b6acb13b098adc1ecbc
+# PLS.37.2.0.1 CR is based on nginx 1.31.6, including predicate locations
+# and their nested-lookup fixes (GH-609). The shared templates require this
+# CR baseline; 37.0 LTS does not support them. Pin both images to the same
+# Plus release, and check the installed package and binary below.
+FROM private-registry.nginx.com/nginx-plus/base:r37.2-debian-trixie@sha256:a106c39340db78233bbb2847e78882258f12fb079f3757ce5ebac050066d3e6c
 
 # Proxy cache env vars
 ENV PROXY_CACHE_MAX_SIZE=10g
@@ -57,8 +57,8 @@ RUN <<EOF
     apt-get remove --purge --auto-remove -y
     rm -rf /usr/share/doc/ /usr/share/lintian /var/lib/apt/lists
 
-    test "$(dpkg-query -W -f '${Version}' nginx-plus)" = "37.0.7-1~trixie"
-    nginx -v 2>&1 | grep -F "(nginx-plus-r37.0.7)"
+    test "$(dpkg-query -W -f '${Version}' nginx-plus)" = "37.2.0-1~trixie"
+    nginx -v 2>&1 | grep -F "(nginx-plus-r37.2.0)"
 
     cat /etc/nginx/nginx-license.conf >> /etc/nginx/nginx.conf; \
     rm /etc/nginx/nginx-license.conf; \

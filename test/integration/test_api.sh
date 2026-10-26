@@ -812,7 +812,7 @@ assertHttpRequestEquals "POST" "/gh551-writeguard/index.html" "404"
 assertHttpRequestEquals "GET" "/gh551-writeguard/index.html" "data/bucket-1/gh551-writeguard/index.html"
 
 # GH-496: the method policy for ordinary object paths lives in `location /`,
-# which rejects unlisted methods in the rewrite phase with an immediate 405 -
+# whose predicate selects a terminal rewrite-phase return 405 (GH-609) -
 # before credentials are fetched and without consulting the local filesystem.
 # Nothing is ever sent to S3. POST is the load-bearing assertion: the pre-fix
 # empty limit_except starved unlisted methods of a content handler, so

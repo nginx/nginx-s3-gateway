@@ -1,42 +1,8 @@
 set $request_cors "${request_method}_${CORS_ENABLED}";
 
-if ($request_cors = "OPTIONS_1") {
-    add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}';
-    #
-    # Advertise exactly the read-only method policy the gateway enforces:
-    # LIMIT_METHODS_TO_CSV renders "GET, HEAD, OPTIONS" whenever this block
-    # is reachable, because it and CORS_ENABLED are derived from the same
-    # setting by 01-set-defaults.envsh (container) or
-    # standalone_ubuntu_oss_install.sh. The previous hardcoded list
-    # advertised POST - which every path rejects (GH-496 rewrite-phase
-    # guard, GH-551 limit_except) - and omitted HEAD, which the gateway
-    # serves, so preflighted HEAD requests were refused by the browser and
-    # preflighted POSTs were approved only to fail with a 405. Keep the
-    # three Access-Control-Allow-Methods rows in this file identical.
-    #
-    add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}';
-    #
-    # Custom headers and headers various browsers *should* be OK with but aren't
-    #
-    add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range';
-    #
-    # Tell client that this pre-flight info is valid for 20 days
-    #
-    add_header 'Access-Control-Max-Age' 1728000;
-    #
-    # Allow/deny Private Network Access CORS requests.
-    # https://developer.chrome.com/blog/private-network-access-preflight/
-    #
-    add_header 'Access-Control-Allow-Private-Network' '${CORS_ALLOW_PRIVATE_NETWORK_ACCESS}';
-
-    add_header 'Content-Type' 'text/plain; charset=utf-8';
-    add_header 'Content-Length' 0;
-    return 204;
-}
-
 if ($request_cors = "GET_1") {
     add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}' always;
-    # Keep in sync with the OPTIONS_1 block above - see the comment there.
+    # Keep in sync with cors_preflight.conf.template's method policy.
     add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}' always;
     add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
     add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
@@ -44,7 +10,7 @@ if ($request_cors = "GET_1") {
 
 if ($request_cors = "HEAD_1") {
     add_header 'Access-Control-Allow-Origin' '${CORS_ALLOWED_ORIGIN}' always;
-    # Keep in sync with the OPTIONS_1 block above - see the comment there.
+    # Keep in sync with cors_preflight.conf.template's method policy.
     add_header 'Access-Control-Allow-Methods' '${LIMIT_METHODS_TO_CSV}' always;
     add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
     add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
