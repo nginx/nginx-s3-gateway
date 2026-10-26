@@ -71,7 +71,7 @@ if [ "${CORS_ALLOWED_ORIGIN+x}" = "" ]; then
   export CORS_ALLOWED_ORIGIN="*"
 fi
 
-# The rendered value is constrained - cors.conf.template interpolates it
+# The rendered value is constrained - cors_preflight.conf.template interpolates it
 # straight into the Access-Control-Allow-Private-Network add_header, whose
 # only meaningful values are the literal strings "true" and "false" - but the
 # accepted input is the shared boolean grammar. Parse first, then map the

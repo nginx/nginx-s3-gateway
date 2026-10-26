@@ -332,6 +332,10 @@ integration_test() {
 
   wait_for_gateway
 
+  # Run before test_api.sh's STRIP/PREFIX early exits so every rewrite leg
+  # checks the viewer-path method policy, not just unprefixed deployments.
+  bash "${test_dir}/integration/test_predicate_routing.sh" "${test_server}" false
+
   p "Starting HTTP API tests (v$1 signatures)"
   echo "  test/integration/test_api.sh \"$test_server\" \"$test_dir\" $1 $2 $3 $4 $5 $6"
   bash "${test_dir}/integration/test_api.sh" "${test_server}" "${test_dir}" "$1" "$2" "$3" "$4" "$5" "$6";
@@ -479,6 +483,7 @@ integration_test_cors() {
   p "Starting CORS tests"
   echo "  test/integration/test_cors.sh \"$test_server\" \"$test_dir\" \"${cors_test_origin}\""
   bash "${test_dir}/integration/test_cors.sh" "${test_server}" "${test_dir}" "${cors_test_origin}"
+  bash "${test_dir}/integration/test_predicate_routing.sh" "${test_server}" true "${cors_test_origin}"
 }
 
 request_status() {
@@ -577,6 +582,97 @@ integration_test_proxy_ssl() {
   assert_gateway_logs_contain "upstream SSL certificate does not match" "mismatched origin hostname verification"
 }
 
+integration_test_predicate_credentials() {
+  local cors credential_logs routing_logs
+  p "Testing terminal predicates with cold, unavailable credentials"
+  set_http_test_origin
+  for cors in false true; do
+    compose_dynamic_credentials down --volumes --remove-orphans || true
+    # Both caches start empty. The mock answers failures rather than going
+    # offline so its log proves whether credentials were requested at all.
+    COMPOSE_COMPATIBILITY=true TEST_CREDENTIALS_PATH=/unavailable CORS_ENABLED="${cors}" CORS_ALLOWED_ORIGIN="*" AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH=/route PREFIX_LEADING_DIRECTORY_PATH=/b DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
+    wait_for_gateway
+
+    # Observe upstream transport independently of response status. Add a
+    # dedicated log without changing the response-header inheritance under
+    # test. Also exercise the documented nested custom-regex migration.
+    compose_dynamic_credentials exec -T nginx-s3-gateway sh -c '
+      set -eu
+      printf '\''log_format routing_probe "ROUTING_PROBE|$request_method|$uri|$status|$upstream_addr";\n'\'' > /etc/nginx/conf.d/00-routing-probe.conf
+      printf '\''access_log /dev/stdout routing_probe;\n'\'' >> /etc/nginx/conf.d/gateway/s3_server.conf
+      printf '\''location ~ ^/legacy-regex$ { return 203; }\n'\'' >> /etc/nginx/conf.d/gateway/s3_server.conf
+      sed -i '\''/    location \/ {/a\        location ~ ^/custom-health$ { auth_request off; return 202; }'\'' /etc/nginx/conf.d/default.conf
+      pid_file=$(sed -n '\''s/^[[:space:]]*pid[[:space:]]*\([^;]*\);/\1/p'\'' /etc/nginx/nginx.conf)
+      master_pid=$(cat "$pid_file")
+      old_children=$(cat "/proc/$master_pid/task/$master_pid/children")
+      if [ -z "$old_children" ]; then
+        echo "Cannot enumerate nginx workers for reload barrier" >&2
+        exit 1
+      fi
+      nginx -t && nginx -s reload || exit 1
+      for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        drained=1
+        for pid in $old_children; do
+          if [ -d "/proc/$pid" ]; then drained=0; fi
+        done
+        if [ "$drained" = 1 ]; then exit 0; fi
+        sleep 1
+      done
+      echo "Old nginx workers did not exit after reload" >&2
+      exit 1
+    '
+    # One response from a new worker is not a barrier: another request can
+    # still reach an old worker. Wait for all old master children above.
+    assert_request_status 202 "custom regex before rejection" -X POST "${test_server}/custom-health"
+    assert_request_status 202 "custom regex before preflight" -X OPTIONS "${test_server}/custom-health"
+    assert_request_status 203 "server regex still serves reads" "${test_server}/legacy-regex"
+    assert_request_status 405 "nested rejection before server regex" -X POST "${test_server}/legacy-regex"
+    if [ "${cors}" = true ]; then
+      assert_request_status 204 "nested preflight before server regex" -X OPTIONS "${test_server}/legacy-regex"
+    else
+      assert_request_status 405 "disabled preflight before server regex" -X OPTIONS "${test_server}/legacy-regex"
+    fi
+    bash "${test_dir}/integration/test_predicate_routing.sh" "${test_server}" "${cors}"
+
+    credential_logs="$(compose_dynamic_credentials logs ecs-credentials 2>&1)"
+    if grep -qF 'GET /unavailable' <<< "${credential_logs}"; then
+      e "FAIL: terminal routing fetched credentials"
+      exit "$test_fail_exit_code"
+    fi
+    routing_logs="$(compose_dynamic_credentials logs nginx-s3-gateway 2>&1)"
+    if ! grep -q 'ROUTING_PROBE|POST|/a.txt|405|-$' <<< "${routing_logs}" \
+      || grep -qE 'ROUTING_PROBE\|.*\|[^-][^|]*$' <<< "${routing_logs}"; then
+      e "FAIL: missing terminal transport observation or unexpected upstream request"
+      exit "$test_fail_exit_code"
+    fi
+
+    # Positive control runs last: prove the metadata log can observe a fetch,
+    # and unavailable credentials actually stop an ordinary read request.
+    assert_request_status 500 "cold read with unavailable credentials" "${test_server}/a.txt"
+    credential_logs="$(compose_dynamic_credentials logs ecs-credentials 2>&1)"
+    if ! grep -qF 'GET /unavailable' <<< "${credential_logs}"; then
+      e "FAIL: cold read did not query the metadata mock"
+      exit "$test_fail_exit_code"
+    fi
+
+    # A failed auth_request cannot validate the origin-transport observer.
+    # Enable real fixture credentials without restarting the gateway, then
+    # require a successful read and a logged upstream address for that read.
+    seed_origin_data "${s3_origin_server}"
+    compose_dynamic_credentials exec -T ecs-credentials sh -c '
+      curl --fail --silent http://127.0.0.1/credentials > /tmp/routing-credentials.tmp &&
+      chmod 644 /tmp/routing-credentials.tmp &&
+      mv /tmp/routing-credentials.tmp /tmp/routing-credentials.json
+    '
+    assert_request_status 200 "origin transport positive control" "${test_server}/route/e.txt"
+    routing_logs="$(compose_dynamic_credentials logs nginx-s3-gateway 2>&1)"
+    if ! grep -qE 'ROUTING_PROBE\|GET\|/route/e[.]txt\|200\|[^-][^|]*$' <<< "${routing_logs}"; then
+      e "FAIL: successful read did not produce an origin transport observation"
+      exit "$test_fail_exit_code"
+    fi
+  done
+}
+
 integration_test_dynamic_credentials() {
   p "Testing dynamic credential shared-memory caching"
   # Use the profile-aware config and remove its networks as well as its
@@ -585,11 +681,13 @@ integration_test_dynamic_credentials() {
   compose_dynamic_credentials down --volumes --remove-orphans || true
   set_http_test_origin
 
-  COMPOSE_COMPATIBILITY=true AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
+  COMPOSE_COMPATIBILITY=true TEST_CREDENTIALS_PATH=/credentials AWS_SIGS_VERSION=4 ALLOW_DIRECTORY_LIST=0 PROVIDE_INDEX_PAGE=0 APPEND_SLASH_FOR_POSSIBLE_DIRECTORY=0 STRIP_LEADING_DIRECTORY_PATH="" PREFIX_LEADING_DIRECTORY_PATH="" DIRECTORY_LISTING_PAGE_SIZE="" compose_dynamic_credentials up -d
   wait_for_gateway
   seed_origin_data "${s3_origin_server}"
 
-  assert_request_status 200 "dynamic credentials first object request" "${test_server}/a.txt"
+  # Direct index requests bypass location / and need their own credential
+  # subrequest before signing (GH-518); keep this the first cache-warming read.
+  assert_request_status 200 "dynamic credentials first index request" "${test_server}/gh551-writeguard/index.html"
 
   # Captured rather than piped into grep -q for the same pipefail/SIGPIPE
   # reason as assert_gateway_logs_contain.
@@ -777,6 +875,9 @@ bash "${test_dir}/integration/test_entrypoint_secret_files.sh" "${docker_cmd}"
 p "Testing prefix normalization entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_prefix_normalization.sh" "${docker_cmd}"
 
+p "Testing standalone predicate-routing version requirement"
+bash "${test_dir}/integration/test_standalone_nginx_version.sh" "${docker_cmd}"
+
 p "Testing signature v2 session token guard entrypoint script"
 bash "${test_dir}/integration/test_entrypoint_sigv2_session_token.sh" "${docker_cmd}"
 
@@ -917,6 +1018,7 @@ integration_test_cors
 
 integration_test_proxy_ssl
 
+integration_test_predicate_credentials
 integration_test_dynamic_credentials
 
 integration_test_secret_file_credentials

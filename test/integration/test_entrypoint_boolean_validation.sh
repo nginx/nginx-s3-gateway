@@ -94,7 +94,7 @@ assertValidationAccepts "CORS_ALLOW_PRIVATE_NETWORK_ACCESS empty" \
 ### constrained to the literal strings true/false, with empty omitting the
 ### add_header - never the 1/0 the two-state booleans normalize to.
 
-rendered_cors_conf=/etc/nginx/conf.d/gateway/cors.conf
+rendered_cors_conf=/etc/nginx/conf.d/gateway/cors_preflight.conf
 
 # assertPrivateNetworkHeaderRenders <description> <expected_value> [extra docker run args...]
 assertPrivateNetworkHeaderRenders() {

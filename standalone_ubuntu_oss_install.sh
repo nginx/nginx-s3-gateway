@@ -604,12 +604,30 @@ if ! dpkg --status nginx-module-xslt 2>/dev/null | grep --quiet Status > /dev/nu
 fi
 
 
+# --- predicate routing version check BEGIN ---
 if [ "${to_install}" != "" ]; then
   echo "▶ Installing ${to_install}"
   apt-get -qq install --yes ${to_install}
+fi
+
+# Existing packages are not upgraded above. Check the actual binary before
+# stopping the service or replacing any gateway configuration: 1.31.6 fixes
+# predicate evaluation and nested-location lookup errors present in 1.31.5.
+nginx_version_output="$(nginx -v 2>&1)" || nginx_version_output=""
+nginx_version="$(printf '%s\n' "${nginx_version_output}" | sed -n 's/^nginx version: nginx\/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p')"
+if [ -z "${nginx_version}" ] || ! dpkg --compare-versions "${nginx_version}" ge 1.31.6; then
+  >&2 echo "ERROR: predicate routing requires NGINX 1.31.6 or newer; installed binary reports: ${nginx_version_output:-unknown}."
+  >&2 echo "ERROR: use https://nginx.org/packages/mainline/ubuntu in /etc/apt/sources.list.d/nginx.list, then run:"
+  >&2 echo "ERROR: apt-get update && apt-get install --only-upgrade nginx nginx-module-njs nginx-module-xslt"
+  >&2 echo "ERROR: re-run this installer after upgrading; gateway configuration has not been replaced."
+  exit 1
+fi
+
+if [ "${to_install}" != "" ]; then
   echo "▶ Stopping nginx so that it can be configured as a S3 Gateway"
   systemctl stop nginx
 fi
+# --- predicate routing version check END ---
 
 # On a first install the worker-readability check in the validation block above
 # could only test as root: the nginx user is created by the nginx package, which
@@ -739,7 +757,7 @@ if [ -z "${CORS_ALLOWED_ORIGIN+x}" ]; then
 CORS_ALLOWED_ORIGIN="*"
 fi
 
-# The rendered value is constrained - cors.conf.template interpolates it
+# The rendered value is constrained - cors_preflight.conf.template interpolates it
 # straight into the Access-Control-Allow-Private-Network add_header, whose
 # only meaningful values are the literal strings "true" and "false" - but the
 # accepted input is the shared boolean grammar. Any true spelling renders
@@ -1106,6 +1124,7 @@ download "common/etc/nginx/templates/gateway/v2_js_vars.conf.template" "/etc/ngi
 download "common/etc/nginx/templates/gateway/v4_headers.conf.template" "/etc/nginx/templates/gateway/v4_headers.conf.template"
 download "common/etc/nginx/templates/gateway/v4_js_vars.conf.template" "/etc/nginx/templates/gateway/v4_js_vars.conf.template"
 download "common/etc/nginx/templates/gateway/cors.conf.template" "/etc/nginx/templates/gateway/cors.conf.template"
+download "common/etc/nginx/templates/gateway/cors_preflight.conf.template" "/etc/nginx/templates/gateway/cors_preflight.conf.template"
 download "common/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template" "/etc/nginx/templates/gateway/js_fetch_trusted_certificate.conf.template"
 download "common/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template" "/etc/nginx/templates/gateway/s3_proxy_ssl.conf.template"
 download "common/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template" "/etc/nginx/templates/gateway/proxy_ignore_headers.conf.template"

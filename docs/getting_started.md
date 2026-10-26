@@ -60,7 +60,7 @@ the documented `true`/`false` forms.
 | `JS_TRUSTED_CERT_PATH`                | No        |                                                                                                                                                       |                                                     | Enables the `js_fetch_trusted_certificate` directive when retrieving AWS credentials and sets the path (on the container) to the specified path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `HEADER_PREFIXES_TO_STRIP`            | No        |                                                                                                                                                       |                                                     | A list of HTTP header prefixes that exclude headers from client responses. List should be specified in lower-case and a semicolon (;) should be used to as a delimiter between values. For example: x-goog-;x-something-. Headers starting with x-amz- will be stripped by default for security reasons unless explicitly added in HEADER_PREFIXES_ALLOWED.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `HEADER_PREFIXES_ALLOWED`             | No        |                                                                                                                                                       |                                                     | A list of allowed prefixes for HTTP headers that are returned to the client in responses. List should be specified in lower-case and a semicolon (;) should be used to as a delimiter between values. For example: x-amz-;x-something-. It is NOT recommended to return x-amz- headers for security reasons. Think carefully about what is allowed here.                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `CORS_ENABLED`                        | No        | `true`, `false`                                                                                                                                       | `false`                                             | Flag that enables CORS headers on GET and HEAD requests and enables pre-flight OPTIONS requests. If enabled, this will add CORS headers for "fully open" cross domain requests by default, meaning all domains are allowed, similar to the settings show in [this example](https://enable-cors.org/server_nginx.html). The advertised `Access-Control-Allow-Methods` mirrors the read-only method policy the gateway enforces (`GET, HEAD, OPTIONS`), and the method-rejection (`405`) and sanitized-`404` responses carry `Access-Control-Allow-Origin` so cross-origin scripts observe the real status. CORS settings can be fine-tuned by overwriting the [`cors.conf.template`](/common/etc/nginx/templates/gateway/cors.conf.template) file.                    |
+| `CORS_ENABLED`                        | No        | `true`, `false`                                                                                                                                       | `false`                                             | Flag that enables CORS headers on GET and HEAD requests and enables pre-flight OPTIONS requests. If enabled, this will add CORS headers for "fully open" cross domain requests by default, meaning all domains are allowed, similar to the settings show in [this example](https://enable-cors.org/server_nginx.html). The advertised `Access-Control-Allow-Methods` mirrors the read-only method policy the gateway enforces (`GET, HEAD, OPTIONS`), and the method-rejection (`405`) and sanitized-`404` responses carry `Access-Control-Allow-Origin` so cross-origin scripts observe the real status. See [Customizing CORS Responses](#customizing-cors-responses) for the separate preflight and GET/HEAD templates.                                           |
 | `CORS_ALLOWED_ORIGIN`                 | No        |                                                                                                                                                       |                                                     | Value to set to be returned from the CORS `Access-Control-Allow-Origin` header, including on the method-rejection (`405`) and sanitized-`404` responses. This value is only used if CORS is enabled. (default: \*)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `STRIP_LEADING_DIRECTORY_PATH`        | No        |                                                                                                                                                       |                                                     | Removes a portion of the path in the requested URL (if configured). Useful when deploying to an ALB under a folder (eg. `www.mysite.com/somepath`). Trailing slashes are trimmed from the value (`/somepath` and `/somepath/` are equivalent), so a trailing slash does not anchor the match to a path-segment boundary: `/somepath` also matches `/somepathextra`. The value is a regex fragment, so a boundary can be required explicitly, e.g. `/somepath(?=/\|$)`.                                                                                                                                                                                                                                                                                               |
 | `PREFIX_LEADING_DIRECTORY_PATH`       | No        |                                                                                                                                                       |                                                     | Prefix to prepend to all S3 object paths. Useful to serve only a subset of an S3 bucket. When used in combination with `STRIP_LEADING_DIRECTORY_PATH`, this allows the leading path to be replaced, rather than just removed. When directory listing is enabled, this prefix is stripped from generated links and the "Index of" heading so that listings reflect the client-facing path (see [Configuring Directory Listing](#configuring-directory-listing)). The value is normalized to a leading slash with all trailing slashes removed (`/b`, `/b/`, and `b` are equivalent); `/` or an empty value disables the prefix. Values containing a single quote or a literal `$` are rejected at startup because the value is rendered into the NGINX configuration. |
@@ -102,6 +102,29 @@ There are few optional environment variables that can be used.
   then the STS endpoint generated will be coded to the current AWS region. This
   environment variable will be ignored if `STS_ENDPOINT` is set. Valid options are:
   `global` (default) or `regional`.
+
+### Customizing CORS Responses
+
+With `CORS_ENABLED=true`, OPTIONS is answered by terminal predicate locations
+with a 204 response; GET and HEAD responses are decorated separately.
+Override these templates to customize the headers:
+
+- [`cors_preflight.conf.template`](/common/etc/nginx/templates/gateway/cors_preflight.conf.template)
+  controls OPTIONS responses. Keep its `return 204;` directive so preflight
+  requests cannot fall through to an S3 proxy.
+- [`cors.conf.template`](/common/etc/nginx/templates/gateway/cors.conf.template)
+  controls GET/HEAD response headers across the proxy and error locations.
+
+When upgrading an existing `cors.conf.template` override, move its OPTIONS
+header customizations into `cors_preflight.conf.template` and remove the old
+OPTIONS branch. Keep advertised methods and allowed headers consistent across
+both files. If you override `default.conf.template`, rebase that override on
+the new template too: OPTIONS handling now lives in its predicate locations,
+and retaining the old routing with the new `cors.conf` makes preflights fail.
+Method rejection and preflight selection use the normalized
+`CORS_ENABLED` setting; no Origin request header is required for selection.
+For custom location precedence, see
+[Predicate routing and custom locations](development.md#predicate-routing-and-custom-locations).
 
 ### Choosing a `S3_STYLE` Setting
 
@@ -507,10 +530,26 @@ sudo env $(cat settings.example) ./standalone_ubuntu_oss_install.sh
 NGINX is installed from the
 [mainline package repository](https://nginx.org/en/linux_packages.html#Ubuntu)
 (`https://nginx.org/packages/mainline/ubuntu`), which is the same branch the
-container images track, so a systemd install runs the same NGINX version as a
-container deployment. Note that nginx.org labels the suite `stable` in both
+OSS container images track. The installed version may be newer than the
+container's pinned release. Note that nginx.org labels the suite `stable` in both
 branches, so `apt-cache policy nginx` reports `nginx:stable` either way — the
 branch is selected by the repository URL, not by the suite name.
+
+The shared gateway templates require **NGINX 1.31.6 or newer** for predicate
+routing and its nested-location lookup fixes. Container OSS builds pin a newer
+release; Plus builds use **PLS.37.2.0.1 CR** (NGINX 1.31.6), with matching
+dynamic modules. This moves Plus from the 37.0 LTS track to the CR track;
+37.0 LTS cannot load these templates. See the [Plus release notes][plus-releases].
+Plan to update the Plus pin as new CRs ship: the preceding CR reaches end of
+support when its successor is released, unlike the extended LTS lifecycle.
+
+The standalone installer checks the installed binary before replacing gateway
+configuration. It does not automatically upgrade already-installed packages:
+upgrade NGINX together with its njs and XSLT modules before re-running an older
+installation. Upgrading only the gateway templates on an older NGINX binary
+is insufficient.
+
+[plus-releases]: https://docs.nginx.com/nginx/releases/
 
 Hosts installed before the gateway switched to mainline are still configured for
 the stable branch. The script never rewrites an existing

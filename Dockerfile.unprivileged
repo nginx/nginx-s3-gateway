@@ -7,6 +7,9 @@ FROM nginx-s3-gateway
 
 # Implement changes required to run NGINX as an unprivileged user
 RUN sed -i 's/listen[[:space:]]*80;/listen 8080;/g' /etc/nginx/templates/default.conf.template \
+    # Plus gates template/license initialization on its Supervisor command.
+    # Accept direct nginx too; the OSS entrypoint already does so.
+    && sed -i 's/"$1" = "\/usr\/bin\/supervisord"/"$1" = "nginx" ] || [ "$1" = "\/usr\/bin\/supervisord"/' /docker-entrypoint.sh \
     && sed -i '/user  nginx;/d' /etc/nginx/nginx.conf \
     && sed -i 's#http://127.0.0.1:80#http://127.0.0.1:8080#g' /etc/nginx/include/s3gateway.js \
     && sed -i 's,/var/run/nginx.pid,/tmp/nginx.pid,' /etc/nginx/nginx.conf \
@@ -20,3 +23,8 @@ RUN sed -i 's/listen[[:space:]]*80;/listen 8080;/g' /etc/nginx/templates/default
 EXPOSE 8080
 
 USER nginx
+
+# Plus 37.2 starts supervisord as root by default. This variant runs only
+# nginx; retain the shared entrypoint (including license/template setup),
+# then start the server directly just as the OSS image does.
+CMD ["nginx", "-g", "daemon off;"]
