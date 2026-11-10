@@ -241,6 +241,7 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker pull --quiet --platform "${platform}" "${IMAGE}"
             make verify-image NGINX_TYPE=oss VERIFY_IMAGE="${IMAGE}" VERIFY_PLATFORM="${platform}"
+            docker image rm --force "${IMAGE}"
           done
 
   publish-unprivileged:
@@ -304,6 +305,7 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             docker pull --quiet --platform "${platform}" "${IMAGE}"
             make verify-image NGINX_TYPE=oss VERIFY_IMAGE="${IMAGE}" VERIFY_PLATFORM="${platform}"
+            docker image rm --force "${IMAGE}"
           done
 
   # One job per architecture, each on a native runner. Pushed by digest so no
