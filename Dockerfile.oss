@@ -1,4 +1,4 @@
-FROM nginx:1.31.8@sha256:6e67f8eaac94fc456588d4ff6c470d984841f5b5dc4279863d5cbe6ec5a60def
+FROM nginx:1.31.8@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82
 
 # Proxy cache env vars
 ENV PROXY_CACHE_MAX_SIZE=10g
