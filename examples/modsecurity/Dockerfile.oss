@@ -1,6 +1,6 @@
-FROM nginxinc/nginx-s3-gateway@sha256:8aa48324479b3653b5936183cc97f2ca1aa9078d229042f1bca357834bd906f4
+FROM nginx/nginx-s3-gateway@sha256:166f1ad89dc7ee28d3846f74c6ce4916390603c9ce5a8f778ca68758cc17344d
 
-ENV MODSECURITY_VERSION "v1.0.1"
+ENV MODSECURITY_VERSION "v1.0.4"
 ENV OWASP_RULESET_VERSION "v3.3.0"
 ENV OWASP_RULESET_CHECKSUM "1f4002b5cf941a9172b6250cea7e3465a85ef6ee"
 
@@ -9,11 +9,11 @@ ENV OWASP_RULESET_CHECKSUM "1f4002b5cf941a9172b6250cea7e3465a85ef6ee"
 RUN set -eux \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update -qq; \
-    apt-get install -y -qq build-essential libpcre3-dev git libmodsecurity3 libmodsecurity-dev curl libdigest-sha-perl; \
+    apt-get install -y -qq build-essential libpcre2-dev git libmodsecurity3 libmodsecurity-dev curl libdigest-sha-perl; \
     curl -o /tmp/nginx.tar.gz --retry 6 -Ls "http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
     mkdir /tmp/nginx /tmp/modsecurity; \
     tar -C /tmp/nginx --strip-components 1 -xzf /tmp/nginx.tar.gz; \
-    curl -o /tmp/modsecurity.tar.gz --retry 6 -Ls "https://github.com/SpiderLabs/ModSecurity-nginx/archive/${MODSECURITY_VERSION}.tar.gz"; \
+    curl -o /tmp/modsecurity.tar.gz --retry 6 -Ls "https://github.com/owasp-modsecurity/ModSecurity-nginx/archive/refs/tags/${MODSECURITY_VERSION}.tar.gz"; \
     tar -C "/tmp/modsecurity" --strip-components 1 -xzf /tmp/modsecurity.tar.gz; \
     cd /tmp/nginx; \
 ./configure --add-dynamic-module=/tmp/modsecurity \
@@ -42,7 +42,7 @@ RUN set -eux \
     echo "${OWASP_RULESET_CHECKSUM}  /tmp/coreruleset.tar.gz" | shasum -c; \
     mkdir -p /usr/local/nginx/conf/owasp-modsecurity-crs; \
     tar -C /usr/local/nginx/conf/owasp-modsecurity-crs --strip-components 1 -xzf /tmp/coreruleset.tar.gz; \
-    apt-get purge -y --auto-remove build-essential libpcre3-dev git libmodsecurity-dev curl libdigest-sha-perl; \
+    apt-get purge -y --auto-remove build-essential libpcre2-dev git libmodsecurity-dev curl libdigest-sha-perl; \
     rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # Update configuration to load module

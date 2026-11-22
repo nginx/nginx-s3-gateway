@@ -1,11 +1,11 @@
-FROM nginxinc/nginx-s3-gateway@sha256:8aa48324479b3653b5936183cc97f2ca1aa9078d229042f1bca357834bd906f4
+FROM nginx/nginx-s3-gateway@sha256:166f1ad89dc7ee28d3846f74c6ce4916390603c9ce5a8f778ca68758cc17344d
 ENV BROTLI_VERSION "v1.0.0rc"
 
 # Build Brotli module from source because there is no repository package
 RUN set -eux \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update -qq; \
-    apt-get install -y -qq build-essential libpcre3-dev git libbrotli1 libbrotli-dev; \
+    apt-get install -y -qq build-essential libpcre2-dev git libbrotli1 libbrotli-dev; \
     curl -o /tmp/nginx.tar.gz --retry 6 -Ls "http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"; \
     mkdir /tmp/nginx /tmp/brotli; \
     tar -C /tmp/nginx --strip-components 1 -xzf /tmp/nginx.tar.gz; \
@@ -35,7 +35,7 @@ RUN set -eux \
     make -j $(nproc) modules; \
     cp /tmp/nginx/objs/ngx_http_brotli_filter_module.so /usr/lib/nginx/modules; \
     cp /tmp/nginx/objs/ngx_http_brotli_static_module.so /usr/lib/nginx/modules; \
-    apt-get purge -y --auto-remove build-essential libpcre3-dev git libbrotli-dev; \
+    apt-get purge -y --auto-remove build-essential libpcre2-dev git libbrotli-dev; \
     rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # Update configuration to load module
