@@ -1,3 +1,3 @@
-FROM nginxinc/nginx-s3-gateway@sha256:8aa48324479b3653b5936183cc97f2ca1aa9078d229042f1bca357834bd906f4
+FROM nginx/nginx-s3-gateway@sha256:166f1ad89dc7ee28d3846f74c6ce4916390603c9ce5a8f778ca68758cc17344d
 
 COPY etc/nginx/conf.d /etc/nginx/conf.d
