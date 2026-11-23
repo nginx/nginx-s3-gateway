@@ -8,6 +8,22 @@ updates:
       day: monday
       time: "00:00"
 
+  - package-ecosystem: docker
+    directories:
+      - /examples/*
+    schedule:
+      interval: weekly
+      day: monday
+      time: "00:00"
+    groups:
+      examples-gateway-image:
+        patterns:
+          - nginx/nginx-s3-gateway
+    ignore:
+      # The .plus examples build FROM nginx-s3-gateway:plus, which is built
+      # locally (see examples/*/Dockerfile.plus) and published nowhere.
+      - dependency-name: nginx-s3-gateway
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
